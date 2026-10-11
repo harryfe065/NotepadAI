@@ -2117,6 +2117,11 @@ void AcpSessionView::dispatchPrompt(const QString &text,
 {
     if (!m_connection || !m_model)
         return;
+    // A typed `/advisor ...` flips the toggle just like clicking it would.
+    if (m_advisorBtn) {
+        if (const auto advisorOn = AcpProtocol::parseAdvisorCommand(text))
+            m_advisorBtn->setChecked(*advisorOn);
+    }
     const QString wireText = applyNewWorktreeInstruction(text);
     m_model->appendUserMessage(text, images, fromGoalAgent);
     QList<QPair<QByteArray, QString>> imageList;

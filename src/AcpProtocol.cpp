@@ -879,6 +879,22 @@ QString advisorCommandText(bool on, const QString &modelValue, const QString &mo
               : QStringLiteral("/advisor off");
 }
 
+std::optional<bool> parseAdvisorCommand(const QString &text)
+{
+    QStringView v = QStringView{text}.trimmed();
+    constexpr QLatin1String kCmd("/advisor");
+    if (!v.startsWith(kCmd, Qt::CaseInsensitive))
+        return std::nullopt;
+    v = v.mid(kCmd.size());
+    // Reject "/advisorfoo"; the command must end or be followed by whitespace.
+    if (!v.isEmpty() && !v.front().isSpace())
+        return std::nullopt;
+    v = v.trimmed();
+    if (v.isEmpty())
+        return std::nullopt;
+    return v.compare(QLatin1String("off"), Qt::CaseInsensitive) != 0;
+}
+
 void ensureHostGoalCommand(QList<AcpCommandInfo> &commands)
 {
     if (commandsIncludeGoal(commands))

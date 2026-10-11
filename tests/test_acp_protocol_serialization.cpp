@@ -63,6 +63,7 @@ private slots:
     void advisorModelFor_stepsUpOneLevel();
     void advisorModelFor_readsFamilyFromValueOrLabel();
     void advisorCommandText_onAndOff();
+    void parseAdvisorCommand_readsTypedToggle();
 
 
 
@@ -558,6 +559,23 @@ void TestAcpProtocolSerialization::advisorCommandText_onAndOff()
              QStringLiteral("/advisor fable"));
     QCOMPARE(AcpProtocol::advisorCommandText(false, QStringLiteral("sonnet")),
              QStringLiteral("/advisor off"));
+}
+
+void TestAcpProtocolSerialization::parseAdvisorCommand_readsTypedToggle()
+{
+    QCOMPARE(AcpProtocol::parseAdvisorCommand(QStringLiteral("/advisor opus")),
+             std::optional<bool>(true));
+    QCOMPARE(AcpProtocol::parseAdvisorCommand(QStringLiteral("  /Advisor   fable ")),
+             std::optional<bool>(true));
+    QCOMPARE(AcpProtocol::parseAdvisorCommand(QStringLiteral("/advisor off")),
+             std::optional<bool>(false));
+    QCOMPARE(AcpProtocol::parseAdvisorCommand(QStringLiteral("/advisor OFF")),
+             std::optional<bool>(false));
+    // Status query, lookalikes and ordinary prompts leave the toggle alone.
+    QVERIFY(!AcpProtocol::parseAdvisorCommand(QStringLiteral("/advisor")).has_value());
+    QVERIFY(!AcpProtocol::parseAdvisorCommand(QStringLiteral("/advisors opus")).has_value());
+    QVERIFY(!AcpProtocol::parseAdvisorCommand(QStringLiteral("use /advisor off")).has_value());
+    QVERIFY(!AcpProtocol::parseAdvisorCommand(QString()).has_value());
 }
 
 void TestAcpProtocolSerialization::rawOutputToObject_wrapsNonObjects()
