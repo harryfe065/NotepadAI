@@ -22,17 +22,20 @@
 #include <QFont>
 #include <QFrame>
 #include <QPixmap>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
 #include "AcpProtocol.h"
 
 class QTextBrowser;
+class MarkdownView;
 class QTimer;
 class QToolButton;
 class QLabel;
 class QVBoxLayout;
 class QShowEvent;
+class QUrl;
 
 // One transcript row representing either a user/assistant/thought/system
 // message. Assistant messages render markdown via QTextDocument::setMarkdown;
@@ -79,6 +82,11 @@ public:
     QString role() const { return m_role; }
     QString plainText() const { return m_text; }
 
+    // User bubbles hug their text (ChatGPT-style): the transcript layout
+    // right-aligns the widget, so this width — widest line, capped to the
+    // transcript — is what it gets. Other roles keep the layout default.
+    QSize sizeHint() const override;
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
     // QStackedWidget (session tabs) hides inactive pages without a size change,
@@ -104,23 +112,6 @@ private:
     void scheduleRerender();
     void flushRerender();
 
-    // Assistant code-block affordances. Code (fenced `<pre>`) blocks get a
-    // distinct inset surface; a single reusable hover button copies the block
-    // under the cursor. Built lazily on first assistant render.
-    void ensureCopyButton();
-    void rebuildCopyIcon();
-    void scanCodeRegions();       // map fenced-code doc ranges + raw text
-    void updateCopyButtonForPos(const QPoint &viewportPos);
-    QString codeStyleSheet() const; // pre/code CSS with chat font + palette
-    // Post-process the assistant document's code fragments: rewrite the
-    // monospace family Qt bakes during setMarkdown to the chat family, loosen
-    // line spacing inside code blocks, and add top/bottom block margins around
-    // each fenced region so it separates from adjacent prose. Runs on the
-    // document model (reliable) where QTextDocument's CSS subset is not.
-    void styleCodeInDocument();
-    // One fenced code region: document character range + its raw text.
-    struct CodeRegion { int start; int end; QString text; };
-
     QString m_role;
     QString m_text;
     bool m_collapsed = false;
@@ -135,18 +126,11 @@ private:
     bool m_chatFontSet = false;
 
     QTextBrowser *m_browser = nullptr;     // assistant + non-thought rendered widgets
+    MarkdownView *m_markdown = nullptr;    // == m_browser for the assistant role
     QToolButton *m_thoughtHeader = nullptr; // thought role
     QLabel *m_goalBadge = nullptr;         // Goal badge on result rows
     QVBoxLayout *m_layout = nullptr;
 
-    // Hover copy button for fenced code blocks (assistant role only). One
-    // reusable button parented to the browser viewport, repositioned to the
-    // top-right of the code region under the cursor. m_codeRegions is rebuilt
-    // on every assistant render; m_hoverCodeIndex tracks which region the
-    // button currently serves (-1 = hidden).
-    QToolButton *m_copyCodeBtn = nullptr;
-    QVector<CodeRegion> m_codeRegions;
-    int m_hoverCodeIndex = -1;
     // Debounce timer for assistant markdown re-renders. setMarkdown on a long
     // table-bearing payload is O(N) per call; without debouncing, every
     // streamed chunk re-parses the whole document and the UI thread stalls.

@@ -70,8 +70,8 @@ QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
     starts.append(n);
     const int turnCount = starts.size() - 1;
 
-    // The newest turn stays open for review; only older ones can fold, unless
-    // the caller wants it too (to give it an expanded "Worked for Xs" row).
+    // The newest turn may still be running; only older ones can fold, unless
+    // the caller says it has ended.
     const int lastTurn = includeNewest ? turnCount : turnCount - 1;
     for (int t = 0; t < lastTurn; ++t) {
         Turn turn;
@@ -98,25 +98,40 @@ QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
                 continue;
             const AcpTimelineEntry &e = timeline.at(i);
             if (e.kind == AcpTimelineEntry::Kind::ToolCall) {
-                if (toolCalls.contains(e.toolCallId))
+                if (toolCalls.contains(e.toolCallId)) {
                     turn.folded.append(i);
+                    ++turn.toolCalls;
+                }
             } else if (e.messageIndex >= 0 && e.messageIndex < messages.size()
                        && messageHasVisibleContent(messages.at(e.messageIndex))) {
                 turn.folded.append(i);
             }
         }
-        if (turn.folded.isEmpty())
-            continue;
-
         if (turn.anchor >= 0 && turn.survivor >= 0) {
             const qint64 a = messages.at(timeline.at(turn.anchor).messageIndex).timestamp;
             const qint64 b = messages.at(timeline.at(turn.survivor).messageIndex).timestamp;
             if (a > 0 && b >= a)
                 turn.workedMs = b - a;
         }
+        // A turn with nothing to fold still gets its "Worked for Xs" label
+        // (report-only reply), as long as there is a duration to show.
+        if (turn.folded.isEmpty() && turn.workedMs < 0)
+            continue;
         out.append(turn);
     }
     return out;
+}
+
+int newestTurnBegin(const QVector<AcpTimelineEntry> &timeline,
+                    const QVector<AcpMessage> &messages)
+{
+    if (timeline.isEmpty())
+        return -1;
+    for (int i = timeline.size() - 1; i > 0; --i) {
+        if (isUserAnchor(timeline.at(i), messages))
+            return i;
+    }
+    return 0;
 }
 
 } // namespace AcpTurnFolding

@@ -194,15 +194,17 @@ private:
 
     // "Worked for Xs" folding of finished turns. Folded entries have NO widgets
     // (nothing to lay out or paint); expanding instantiates them, collapsing
-    // destroys them. The newest turn is never folded; once it ends it only gains
-    // an expanded row (showNewestTurnRow) that folds with the next prompt.
-    void foldCompletedTurns();
+    // destroys them. A running turn is not folded: it is headed by a live
+    // ticking row (ensureLiveTurnRow) that foldTurn adopts when the turn ends,
+    // so every finished turn, newest included, looks the same.
+    void foldCompletedTurns(bool includeNewest = false);
     void foldTurn(const AcpTurnFolding::Turn &turn);
-    void showNewestTurnRow();
+    void ensureLiveTurnRow();
+    void dropLiveTurnRow();
     void setTurnExpanded(int turnBegin, bool expanded);
     void removeEntryWidget(const AcpTimelineEntry &entry);
     QWidget *createEntryWidget(const AcpTimelineEntry &entry);
-    AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn, bool expanded = false);
+    AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn, AcpTurnFoldRow *adopt = nullptr);
     void setFoldedMask(const QVector<int> &entries, bool folded);
     void pruneStaleFoldedTurns();
     void syncTranscriptHostWidth();
@@ -379,11 +381,13 @@ private:
         QPointer<AcpTurnFoldRow> row;
         QVector<int> entries; // timeline indices hidden while collapsed
         bool expanded = false;
-        bool autoExpanded = false; // newest turn's row, untouched by the user; collapses on the next prompt
     };
     QHash<int, FoldedTurn> m_foldedTurns; // key: first timeline index of the turn
     QVector<std::uint8_t> m_foldedMask;   // per timeline index; 1 = currently folded (no widget)
     int m_foldedCount = 0;
+    QPointer<AcpTurnFoldRow> m_liveRow; // heads the running turn; ticks once per second
+    int m_liveTurnBegin = -1;           // timeline index of that turn's anchor
+    int m_liveToolCalls = 0;            // tool calls so far in that turn
     AcpPlanWidget *m_planWidget = nullptr;
     QPointer<AcpMessageWidget> m_activeThought;
     QPointer<AcpPermissionPrompt> m_activePermissionPrompt;

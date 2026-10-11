@@ -2,7 +2,6 @@
 #include "DockedEditor.h"
 #include "ScintillaNext.h"
 #include "NotepadNextApplication.h"
-#include "MarkdownRenderer.h"
 #include "MarkdownPreviewWidget.h"
 #include "HtmlPreviewWidget.h"
 #include "FileEncodingDetector.h"

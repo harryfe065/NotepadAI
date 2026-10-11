@@ -36,10 +36,10 @@
 //   - the survivor is the LAST assistant message with visible content — the
 //     report the user reads; it stays visible beside the fold row
 //   - every other entry that would render (tool calls, thoughts, earlier
-//     assistant messages) is folded
-// The LAST turn is never folded: the user reviews it. Once it ends the view
-// shows its "Worked for Xs" row expanded; it folds when a newer prompt starts
-// a new turn.
+//     assistant messages) is folded; a turn may fold nothing (report only)
+// While the newest turn runs it is not folded (the view shows a live ticking
+// "Worked for Xs" row above it); once it ends it folds exactly like every
+// older turn.
 //
 // Complexity: O(n) time over the timeline, one pass.
 namespace AcpTurnFolding {
@@ -51,17 +51,24 @@ struct Turn
     int anchor = -1;          // timeline index of the user/goal message; -1 for a prefix turn
     int survivor = -1;        // timeline index of the final report; -1 when there is none
     QVector<int> folded;      // timeline indices hidden while collapsed, in order
+    int toolCalls = 0;        // tool-call entries among `folded`
     qint64 workedMs = -1;     // anchor -> survivor wall time; -1 when unknown
 };
 
 bool messageHasVisibleContent(const AcpMessage &msg);
 
 // Every foldable turn except the newest turn (included when includeNewest is
-// set; the view then shows its row expanded). Turns with nothing to fold are omitted.
+// set, i.e. the newest turn has ended). A turn with nothing to fold is kept only
+// when its duration is known (the row is then a plain, non-expandable label).
 QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
                       const QVector<AcpMessage> &messages,
                       const QHash<QString, AcpProtocol::AcpToolCall> &toolCalls,
                       bool includeNewest = false);
+
+// First timeline index of the newest turn (last user/goal prompt, else 0);
+// -1 for an empty timeline.
+int newestTurnBegin(const QVector<AcpTimelineEntry> &timeline,
+                    const QVector<AcpMessage> &messages);
 
 } // namespace AcpTurnFolding
 

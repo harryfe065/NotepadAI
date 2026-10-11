@@ -552,6 +552,20 @@ target_sources(test_send_with_goal_dialog PRIVATE
 )
 add_test(NAME SendWithGoalDialog COMMAND test_send_with_goal_dialog)
 
+
+# Sources AcpMessageWidget.cpp now depends on (preprocessor + math renderer).
+set(MARKDOWN_RENDER_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.h
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathLayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathLayout.h
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.h
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathRenderCache.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathRenderCache.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/MarkdownView.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/MarkdownView.h
+)
 # --- AcpAgentManager: lifecycle, history worker-thread placement, shutdown ---
 qt_add_executable(test_acp_agent_manager test_acp_agent_manager.cpp)
 target_include_directories(test_acp_agent_manager PRIVATE
@@ -596,6 +610,7 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpImageAttachmentList.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpImageAttachmentList.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.cpp
+    ${MARKDOWN_RENDER_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPermissionPrompt.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPermissionPrompt.h
@@ -695,6 +710,7 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpImageAttachmentList.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpImageAttachmentList.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.cpp
+    ${MARKDOWN_RENDER_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPermissionPrompt.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPermissionPrompt.h
@@ -790,6 +806,7 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpImageAttachmentList.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpImageAttachmentList.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.cpp
+    ${MARKDOWN_RENDER_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPermissionPrompt.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPermissionPrompt.h
@@ -927,6 +944,7 @@ target_sources(test_acp_message_widget_streaming PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.cpp
+    ${MARKDOWN_RENDER_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.h
 )
 add_test(NAME AcpMessageWidgetStreaming COMMAND test_acp_message_widget_streaming)
@@ -1198,21 +1216,6 @@ target_sources(test_submodule_status_fetcher PRIVATE
 )
 add_test(NAME SubmoduleStatusFetcher COMMAND test_submodule_status_fetcher)
 
-
-# --- MarkdownRenderer: md4c HTML output, truncation, fence mapping, anchors, highlighting ---
-qt_add_executable(test_markdown_renderer test_markdown_renderer.cpp)
-target_include_directories(test_markdown_renderer PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/thirdparty/scintilla/include
-    ${CMAKE_SOURCE_DIR}/thirdparty/lexilla/include
-    ${CMAKE_SOURCE_DIR}/thirdparty/lexilla/access
-)
-target_link_libraries(test_markdown_renderer PRIVATE Qt6::Core Qt6::Gui Qt6::Test md4c lexilla)
-target_sources(test_markdown_renderer PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/MarkdownRenderer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MarkdownRenderer.h
-)
-add_test(NAME MarkdownRenderer COMMAND test_markdown_renderer)
 
 # --- BrowserTabPin: Chrome-style pin hides title + close, keeps favicon ---
 qt_add_executable(test_browser_tab_pin test_browser_tab_pin.cpp)
@@ -2177,3 +2180,86 @@ target_sources(test_acp_turn_folding PRIVATE
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
 )
 add_test(NAME AcpTurnFolding COMMAND test_acp_turn_folding)
+
+# --- MarkdownPreprocessor: math delimiters + allowlisted HTML -> markdown ---
+qt_add_executable(test_markdown_preprocessor test_markdown_preprocessor.cpp)
+target_include_directories(test_markdown_preprocessor PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_markdown_preprocessor PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_markdown_preprocessor PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.h
+)
+add_test(NAME MarkdownPreprocessor COMMAND test_markdown_preprocessor)
+
+# --- MathParser: TeX math subset -> AST ---
+qt_add_executable(test_math_parser test_math_parser.cpp)
+target_include_directories(test_math_parser PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_math_parser PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_math_parser PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.h
+)
+add_test(NAME MathParser COMMAND test_math_parser)
+
+# --- MathLayout: TeX-style layout + QPainter rendering (needs a GUI app; offscreen) ---
+qt_add_executable(test_math_layout test_math_layout.cpp)
+target_include_directories(test_math_layout PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_math_layout PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+target_sources(test_math_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathLayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathLayout.h
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.h
+)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/src/fonts/STIXTwoMath-Regular.ttf" MATH_FONT_FILE_PATH)
+target_compile_definitions(test_math_layout PRIVATE "MATH_FONT_FILE=\"${MATH_FONT_FILE_PATH}\"")
+add_test(NAME MathLayout COMMAND test_math_layout)
+set_tests_properties(MathLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# --- MathRenderCache: LRU of rendered formulas ---
+qt_add_executable(test_math_render_cache test_math_render_cache.cpp)
+target_include_directories(test_math_render_cache PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_math_render_cache PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+target_sources(test_math_render_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathRenderCache.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathRenderCache.h
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathLayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathLayout.h
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/markdown/MathParser.h
+)
+target_compile_definitions(test_math_render_cache PRIVATE "MATH_FONT_FILE=\"${MATH_FONT_FILE_PATH}\"")
+add_test(NAME MathRenderCache COMMAND test_math_render_cache)
+set_tests_properties(MathRenderCache PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# --- AcpMessageWidget markdown: math images, <details> toggle, align, link routing ---
+qt_add_executable(test_acp_message_widget_markdown test_acp_message_widget_markdown.cpp)
+target_include_directories(test_acp_message_widget_markdown PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_acp_message_widget_markdown PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_acp_message_widget_markdown PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.h
+    ${MARKDOWN_RENDER_SOURCES}
+)
+add_test(NAME AcpMessageWidgetMarkdown COMMAND test_acp_message_widget_markdown)
+
+# --- MarkdownView: the shared markdown renderer (chat + file preview), width cap ---
+qt_add_executable(test_markdown_view test_markdown_view.cpp)
+target_include_directories(test_markdown_view PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_markdown_view PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_markdown_view PRIVATE ${MARKDOWN_RENDER_SOURCES})
+add_test(NAME MarkdownView COMMAND test_markdown_view)
+
+# --- MarkdownPreviewSupport: source clamp + scroll-sync mapping (pure) ---
+qt_add_executable(test_markdown_preview_support test_markdown_preview_support.cpp)
+target_include_directories(test_markdown_preview_support PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_markdown_preview_support PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME MarkdownPreviewSupport COMMAND test_markdown_preview_support)

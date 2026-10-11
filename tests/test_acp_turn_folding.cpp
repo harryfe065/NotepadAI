@@ -38,6 +38,9 @@ private slots:
     void workedMsUnknownWithoutTimestamps();
     void agentOnlyPrefixIsATurn();
     void unknownToolCallIsIgnored();
+    void newestTurnBeginFindsLastPrompt();
+    void toolCallsAreCounted();
+    void reportOnlyTurnKeepsDurationRow();
 };
 
 namespace {
@@ -298,6 +301,53 @@ void TestAcpTurnFolding::unknownToolCallIsIgnored()
     f.msg("assistant", QStringLiteral("report"));
     f.msg("user", QStringLiteral("q2"));
     QVERIFY(f.run().isEmpty());
+}
+
+void TestAcpTurnFolding::newestTurnBeginFindsLastPrompt()
+{
+    Fx f;
+    QCOMPARE(AcpTurnFolding::newestTurnBegin(f.tl, f.msgs), -1);
+
+    f.tool(QStringLiteral("t0"));
+    f.msg("assistant", QStringLiteral("hello"));
+    QCOMPARE(AcpTurnFolding::newestTurnBegin(f.tl, f.msgs), 0); // agent-only prefix
+
+    f.msg("user", QStringLiteral("q1"));
+    const int q2 = f.msg("user", QStringLiteral("q2"));
+    f.tool(QStringLiteral("t1"));
+    f.msg("assistant", QStringLiteral("r2"));
+    QCOMPARE(AcpTurnFolding::newestTurnBegin(f.tl, f.msgs), q2);
+}
+
+void TestAcpTurnFolding::toolCallsAreCounted()
+{
+    Fx f;
+    f.msg("user", QStringLiteral("q1"));
+    f.msg("assistant", QStringLiteral("looking"));
+    f.tool(QStringLiteral("t1"));
+    f.tool(QStringLiteral("t2"));
+    f.tool(QStringLiteral("ghost"), false); // unknown: renders nothing, not counted
+    f.msg("assistant", QStringLiteral("report"));
+    f.msg("user", QStringLiteral("q2"));
+
+    const auto turns = f.run();
+    QCOMPARE(turns.size(), 1);
+    QCOMPARE(turns.at(0).toolCalls, 2);
+}
+
+void TestAcpTurnFolding::reportOnlyTurnKeepsDurationRow()
+{
+    Fx f;
+    f.msg("user", QStringLiteral("hi"), 1000);
+    const int rep = f.msg("assistant", QStringLiteral("hello"), 3000);
+    f.msg("user", QStringLiteral("q2"), 9000);
+
+    const auto turns = f.run();
+    QCOMPARE(turns.size(), 1);
+    QVERIFY(turns.at(0).folded.isEmpty());
+    QCOMPARE(turns.at(0).survivor, rep);
+    QCOMPARE(turns.at(0).workedMs, qint64(2000));
+    QCOMPARE(turns.at(0).toolCalls, 0);
 }
 
 QTEST_APPLESS_MAIN(TestAcpTurnFolding)

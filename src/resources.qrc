@@ -59,5 +59,7 @@
         <file>icons/circle-stop.svg</file>
         <file>icons/copy.svg</file>
         <file>icons/ssh-badge.svg</file>
+        <file>fonts/STIXTwoMath-Regular.ttf</file>
+        <file>fonts/STIXTwoMath-OFL.txt</file>
     </qresource>
 </RCC>

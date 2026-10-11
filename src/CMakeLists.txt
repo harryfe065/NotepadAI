@@ -14,6 +14,10 @@ qt_add_executable(NotepadAI
 	AcpSessionModel.h
 	AcpTranscriptTruncation.h
 	AcpTurnFolding.h
+	markdown/MarkdownPreprocessor.h
+	markdown/MathLayout.h
+	markdown/MathParser.h
+	markdown/MathRenderCache.h
 	ActionUtils.h
 	ApplicationSettings.h
 	CronExpression.h
@@ -69,8 +73,8 @@ qt_add_executable(NotepadAI
 	CsvSortFilter.h
 	CsvFilterStrip.h
 	IFaceTable.h
+	MarkdownPreviewSupport.h
 	MarkdownPreviewWidget.h
-	MarkdownRenderer.h
 	PandocExporter.h
 	PreviewContentWidget.h
 	PreviewTabManager.h
@@ -130,6 +134,10 @@ qt_add_executable(NotepadAI
 	AcpSessionModel.cpp
 	AcpTranscriptTruncation.cpp
 	AcpTurnFolding.cpp
+	markdown/MarkdownPreprocessor.cpp
+	markdown/MathLayout.cpp
+	markdown/MathParser.cpp
+	markdown/MathRenderCache.cpp
 	LocalAcpProcessChannel.cpp
 	SshAcpProcessChannel.cpp
 	CronExpression.cpp
@@ -178,7 +186,6 @@ qt_add_executable(NotepadAI
 	CsvFilterStrip.cpp
 	IFaceTable.cpp
 	MarkdownPreviewWidget.cpp
-	MarkdownRenderer.cpp
 	PandocExporter.cpp
 	PreviewTabManager.cpp
 	IFaceTableMixer.cpp
@@ -451,7 +458,10 @@ qt_add_executable(NotepadAI
     widgets/AcpImageAttachmentList.cpp
 	widgets/AcpImageAttachmentList.h
 	widgets/AcpMessageWidget.cpp
+	widgets/MarkdownView.cpp
 	widgets/AcpMessageWidget.h
+	widgets/ChatFont.h
+	widgets/MarkdownView.h
 	widgets/AcpPermissionPrompt.cpp
 	widgets/AcpPermissionPrompt.h
 	widgets/AcpPlanWidget.cpp

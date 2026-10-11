@@ -2,24 +2,29 @@
 #define MARKDOWNPREVIEWWIDGET_H
 
 #include "PreviewContentWidget.h"
-#include "MarkdownRenderer.h"
 
-#include <QTextBrowser>
-#include <QTextBlock>
-#include <QFutureWatcher>
-#include <QHash>
-#include <QUrl>
-#include <QTimer>
-#include <atomic>
+#include <QString>
 
+class MarkdownView;
 class NotepadNextApplication;
-class QToolButton;
 
+// The file Markdown preview. It renders with the same engine as the chat
+// transcript (MarkdownView: math, allowlisted HTML, <details>, code surfaces,
+// copy button, safe links) in the same typeface, and caps the text column so
+// long lines stay readable on wide windows.
 class MarkdownPreviewWidget : public PreviewContentWidget
 {
     Q_OBJECT
 
 public:
+    // Text column cap, in device-independent pixels (about 100 characters of body
+    // text); wider windows get centred margins instead of ever-longer lines.
+    static constexpr int kMaxContentWidth = 860;
+
+    // Previews above this many characters are cut (a notice is appended) so a huge
+    // file cannot stall the UI thread: rendering is synchronous, like chat's.
+    static constexpr int kMaxSourceChars = 512 * 1024;
+
     explicit MarkdownPreviewWidget(NotepadNextApplication *app, QWidget *parent = nullptr);
 
     QString typeId() const override { return QStringLiteral("markdown"); }
@@ -28,36 +33,22 @@ public:
     void refresh(const QString &text) override;
     void applyTheme(const QPalette &palette, bool isDark) override;
 
+    // Approximate scroll sync with the source editor: the same proportional
+    // mapping the editor's scroll position implies (line / total lines).
     void scrollToLine(int line);
 
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
+    // Exposed for tests and for the owner's chrome.
+    MarkdownView *view() const { return m_view; }
 
 private:
-    void renderAsync(const QString &text);
-    void applyHtml(const QString &html);
-    MarkdownRenderRequest buildRequest(const QString &text);
-    void onFontChanged();
-    void updateCopyButtonPosition(const QPoint &mousePos);
-    void copyCurrentCodeBlock();
-    QString extractCodeBlockText(const QTextBlock &block) const;
-    bool isCodeBlock(const QTextBlock &block) const;
+    void render(const QString &text);
+    void applyFont();
 
     NotepadNextApplication *m_app;
-    QTextBrowser *m_browser;
-    QToolButton *m_copyBtn = nullptr;
-    QTextBlock m_hoveredCodeBlock;
+    MarkdownView *m_view;
     QString m_title;
     QString m_basePath;
-    QPalette m_palette;
-    bool m_isDark = false;
-    QString m_cachedHtml;
-    QString m_lastSourceText;
-    std::atomic<int> m_renderGeneration{0};
-    QFutureWatcher<MarkdownRenderResult> *m_watcher = nullptr;
-
-    QHash<QUrl, QVariant> m_imageCache;
-    QTimer m_relayoutTimer;
+    int m_sourceLines = 1;
 };
 
 #endif // MARKDOWNPREVIEWWIDGET_H
