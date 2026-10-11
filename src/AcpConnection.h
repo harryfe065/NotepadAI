@@ -328,6 +328,9 @@ private:
     // session/prompt to bound them, so this is what keeps the turn open while
     // a long tool runs silently.
     QSet<QString> m_openToolCalls;
+    // Advisor is a server tool whose result the adapter drops; its trailing
+    // "failed" update is normalized to completed (see tool_call_update).
+    QSet<QString> m_advisorToolCallIds;
     QVector<AcpProtocol::AcpBackgroundTask> m_liveAsyncTasks; // spawn order; a handful at most
     int liveTaskIndex(const QString &taskId) const;
     QStringList m_lastEmittedAsyncToolIds;

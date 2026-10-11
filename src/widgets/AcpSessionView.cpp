@@ -27,6 +27,7 @@
 #include "AcpPromptQueueStrip.h"
 #include "AcpSessionModel.h"
 #include "AcpToolCallCard.h"
+#include "AcpTurnFoldRow.h"
 #include "AcpTranscriptTruncation.h"
 #include "AcpUsageIndicator.h"
 #include "AiAgentDock.h"
@@ -279,16 +280,7 @@ private:
     AcpImageAttachmentList *m_attachments;
 };
 
-bool messageHasVisibleContent(const AcpMessage &msg)
-{
-    for (const auto &block : msg.content) {
-        if (block.kind == AcpProtocol::AcpContentBlock::Kind::Image && !block.imageData.isEmpty())
-            return true;
-        if (!block.text.trimmed().isEmpty())
-            return true;
-    }
-    return false;
-}
+using AcpTurnFolding::messageHasVisibleContent;
 
 } // namespace
 
@@ -481,11 +473,20 @@ void AcpSessionView::buildUi()
         "QCheckBox:checked { color: #856404; font-weight: 600; }"));
     m_newWorktreeCheck = new QCheckBox(tr("New worktree"), this);
     m_newWorktreeCheck->setToolTip(tr("Do this conversation in a new git worktree, then merge and clean up"));
+    m_advisorBtn = new QCheckBox(tr("Advisor"), this);
+    m_advisorBtn->setToolTip(tr("Let the agent consult a stronger model (sends /advisor)"));
+    // King gold when on, matching the advisor tool-call card.
+    m_advisorBtn->setStyleSheet(QStringLiteral(
+        "QCheckBox:checked { color: #FFD700; font-weight: 600; }"));
+    m_advisorBtn->hide(); // shown only while the agent advertises /advisor
+    // clicked, not toggled: programmatic resets must not send a command.
+    connect(m_advisorBtn, &QCheckBox::clicked, this, &AcpSessionView::onAdvisorClicked);
     auto *autoApproveRow = new QHBoxLayout();
     autoApproveRow->setContentsMargins(0, 0, 0, 0);
     autoApproveRow->setSpacing(6);
     autoApproveRow->addWidget(m_autoApproveCheck);
     autoApproveRow->addWidget(m_newWorktreeCheck);
+    autoApproveRow->addWidget(m_advisorBtn);
     autoApproveRow->addStretch();
     m_usageIndicator = new AcpUsageIndicator(this);
     autoApproveRow->addWidget(m_usageIndicator);
@@ -848,12 +849,36 @@ void AcpSessionView::hydrateFromModel()
     const auto &timeline = m_model->timeline();
     const auto &messages = m_model->messages();
     const auto &toolCalls = m_model->toolCalls();
+    // Finished turns fold to a "Worked for Xs" row: their tool calls and
+    // intermediate messages are never instantiated until the user expands.
+    const QVector<AcpTurnFolding::Turn> turns =
+        AcpTurnFolding::compute(timeline, messages, toolCalls);
+    m_foldedMask.fill(0, timeline.size());
+    m_foldedCount = 0;
+    QHash<int, const AcpTurnFolding::Turn *> foldAt; // first folded entry -> its turn
+    for (const AcpTurnFolding::Turn &turn : turns) {
+        foldAt.insert(turn.folded.first(), &turn);
+        setFoldedMask(turn.folded, true);
+    }
     const AcpTranscriptTruncation::Plan plan =
-        AcpTranscriptTruncation::compute(timeline, messages);
+        AcpTranscriptTruncation::compute(timeline, messages,
+                                         AcpTranscriptTruncation::kMaxVisibleEvents,
+                                         &m_foldedMask);
     recordTruncation(plan);
 
     int pendingHidden = 0;
     for (int i = 0; i < timeline.size(); ++i) {
+        if (m_foldedMask.at(i) != 0) {
+            const auto fold = foldAt.constFind(i);
+            if (fold != foldAt.constEnd()) {
+                if (pendingHidden > 0) {
+                    insertTimelineWidget(makeTruncationPlaceholder(pendingHidden), false);
+                    pendingHidden = 0;
+                }
+                insertTimelineWidget(makeFoldRow(*fold.value()), false);
+            }
+            continue;
+        }
         if (plan.visible.at(i) == 0) {
             ++pendingHidden;
             continue;
@@ -862,35 +887,8 @@ void AcpSessionView::hydrateFromModel()
             insertTimelineWidget(makeTruncationPlaceholder(pendingHidden), false);
             pendingHidden = 0;
         }
-        const AcpTimelineEntry &entry = timeline.at(i);
-        if (entry.kind == AcpTimelineEntry::Kind::Message
-            && entry.messageIndex >= 0
-            && entry.messageIndex < messages.size()) {
-            const AcpMessage &msg = messages.at(entry.messageIndex);
-            if (!messageHasVisibleContent(msg))
-                continue;
-            auto *w = new AcpMessageWidget(msg.role, m_transcriptHost);
-            w->setChatFont(chatFont()); // styled widget: must set font explicitly
-            if (msg.fromGoalAgent
-                || msg.marker == QLatin1String(kAcpMarkerGoalAchieved)) {
-                w->setFromGoalAgent(true);
-            } else if (msg.fromGoalJudge) {
-                w->setGoalTint(true);
-            }
-            w->setContent(msg.content);
+        if (QWidget *w = createEntryWidget(timeline.at(i)))
             insertTimelineWidget(w, false);
-            m_messageWidgets.insert(entry.messageIndex, w);
-        } else if (entry.kind == AcpTimelineEntry::Kind::ToolCall) {
-            auto it = toolCalls.find(entry.toolCallId);
-            if (it != toolCalls.end()) {
-                auto *card = new AcpToolCallCard(it.value(), m_transcriptHost);
-                card->setChatFont(chatFont()); // styled widget: must set font explicitly
-                if (isGoalJudgeToolId(it.key()))
-                    card->setGoalTint(true);
-                insertTimelineWidget(card, false);
-                m_toolCallCards.insert(entry.toolCallId, card);
-            }
-        }
     }
     if (pendingHidden > 0) {
         insertTimelineWidget(makeTruncationPlaceholder(pendingHidden), false);
@@ -991,6 +989,10 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_truncationPlaceholders.clear();
     m_truncatedMessageIndices.clear();
     m_truncatedToolCallIds.clear();
+    m_foldedTurns.clear();
+    m_foldedMask.clear();
+    m_foldedCount = 0;
+    if (m_advisorBtn) m_advisorBtn->setChecked(false); // new session: advisor state unknown
     if (m_planWidget) {
         m_planWidget->setEntries({});
         m_planWidget->hide();
@@ -1099,6 +1101,206 @@ void AcpSessionView::removeTranscriptWidget(QWidget *w)
     w->deleteLater();
 }
 
+// Builds (and registers) the widget for one timeline entry; the caller places
+// it. Null when the entry renders nothing (empty bubble, unknown tool call).
+QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry)
+{
+    if (!m_model) return nullptr;
+    if (entry.kind == AcpTimelineEntry::Kind::Message) {
+        const auto &messages = m_model->messages();
+        if (entry.messageIndex < 0 || entry.messageIndex >= messages.size())
+            return nullptr;
+        const AcpMessage &msg = messages.at(entry.messageIndex);
+        if (!messageHasVisibleContent(msg))
+            return nullptr;
+        auto *w = new AcpMessageWidget(msg.role, m_transcriptHost);
+        w->setChatFont(chatFont()); // styled widget: must set font explicitly
+        if (msg.fromGoalAgent
+            || msg.marker == QLatin1String(kAcpMarkerGoalAchieved)) {
+            w->setFromGoalAgent(true);
+        } else if (msg.fromGoalJudge) {
+            w->setGoalTint(true);
+        }
+        w->setContent(msg.content);
+        m_messageWidgets.insert(entry.messageIndex, w);
+        return w;
+    }
+    const auto it = m_model->toolCalls().constFind(entry.toolCallId);
+    if (it == m_model->toolCalls().constEnd())
+        return nullptr;
+    auto *card = new AcpToolCallCard(it.value(), m_transcriptHost);
+    card->setChatFont(chatFont()); // styled widget: must set font explicitly
+    if (isGoalJudgeToolId(it.key()))
+        card->setGoalTint(true);
+    m_toolCallCards.insert(entry.toolCallId, card);
+    return card;
+}
+
+void AcpSessionView::removeEntryWidget(const AcpTimelineEntry &entry)
+{
+    if (entry.kind == AcpTimelineEntry::Kind::Message) {
+        if (AcpMessageWidget *w = m_messageWidgets.take(entry.messageIndex)) {
+            if (m_activeThought == w)
+                m_activeThought.clear();
+            removeTranscriptWidget(w);
+        }
+    } else if (AcpToolCallCard *c = m_toolCallCards.take(entry.toolCallId)) {
+        m_currentGroupCards.removeAll(c);
+        removeTranscriptWidget(c);
+    }
+}
+
+void AcpSessionView::setFoldedMask(const QVector<int> &entries, bool folded)
+{
+    if (!m_model) return;
+    const auto &timeline = m_model->timeline();
+    if (m_foldedMask.size() < timeline.size())
+        m_foldedMask.resize(timeline.size());
+    for (int i : entries) {
+        if (i < 0 || i >= timeline.size())
+            continue;
+        const std::uint8_t want = folded ? 1 : 0;
+        if (m_foldedMask.at(i) == want)
+            continue;
+        m_foldedMask[i] = want;
+        m_foldedCount += folded ? 1 : -1;
+        // Updates for a folded entry must not resurrect its widget: reuse the
+        // truncation suppression sets that every update path already consults.
+        const AcpTimelineEntry &e = timeline.at(i);
+        if (e.kind == AcpTimelineEntry::Kind::Message) {
+            if (folded) m_truncatedMessageIndices.insert(e.messageIndex);
+            else m_truncatedMessageIndices.remove(e.messageIndex);
+        } else {
+            if (folded) m_truncatedToolCallIds.insert(e.toolCallId);
+            else m_truncatedToolCallIds.remove(e.toolCallId);
+        }
+    }
+}
+
+AcpTurnFoldRow *AcpSessionView::makeFoldRow(const AcpTurnFolding::Turn &turn)
+{
+    auto *row = new AcpTurnFoldRow(turn.workedMs, m_transcriptHost);
+    row->setChatFont(chatFont());
+    const int begin = turn.begin;
+    connect(row, &AcpTurnFoldRow::expandedChanged, this,
+            [this, begin](bool expanded) { setTurnExpanded(begin, expanded); });
+    FoldedTurn ft;
+    ft.row = row;
+    ft.entries = turn.folded;
+    m_foldedTurns.insert(begin, ft);
+    return row;
+}
+
+void AcpSessionView::foldCompletedTurns()
+{
+    if (!m_model || !m_transcriptLayout) return;
+    const auto &timeline = m_model->timeline();
+    const QVector<AcpTurnFolding::Turn> turns = AcpTurnFolding::compute(
+        timeline, m_model->messages(), m_model->toolCalls());
+    bool any = false;
+    for (const AcpTurnFolding::Turn &turn : turns) {
+        if (m_foldedTurns.contains(turn.begin))
+            continue; // already folded (possibly re-expanded by the user)
+        foldTurn(turn);
+        any = true;
+    }
+    if (!any) return;
+
+    // Folded entries no longer count toward the render cap and any hidden-gap
+    // label that only covered them is stale.
+    const AcpTranscriptTruncation::Plan plan = AcpTranscriptTruncation::compute(
+        timeline, m_model->messages(), AcpTranscriptTruncation::kMaxVisibleEvents,
+        &m_foldedMask);
+    if (!m_truncationPlaceholders.isEmpty() || !plan.gaps.isEmpty())
+        rebuildTruncationPlaceholders(plan);
+    syncTranscriptHostWidth();
+}
+
+void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
+{
+    const auto &timeline = m_model->timeline();
+    // The row takes the slot of the first folded widget that exists; fall back
+    // to the report, then to whatever follows the turn.
+    QWidget *before = nullptr;
+    for (int i : turn.folded) {
+        if ((before = widgetForTimelineEntry(timeline.at(i))))
+            break;
+    }
+    if (!before && turn.survivor >= 0)
+        before = widgetForTimelineEntry(timeline.at(turn.survivor));
+    if (!before && turn.end < timeline.size())
+        before = widgetForTimelineEntry(timeline.at(turn.end));
+    const int at = before ? m_transcriptLayout->indexOf(before) : -1;
+    AcpTurnFoldRow *row = makeFoldRow(turn);
+    if (at >= 0)
+        m_transcriptLayout->insertWidget(at, row);
+    else
+        insertTimelineWidget(row, false);
+
+    for (int i : turn.folded)
+        removeEntryWidget(timeline.at(i));
+    setFoldedMask(turn.folded, true);
+}
+
+void AcpSessionView::setTurnExpanded(int turnBegin, bool expanded)
+{
+    auto it = m_foldedTurns.find(turnBegin);
+    if (it == m_foldedTurns.end() || !m_model || !m_transcriptLayout) return;
+    FoldedTurn &ft = it.value();
+    if (ft.expanded == expanded) return;
+    ft.expanded = expanded;
+    if (ft.row) ft.row->setExpanded(expanded);
+
+    const auto &timeline = m_model->timeline();
+    if (expanded) {
+        setFoldedMask(ft.entries, false);
+        int at = ft.row ? m_transcriptLayout->indexOf(ft.row) + 1 : -1;
+        for (int i : ft.entries) {
+            if (i < 0 || i >= timeline.size())
+                continue;
+            QWidget *w = createEntryWidget(timeline.at(i));
+            if (!w)
+                continue;
+            if (at >= 0)
+                m_transcriptLayout->insertWidget(at++, w);
+            else
+                insertTimelineWidget(w, false);
+        }
+    } else {
+        for (int i : ft.entries) {
+            if (i >= 0 && i < timeline.size())
+                removeEntryWidget(timeline.at(i));
+        }
+        setFoldedMask(ft.entries, true);
+    }
+    syncTranscriptHostWidth();
+}
+
+// A goal-judge turn is removed from the tail of the timeline; a fold recorded
+// for entries that no longer exist must go with it.
+void AcpSessionView::pruneStaleFoldedTurns()
+{
+    if (!m_model) return;
+    const int n = m_model->timeline().size();
+    for (auto it = m_foldedTurns.begin(); it != m_foldedTurns.end();) {
+        bool stale = it.key() >= n;
+        for (int i : it.value().entries)
+            stale = stale || i >= n;
+        if (!stale) {
+            ++it;
+            continue;
+        }
+        if (it.value().row)
+            removeTranscriptWidget(it.value().row);
+        it = m_foldedTurns.erase(it);
+    }
+    if (m_foldedMask.size() > n)
+        m_foldedMask.resize(n);
+    m_foldedCount = 0;
+    for (std::uint8_t v : m_foldedMask)
+        m_foldedCount += v != 0 ? 1 : 0;
+}
+
 QWidget *AcpSessionView::widgetForTimelineEntry(const AcpTimelineEntry &entry) const
 {
     if (entry.kind == AcpTimelineEntry::Kind::Message)
@@ -1168,7 +1370,7 @@ void AcpSessionView::maybeTruncateTranscript()
 {
     if (!m_model || !m_transcriptLayout) return;
     const auto &timeline = m_model->timeline();
-    const int n = timeline.size();
+    const int n = timeline.size() - m_foldedCount; // folded entries have no widgets
     const bool alreadyTruncating = !m_truncatedMessageIndices.isEmpty()
                                    || !m_truncatedToolCallIds.isEmpty()
                                    || !m_truncationPlaceholders.isEmpty();
@@ -1180,8 +1382,9 @@ void AcpSessionView::maybeTruncateTranscript()
         return;
     }
 
-    const AcpTranscriptTruncation::Plan plan =
-        AcpTranscriptTruncation::compute(timeline, m_model->messages());
+    const AcpTranscriptTruncation::Plan plan = AcpTranscriptTruncation::compute(
+        timeline, m_model->messages(), AcpTranscriptTruncation::kMaxVisibleEvents,
+        &m_foldedMask);
     bool anyRemoved = false;
     const int lim = qMin(plan.visible.size(), n);
     for (int i = 0; i < lim; ++i) {
@@ -1235,6 +1438,10 @@ void AcpSessionView::appendMessageWidget(int idx)
     w->setContent(msg.content);
     insertTimelineWidget(w);
     m_messageWidgets.insert(idx, w);
+
+    // A new prompt closes the previous turn for review: fold it to "Worked for Xs".
+    if (msg.role == QLatin1String("user"))
+        foldCompletedTurns();
 
     // If a thought was streaming and an assistant message starts, collapse it.
     if (msg.role == QLatin1String("assistant") && !m_activeThought.isNull()) {
@@ -1344,6 +1551,9 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
         // Apply as an update: build an update payload from the latest state.
         AcpProtocol::AcpToolCallUpdate upd;
         upd.id = tc.id;
+        if (!tc.name.isEmpty()) {
+            upd.name = tc.name;
+        }
         if (!tc.title.isEmpty()) {
             upd.title = tc.title;
         }
@@ -1352,6 +1562,9 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
         }
         upd.status = tc.status;
         upd.backgroundRunning = tc.backgroundRunning;
+        if (tc.durationMs >= 0) {
+            upd.durationMs = tc.durationMs;
+        }
         upd.content = tc.content;
         if (!tc.rawInput.isEmpty()) {
             upd.rawInput = tc.rawInput;
@@ -1484,6 +1697,7 @@ void AcpSessionView::onMetadataChanged()
     m_effortCombo->setVisible(m_effortCombo->count() > 0);
 
     m_updatingSelectors = false;
+    updateAdvisorButton();
 
     // Once the agent's catalogs have arrived, push any saved per-agent
     // selections back into the session (one-shot per session).
@@ -1518,6 +1732,42 @@ void AcpSessionView::onMetadataChanged()
             }
         }
     }
+}
+
+void AcpSessionView::updateAdvisorButton()
+{
+    if (!m_advisorBtn || !m_model) return;
+    const bool offered = AcpProtocol::commandsIncludeAdvisor(m_model->availableCommands());
+    if (!offered && m_advisorBtn->isChecked())
+        m_advisorBtn->setChecked(false);
+    m_advisorBtn->setVisible(offered);
+}
+
+void AcpSessionView::onAdvisorClicked(bool on)
+{
+    sendAdvisorCommand(on);
+    if (m_input) m_input->setFocus(); // the checkbox took focus; hand it back to the chat input
+}
+
+void AcpSessionView::sendAdvisorCommand(bool on)
+{
+    if (!m_connection || !m_model || !m_modelCombo) return;
+    const int idx = m_modelCombo->currentIndex();
+    submitSlashCommand(AcpProtocol::advisorCommandText(
+        on, m_modelCombo->itemData(idx).toString(), m_modelCombo->itemText(idx)));
+}
+
+// Same routing as typing the command and pressing Send: queued while a turn
+// is running, dispatched immediately otherwise.
+void AcpSessionView::submitSlashCommand(const QString &text)
+{
+    if (!m_connection || !m_model) return;
+    if (m_model->isProcessing()) {
+        m_promptQueue.enqueue({text, {}});
+        refreshQueueStrip();
+        return;
+    }
+    dispatchPrompt(text, {});
 }
 
 void AcpSessionView::onCurrentModeChanged(const QString &modeId)
@@ -1570,6 +1820,7 @@ void AcpSessionView::onIsProcessingChanged(bool processing)
 void AcpSessionView::onTurnEnded(int groupId)
 {
     Q_UNUSED(groupId);
+    foldCompletedTurns(); // e.g. a steering prompt landed mid-turn
     if (m_currentGroupCards.size() > 3) {
         for (auto *card : m_currentGroupCards) {
             if (card && !card->shouldPreserveExpanded()) card->setCollapsed(true);
@@ -1581,6 +1832,7 @@ void AcpSessionView::onTurnEnded(int groupId)
 void AcpSessionView::onGoalJudgeTurnRemoved(const QVector<int> &messageIndices,
                                            const QStringList &toolCallIds)
 {
+    pruneStaleFoldedTurns();
     for (int idx : messageIndices) {
         if (AcpMessageWidget *w = m_messageWidgets.take(idx)) {
             if (m_activeThought == w)
@@ -1981,6 +2233,9 @@ void AcpSessionView::onModelComboChanged(int index)
     if (m_registry) {
         m_registry->setAgentPreference(m_connection->definition().id, prefKey, id);
     }
+    // The advisor tracks the selected model's level: re-point it.
+    if (m_advisorBtn && m_advisorBtn->isVisible() && m_advisorBtn->isChecked())
+        sendAdvisorCommand(true);
 }
 
 

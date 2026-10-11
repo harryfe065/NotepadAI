@@ -13,6 +13,7 @@ qt_add_executable(NotepadAI
 	AcpProtocol.h
 	AcpSessionModel.h
 	AcpTranscriptTruncation.h
+	AcpTurnFolding.h
 	ActionUtils.h
 	ApplicationSettings.h
 	CronExpression.h
@@ -128,6 +129,7 @@ qt_add_executable(NotepadAI
 	AcpProtocol.cpp
 	AcpSessionModel.cpp
 	AcpTranscriptTruncation.cpp
+	AcpTurnFolding.cpp
 	LocalAcpProcessChannel.cpp
 	SshAcpProcessChannel.cpp
 	CronExpression.cpp
@@ -460,6 +462,8 @@ qt_add_executable(NotepadAI
 	widgets/AcpSessionView.h
 	widgets/AcpToolCallCard.cpp
 	widgets/AcpToolCallCard.h
+	widgets/AcpTurnFoldRow.cpp
+	widgets/AcpTurnFoldRow.h
 	widgets/AcpUsageIndicator.cpp
 	widgets/AcpUsageIndicator.h
 	widgets/AiDockSessionStrip.cpp

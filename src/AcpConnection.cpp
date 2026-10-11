@@ -677,7 +677,14 @@ void AcpConnection::dispatchSessionPrompt(const QString &text,
                             return;
                         }
                         stopSessionBusyRetry();
-                        emit requestFailed(rpcErrorMessage(error));
+                        if (AcpProtocol::rpcErrorIsIncompleteServerToolCall(error)) {
+                            // Turn ended normally; only the adapter's bookkeeping
+                            // for a server tool (advisor) is "incomplete".
+                            appendDebugLog(QStringLiteral("session/prompt: ignoring %1")
+                                               .arg(rpcErrorMessage(error)));
+                        } else {
+                            emit requestFailed(rpcErrorMessage(error));
+                        }
                     } else if (result.isObject()) {
                         stopSessionBusyRetry();
                         AcpProtocol::AcpUsage usage;
@@ -947,8 +954,11 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
         tc.status = update.value(QStringLiteral("status")).toString();
         tc.content = update.value(QStringLiteral("content")).toArray();
         tc.rawInput = update.value(QStringLiteral("rawInput")).toObject();
-        tc.rawOutput = update.value(QStringLiteral("rawOutput")).toObject();
+        tc.rawOutput = AcpProtocol::rawOutputToObject(update.value(QStringLiteral("rawOutput")));
         tc.groupId = update.value(QStringLiteral("groupId")).toInt(0);
+        if (AcpProtocol::isAdvisorToolName(tc.name)) {
+            m_advisorToolCallIds.insert(tc.id);
+        }
         noteScheduledJobUpdate(update);
         AcpProtocol::injectToolCallPath(
             tc.rawInput, update.value(QStringLiteral("locations")).toArray());
@@ -972,7 +982,14 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
             u.kind = toolKind.toString();
         }
         const QJsonValue st = update.value(QStringLiteral("status"));
-        if (st.isString()) {
+        const bool advisorFailed = st.toString() == QLatin1String("failed")
+            && m_advisorToolCallIds.remove(u.id);
+        if (advisorFailed) {
+            // The advisor ran (its answer is folded into the agent reply); only
+            // the adapter lost the result block. Don't paint it as an error.
+            u.status = QStringLiteral("completed");
+            trackToolCallStatus(u.id, *u.status);
+        } else if (st.isString()) {
             u.status = st.toString();
             trackToolCallStatus(u.id, *u.status);
         }
@@ -981,7 +998,17 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
         }
         noteScheduledJobUpdate(update);
         const QJsonValue c = update.value(QStringLiteral("content"));
-        if (c.isArray()) {
+        if (advisorFailed) {
+            QJsonObject text;
+            text.insert(QStringLiteral("type"), QStringLiteral("text"));
+            text.insert(QStringLiteral("text"),
+                        tr("Advisor consulted. The agent does not forward the advisor's "
+                           "answer; it is reflected in the reply below."));
+            QJsonObject block;
+            block.insert(QStringLiteral("type"), QStringLiteral("content"));
+            block.insert(QStringLiteral("content"), text);
+            u.content = QJsonArray{block};
+        } else if (c.isArray()) {
             u.content = c.toArray();
         }
         const QJsonValue ri = update.value(QStringLiteral("rawInput"));
@@ -991,8 +1018,8 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
                 *u.rawInput, update.value(QStringLiteral("locations")).toArray());
         }
         const QJsonValue ro = update.value(QStringLiteral("rawOutput"));
-        if (ro.isObject()) {
-            u.rawOutput = ro.toObject();
+        if (ro.isObject() || ro.isString() || ro.isArray()) {
+            u.rawOutput = AcpProtocol::rawOutputToObject(ro);
         }
         const QString termDelta = AcpProtocol::terminalOutputDeltaFromMeta(
             update.value(QStringLiteral("_meta")).toObject());
@@ -1662,7 +1689,7 @@ void AcpConnection::rearmScheduledJobExpiry()
     }
     const qint64 delay = std::max<qint64>(next - QDateTime::currentMSecsSinceEpoch(), 0);
     // QTimer takes an int; the 7-day cap on recurring jobs fits with room to spare.
-    m_scheduledExpiryTimer->start(static_cast<int>(std::min<qint64>(delay, std::numeric_limits<int>::max())));
+    m_scheduledExpiryTimer->start(static_cast<int>(std::min<qint64>(delay, (std::numeric_limits<int>::max)())));
 }
 
 bool AcpConnection::hasPendingBackgroundWork() const

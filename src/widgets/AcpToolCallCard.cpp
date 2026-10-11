@@ -877,10 +877,12 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     : QFrame(parent)
     , m_id(initial.id)
     , m_title(initial.title)
+    , m_name(initial.name)
     , m_kind(initial.kind)
     , m_status(initial.status)
     , m_backgroundRunning(initial.backgroundRunning)
     , m_groupId(initial.groupId)
+    , m_durationMs(initial.durationMs)
     , m_content(initial.content)
     , m_rawInput(initial.rawInput)
     , m_rawOutput(initial.rawOutput)
@@ -889,7 +891,13 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     setStyleSheet(QStringLiteral(
         "AcpToolCallCard { background: palette(base); border-radius: 4px; }"
         "AcpToolCallCard[goalAgent=\"true\"] { background: rgba(212, 175, 55, 48); "
-        "border: 1px solid rgba(212, 175, 55, 80); border-radius: 4px; }"));
+        "border: 1px solid rgba(212, 175, 55, 80); border-radius: 4px; }"
+        // King gold (#FFD700): the advisor consult stands out from ordinary tools.
+        "AcpToolCallCard[advisor=\"true\"] { background: rgba(255, 215, 0, 40); "
+        "border: 1px solid rgba(255, 215, 0, 160); border-radius: 4px; }"));
+    if (AcpProtocol::isAdvisorToolName(initial.name)) {
+        setProperty("advisor", true);
+    }
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(6, 4, 6, 4);
@@ -910,7 +918,12 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     m_expandBtn->setAutoRaise(true);
 
     header->addWidget(m_statusIcon);
+    m_durationLabel = new QLabel(this);
+    m_durationLabel->setEnabled(false); // dimmed, like secondary text
+    m_durationLabel->hide();
+
     header->addWidget(m_titleLabel, 1);
+    header->addWidget(m_durationLabel);
     header->addWidget(m_expandBtn);
 
     outer->addLayout(header);
@@ -986,6 +999,10 @@ void AcpToolCallCard::apply(const AcpProtocol::AcpToolCallUpdate &update)
             headerChanged = true;
         }
     }
+    if (update.name.has_value() && !update.name->isEmpty() && m_name != *update.name) {
+        m_name = *update.name;
+        headerChanged = true;
+    }
     if (update.kind.has_value()) {
         if (m_kind != *update.kind) {
             m_kind = *update.kind;
@@ -997,6 +1014,10 @@ void AcpToolCallCard::apply(const AcpProtocol::AcpToolCallUpdate &update)
             m_status = *update.status;
             headerChanged = true;
         }
+    }
+    if (update.durationMs.has_value() && m_durationMs != *update.durationMs) {
+        m_durationMs = *update.durationMs;
+        headerChanged = true;
     }
     if (update.backgroundRunning.has_value() && m_backgroundRunning != *update.backgroundRunning) {
         m_backgroundRunning = *update.backgroundRunning;
@@ -1083,6 +1104,30 @@ QString AcpToolCallCard::computeEnrichedTitle() const
         return AcpProtocol::toolCallStatusForUi(m_status) == QLatin1String("running")
             ? tr("Waiting for background jobs...")
             : tr("Background jobs complete");
+    }
+
+    // Agents that report the wire tool name plus a refined title (claude-agent-acp
+    // sends a placeholder like "Terminal"/"Find" first, then "echo hi", "Read a.txt")
+    // render as `Name: title` rather than being rebuilt from raw params.
+    if (!m_name.isEmpty() && !m_title.isEmpty()
+        && !m_title.contains(QLatin1String("codebase-retrieval"))
+        && !m_title.startsWith(QLatin1String("Tool: "))) {
+        static const QStringList placeholders = {
+            QStringLiteral("terminal"), QStringLiteral("find"), QStringLiteral("read file"),
+            QStringLiteral("preparing file…"), QStringLiteral("preparing file..."),
+            QStringLiteral("edit"), QStringLiteral("fetch"), QStringLiteral("task"),
+            QStringLiteral("grep"), QStringLiteral("search"), QStringLiteral("write"),
+            QStringLiteral("read"), QStringLiteral("think")
+        };
+        const QString lower = m_title.toLower();
+        if (lower != m_name.toLower() && !placeholders.contains(lower)) {
+            // "Read a.txt" -> "Read: a.txt": don't repeat the name the title already leads with.
+            if (m_title.startsWith(m_name, Qt::CaseInsensitive)
+                && m_title.size() > m_name.size() && m_title.at(m_name.size()).isSpace()) {
+                return QStringLiteral("%1: %2").arg(m_name, m_title.mid(m_name.size()).trimmed());
+            }
+            return QStringLiteral("%1: %2").arg(m_name, m_title);
+        }
     }
 
     QString t = m_title.isEmpty() ? m_id : m_title;
@@ -1261,8 +1306,20 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     return t;
 }
 
+void AcpToolCallCard::refreshDuration()
+{
+    // Only finished, foreground calls: a backgrounded command is `completed`
+    // at hand-off, so its measured time would be misleading.
+    const bool show = m_durationMs >= 0 && isTerminalStatus() && !m_backgroundRunning;
+    if (show) {
+        m_durationLabel->setText(AcpProtocol::formatToolDuration(m_durationMs));
+    }
+    m_durationLabel->setVisible(show);
+}
+
 void AcpToolCallCard::refreshHeader()
 {
+    refreshDuration();
     m_statusIcon->setText(statusGlyph());
     m_statusIcon->setToolTip(m_backgroundRunning ? tr("Running in the background") : QString());
     const QString shown = firstLines(computeEnrichedTitle(), 2);
@@ -1602,6 +1659,7 @@ void AcpToolCallCard::setChatFont(const QFont &font)
     //   the font's family/size into the inline CSS (see fontCssDecl).
     if (m_statusIcon) m_statusIcon->setFont(font);
     if (m_titleLabel) m_titleLabel->setFont(font);
+    if (m_durationLabel) m_durationLabel->setFont(font);
     if (m_body) m_body->document()->setDefaultFont(font);
 
     refreshHeader(); // re-elide title under the new font metrics

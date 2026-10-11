@@ -38,6 +38,7 @@ private slots:
     void lastAgentMayBeToolCall();
     void emptyTimeline();
     void gapsSitBetweenAnchorAndSummary_notAtHead();
+    void skippedEntriesDoNotCountOrGap();
 };
 
 namespace {
@@ -382,6 +383,48 @@ void TestAcpTranscriptTruncation::gapsSitBetweenAnchorAndSummary_notAtHead()
     QCOMPARE(p.gaps.at(1).hiddenCount, 1);
     QCOMPARE(p.gaps.at(1).beforeIndex, 6);
     QVERIFY(p.visible.at(0)); // user still first visible; no gap before it
+}
+
+void TestAcpTranscriptTruncation::skippedEntriesDoNotCountOrGap()
+{
+    // user, 300 folded tools (skipped), report, user, 10 tools, report
+    QVector<AcpMessage> msgs;
+    QVector<AcpTimelineEntry> tl;
+    QVector<std::uint8_t> skip;
+    auto addMsg = [&](const char *role) {
+        msgs.append(makeMsg(role));
+        tl.append(msgEntry(msgs.size() - 1));
+        skip.append(0);
+    };
+    auto addTool = [&](int i, bool folded) {
+        tl.append(toolEntry(QStringLiteral("t%1").arg(i)));
+        skip.append(folded ? 1 : 0);
+    };
+    addMsg("user");
+    for (int i = 0; i < 300; ++i)
+        addTool(i, true);
+    addMsg("assistant");
+    addMsg("user");
+    for (int i = 0; i < 10; ++i)
+        addTool(1000 + i, false);
+    addMsg("assistant");
+
+    // Without the mask 315 entries overflow the cap and live tools get hidden.
+    const Plan unmasked = AcpTranscriptTruncation::compute(tl, msgs);
+    QVERIFY(!unmasked.gaps.isEmpty());
+
+    // With the mask only 14 entries count: nothing hides, no gaps.
+    const Plan masked = AcpTranscriptTruncation::compute(tl, msgs, 256, &skip);
+    QVERIFY(masked.gaps.isEmpty());
+    QCOMPARE(masked.visibleCount, 14);
+    QCOMPARE(masked.visible.at(5), std::uint8_t(0)); // folded entry reports hidden
+    QCOMPARE(masked.visible.at(tl.size() - 2), std::uint8_t(1));
+
+    // A tight cap hides only unskipped entries and the gap ignores folded ones.
+    const Plan tight = AcpTranscriptTruncation::compute(tl, msgs, 8, &skip);
+    QCOMPARE(tight.gaps.size(), 1);
+    QVERIFY(tight.gaps.at(0).hiddenCount > 0);
+    QVERIFY(tight.gaps.at(0).hiddenCount <= 10);
 }
 
 QTEST_MAIN(TestAcpTranscriptTruncation)

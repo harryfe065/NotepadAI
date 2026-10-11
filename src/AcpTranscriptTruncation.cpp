@@ -44,14 +44,25 @@ bool isTurnAnchor(const AcpTimelineEntry &entry, const QVector<AcpMessage> &mess
 
 Plan compute(const QVector<AcpTimelineEntry> &timeline,
              const QVector<AcpMessage> &messages,
-             int maxVisible)
+             int maxVisible,
+             const QVector<std::uint8_t> *skip)
 {
     Plan plan;
     const int n = timeline.size();
     plan.visible.resize(n);
     plan.visible.fill(1);
-    plan.visibleCount = n;
-    if (n == 0 || maxVisible < 0 || n <= maxVisible)
+    auto skippedAt = [&](int i) -> bool {
+        return skip != nullptr && i < skip->size() && skip->at(i) != 0;
+    };
+    int effective = n;
+    for (int i = 0; i < n; ++i) {
+        if (skippedAt(i)) {
+            plan.visible[i] = 0;
+            --effective;
+        }
+    }
+    plan.visibleCount = effective;
+    if (n == 0 || maxVisible < 0 || effective <= maxVisible)
         return plan;
 
     auto pinnedAt = [&](int i) -> bool {
@@ -80,7 +91,7 @@ Plan compute(const QVector<AcpTimelineEntry> &timeline,
         const int a = starts.at(t);
         const int b = starts.at(t + 1);
         for (int i = b - 1; i >= a; --i) {
-            if (!pinnedAt(i)) {
+            if (!pinnedAt(i) && !skippedAt(i)) {
                 keepLast[i] = 1;
                 break;
             }
@@ -90,9 +101,9 @@ Plan compute(const QVector<AcpTimelineEntry> &timeline,
     // Hide oldest hideable agents until we are at the cap. Pins (user/goal/
     // system + per-turn last agent) are never touched, so visibleCount may
     // still exceed maxVisible when pins alone overflow.
-    int needToHide = n - maxVisible;
+    int needToHide = effective - maxVisible;
     for (int i = 0; i < n && needToHide > 0; ++i) {
-        if (pinnedAt(i) || keepLast.at(i) != 0)
+        if (skippedAt(i) || pinnedAt(i) || keepLast.at(i) != 0)
             continue;
         plan.visible[i] = 0;
         --plan.visibleCount;
@@ -102,6 +113,8 @@ Plan compute(const QVector<AcpTimelineEntry> &timeline,
     plan.gaps.reserve(turnCount);
     int run = 0;
     for (int i = 0; i < n; ++i) {
+        if (skippedAt(i))
+            continue; // folded: neither visible nor a hidden-event gap
         if (plan.visible.at(i) == 0) {
             ++run;
             continue;

@@ -578,6 +578,24 @@ QString formatWaitDuration(qint64 ms)
     return QStringLiteral("%1h %2m").arg(minutes / 60).arg(minutes % 60, 2, 10, QLatin1Char('0'));
 }
 
+QString formatToolDuration(qint64 ms)
+{
+    const qint64 total = qMax<qint64>(ms, 0) / 1000;
+    if (total == 0) {
+        return QStringLiteral("<1s");
+    }
+    const qint64 h = total / 3600;
+    const qint64 m = (total / 60) % 60;
+    const qint64 s = total % 60;
+    if (h > 0) {
+        return QStringLiteral("%1h%2m%3s").arg(h).arg(m).arg(s);
+    }
+    if (m > 0) {
+        return QStringLiteral("%1m%2s").arg(m).arg(s);
+    }
+    return QStringLiteral("%1s").arg(s);
+}
+
 QJsonObject clientCapabilitiesMeta()
 {
     QJsonObject air;
@@ -823,6 +841,44 @@ bool commandsIncludeGoal(const QList<AcpCommandInfo> &commands)
     return false;
 }
 
+bool commandsIncludeAdvisor(const QList<AcpCommandInfo> &commands)
+{
+    for (const AcpCommandInfo &cmd : commands) {
+        QStringView v{cmd.name};
+        v = v.trimmed();
+        while (!v.isEmpty() && v.front() == QLatin1Char('/'))
+            v = v.mid(1);
+        if (v.compare(QLatin1String("advisor"), Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
+QString advisorModelFor(const QString &modelValue, const QString &modelLabel)
+{
+    // Weakest first: the first family found in the value, else in the label.
+    struct Step { QLatin1String family; QLatin1String advisor; };
+    static const Step kSteps[] = {
+        {QLatin1String("haiku"), QLatin1String("sonnet")},
+        {QLatin1String("sonnet"), QLatin1String("opus")},
+        {QLatin1String("opus"), QLatin1String("fable")},
+        {QLatin1String("fable"), QLatin1String("fable")},
+    };
+    for (const QString &text : {modelValue, modelLabel}) {
+        for (const Step &s : kSteps) {
+            if (text.contains(s.family, Qt::CaseInsensitive))
+                return QString(s.advisor);
+        }
+    }
+    return QStringLiteral("opus");
+}
+
+QString advisorCommandText(bool on, const QString &modelValue, const QString &modelLabel)
+{
+    return on ? QStringLiteral("/advisor ") + advisorModelFor(modelValue, modelLabel)
+              : QStringLiteral("/advisor off");
+}
+
 void ensureHostGoalCommand(QList<AcpCommandInfo> &commands)
 {
     if (commandsIncludeGoal(commands))
@@ -847,6 +903,49 @@ bool rpcErrorIsSessionBusy(const QJsonValue &error)
     }
     return o.value(QStringLiteral("message")).toString()
         .contains(QLatin1String("already processing"), Qt::CaseInsensitive);
+}
+
+QJsonObject rawOutputToObject(const QJsonValue &raw)
+{
+    if (raw.isObject())
+        return raw.toObject();
+    if (raw.isString() || raw.isArray()) {
+        QJsonObject o;
+        o.insert(QStringLiteral("output"), raw);
+        return o;
+    }
+    return {};
+}
+
+bool isAdvisorToolName(const QString &name)
+{
+    return name == QLatin1String("advisor");
+}
+
+bool isServerToolCallId(const QString &id)
+{
+    return id.startsWith(QLatin1String("srvtoolu_"));
+}
+
+bool rpcErrorIsIncompleteServerToolCall(const QJsonValue &error)
+{
+    if (!error.isObject())
+        return false;
+    const QJsonObject o = error.toObject();
+    if (o.value(QStringLiteral("data")).toObject().value(QStringLiteral("errorKind")).toString()
+        != QLatin1String("incomplete_tool_call")) {
+        return false;
+    }
+    const QString msg = o.value(QStringLiteral("message")).toString();
+    const qsizetype colon = msg.lastIndexOf(QLatin1String(": "));
+    if (colon < 0)
+        return false;
+    const QList<QStringView> ids = QStringView(msg).mid(colon + 2).split(QLatin1Char(','));
+    for (const QStringView &id : ids) {
+        if (!id.trimmed().startsWith(QLatin1String("srvtoolu_")))
+            return false;
+    }
+    return !ids.isEmpty();
 }
 
 } // namespace AcpProtocol

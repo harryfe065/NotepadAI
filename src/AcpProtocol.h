@@ -103,6 +103,11 @@ struct AcpToolCall
     // task it started is still alive.
     bool backgrounded{false};
     bool backgroundRunning{false};
+    // Host-side run time. startedAtMs is live-only (epoch ms when first seen
+    // non-terminal); durationMs is set once on the first terminal status and
+    // persisted. -1 = unknown (restored/never observed running).
+    qint64 startedAtMs{0};
+    qint64 durationMs{-1};
 };
 
 // Needle match for ACP tool name or title. Prefer extra over dropping a write.
@@ -147,6 +152,8 @@ struct AcpToolCallUpdate
     std::optional<bool> backgrounded;
     // Host-side (not wire): the session view mirrors AcpToolCall::backgroundRunning.
     std::optional<bool> backgroundRunning;
+    // Host-side (not wire): mirrors AcpToolCall::durationMs once known.
+    std::optional<qint64> durationMs;
 };
 
 struct AcpPlanEntry
@@ -329,6 +336,8 @@ bool toolCallUpdateIsBackgrounded(const QJsonObject &update);
 
 // Compact wait clock: "4.2s" under a minute, "2m 05s" under an hour, then "1h 02m".
 QString formatWaitDuration(qint64 ms);
+// Compact tool run time: "<1s", "40s", "1m5s", "1h1m5s".
+QString formatToolDuration(qint64 ms);
 
 // `initialize.clientCapabilities._meta`: opt in to the AIR async-task events.
 // The agent requires `version` >= 1 and `capabilities` to be an array.
@@ -359,12 +368,38 @@ QJsonArray preserveDiffBlocks(const QJsonArray &incoming, const QJsonArray &prev
 // goal for side-prompt; host inject never counts as native.
 bool isGoalCommandName(const QString &name);
 bool commandsIncludeGoal(const QList<AcpCommandInfo> &commands);
+
+// Claude Code `/advisor` toggle. The UI button exists only when the agent
+// advertises the command (claude-agent-acp: hint "[fable|opus|sonnet|off]").
+bool commandsIncludeAdvisor(const QList<AcpCommandInfo> &commands);
+// Advisor = one level above the selected model: haiku -> sonnet -> opus -> fable
+// (fable stays fable). The family is read from the model value ("opus",
+// "claude-haiku-4-5-...") and, failing that, its label ("Sonnet 5.5"); an
+// unrecognised model (e.g. "default") gets "opus".
+QString advisorModelFor(const QString &modelValue, const QString &modelLabel = {});
+// "/advisor <advisor model>" when on, "/advisor off" when off.
+QString advisorCommandText(bool on, const QString &modelValue, const QString &modelLabel = {});
 // Prepend `goal` when missing. O(n) over a few dozen commands; no heap if present.
 void ensureHostGoalCommand(QList<AcpCommandInfo> &commands);
 
 // omp ACP rejects session/prompt while an ownerless turn is streaming.
 // Typed form (18.0.7+): data.reason == "session_busy". Older: message text.
 bool rpcErrorIsSessionBusy(const QJsonValue &error);
+
+// Anthropic server-side tools (advisor, web_search, ...) surface as tool calls
+// whose ids start with `srvtoolu_`. claude-agent-acp never forwards their
+// results, so it leaves them pending and, at end of turn, fails them and
+// answers session/prompt with -32603 data.errorKind "incomplete_tool_call".
+// Wire `rawOutput` is an object for most agents but a bare string/array for
+// claude-agent-acp (Bash "(Bash completed with no output)", Grep "No files
+// found"). Non-objects are wrapped as {"output": value} so the card can show
+// them; an empty/null value yields an empty object.
+QJsonObject rawOutputToObject(const QJsonValue &raw);
+bool isAdvisorToolName(const QString &name);
+bool isServerToolCallId(const QString &id);
+// True only when every call listed in that error is a server tool call: the
+// turn itself completed normally and the error carries no user-actionable fault.
+bool rpcErrorIsIncompleteServerToolCall(const QJsonValue &error);
 
 
 QJsonObject permissionOptionToJson(const AcpPermissionOption &opt);

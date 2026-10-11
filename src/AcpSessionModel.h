@@ -249,6 +249,11 @@ private:
     QSet<QString> m_backgroundToolCallIds;
     int m_streamingAssistantMessageIndex = -1;
     QString m_streamingAssistantMessageId;
+    // Bubble that was streaming when the turn was declared over. The host ends
+    // wake-up turns on an idle timer, so a slow stream can outlast it; a chunk
+    // with the same messageId must keep filling that bubble, not open a new one.
+    QString m_resumableAssistantMessageId;
+    int m_resumableAssistantMessageIndex = -1;
     int m_streamingThoughtMessageIndex = -1;
     int m_streamingGoalJudgeAssistantIndex = -1;
     int m_streamingGoalJudgeThoughtIndex = -1;

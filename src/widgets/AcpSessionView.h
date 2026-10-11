@@ -36,6 +36,7 @@
 #include "AcpPromptQueue.h"
 #include "AcpProtocol.h"
 #include "AcpTranscriptTruncation.h"
+#include "AcpTurnFolding.h"
 
 class AcpAgentRegistry;
 class AcpConnection;
@@ -46,6 +47,7 @@ class AcpPermissionPrompt;
 class AcpPromptQueueStrip;
 class AcpSessionModel;
 class AcpToolCallCard;
+class AcpTurnFoldRow;
 class AcpUsageIndicator;
 
 namespace ai { class PromptImprover; }
@@ -165,6 +167,7 @@ private slots:
     void onModelComboChanged(int index);
     void onModeComboChanged(int index);
     void onEffortComboChanged(int index);
+    void onAdvisorClicked(bool on);
     void onAutoApprovePolicyChanged(const QString &policy);
     void onJumpToBottomClicked();
     void onImproveClicked();
@@ -188,6 +191,18 @@ private:
     QLabel *makeTruncationPlaceholder(int hiddenCount);
     void rebuildTruncationPlaceholders(const AcpTranscriptTruncation::Plan &plan);
     void recordTruncation(const AcpTranscriptTruncation::Plan &plan);
+
+    // "Worked for Xs" folding of finished turns. Folded entries have NO widgets
+    // (nothing to lay out or paint); expanding instantiates them, collapsing
+    // destroys them. The newest turn is never folded.
+    void foldCompletedTurns();
+    void foldTurn(const AcpTurnFolding::Turn &turn);
+    void setTurnExpanded(int turnBegin, bool expanded);
+    void removeEntryWidget(const AcpTimelineEntry &entry);
+    QWidget *createEntryWidget(const AcpTimelineEntry &entry);
+    AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn);
+    void setFoldedMask(const QVector<int> &entries, bool folded);
+    void pruneStaleFoldedTurns();
     void syncTranscriptHostWidth();
     void scrollToBottomDeferred();
     void updateJumpButtonVisibility();
@@ -198,6 +213,11 @@ private:
     void refreshQueueStrip();
     void scheduleFlushQueuedPrompt();
     void flushQueuedPrompt();
+    // Claude Code `/advisor`: the button is shown only while the agent advertises
+    // the command; toggling sends `/advisor <model one level up>` or `/advisor off`.
+    void updateAdvisorButton();
+    void sendAdvisorCommand(bool on);
+    void submitSlashCommand(const QString &text);
     void dispatchPrompt(const QString &text,
                         const QVector<QPair<QByteArray, QString>> &images,
                         bool fromGoalAgent = false);
@@ -313,6 +333,7 @@ private:
     QPushButton *m_sendBtn = nullptr;
     QPushButton *m_cancelBtn = nullptr;
     QToolButton *m_attachBtn = nullptr;
+    QCheckBox *m_advisorBtn = nullptr;
     QToolButton *m_sendWithGoalBtn = nullptr;
 
     // Usage
@@ -350,6 +371,16 @@ private:
     QSet<int> m_truncatedMessageIndices;
     QSet<QString> m_truncatedToolCallIds;
     QVector<QLabel *> m_truncationPlaceholders;
+
+    struct FoldedTurn
+    {
+        QPointer<AcpTurnFoldRow> row;
+        QVector<int> entries; // timeline indices hidden while collapsed
+        bool expanded = false;
+    };
+    QHash<int, FoldedTurn> m_foldedTurns; // key: first timeline index of the turn
+    QVector<std::uint8_t> m_foldedMask;   // per timeline index; 1 = currently folded (no widget)
+    int m_foldedCount = 0;
     AcpPlanWidget *m_planWidget = nullptr;
     QPointer<AcpMessageWidget> m_activeThought;
     QPointer<AcpPermissionPrompt> m_activePermissionPrompt;

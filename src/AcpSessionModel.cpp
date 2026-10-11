@@ -239,6 +239,7 @@ void AcpSessionModel::loadFromDisk()
         tc.rawOutput = to.value(QStringLiteral("rawOutput")).toObject();
         tc.groupId = to.value(QStringLiteral("groupId")).toInt();
         tc.backgrounded = to.value(QStringLiteral("backgrounded")).toBool(false);
+        tc.durationMs = static_cast<qint64>(to.value(QStringLiteral("durationMs")).toDouble(-1));
         if (!tc.id.isEmpty()) {
             m_toolCalls.insert(tc.id, tc);
             if (tc.groupId > m_currentGroupId) {
@@ -328,6 +329,9 @@ QJsonObject AcpSessionModel::toHistoryJson() const
         to.insert(QStringLiteral("groupId"), tc.groupId);
         if (tc.backgrounded) {
             to.insert(QStringLiteral("backgrounded"), true);
+        }
+        if (tc.durationMs >= 0) {
+            to.insert(QStringLiteral("durationMs"), static_cast<double>(tc.durationMs));
         }
         if (!tc.rawInput.isEmpty()) {
             QJsonObject slim;
@@ -500,6 +504,19 @@ void AcpSessionModel::onInitialized(const AcpAgentInfo &info,
 
 void AcpSessionModel::onMessageChunk(const QString &text, const QString &messageId)
 {
+    if (m_streamingAssistantMessageIndex < 0 && !messageId.isEmpty()
+        && messageId == m_resumableAssistantMessageId) {
+        // Only when nothing landed after the bubble (user message, tool call, thought).
+        const int idx = m_resumableAssistantMessageIndex;
+        if (idx >= 0 && idx == m_messages.size() - 1 && !m_timeline.isEmpty()
+            && m_timeline.last().kind == AcpTimelineEntry::Kind::Message
+            && m_timeline.last().messageIndex == idx) {
+            m_streamingAssistantMessageIndex = idx;
+            m_streamingAssistantMessageId = messageId;
+        }
+    }
+    m_resumableAssistantMessageId.clear();
+    m_resumableAssistantMessageIndex = -1;
     if (!messageId.isEmpty() && messageId != m_streamingAssistantMessageId)
         m_streamingAssistantMessageIndex = -1;
     if (!messageId.isEmpty())
@@ -630,6 +647,9 @@ void AcpSessionModel::onToolCallReceived(const AcpToolCall &tc)
 
     AcpToolCall copy = tc;
     copy.groupId = m_currentGroupId;
+    if (!AcpProtocol::toolCallStatusIsTerminal(copy.status)) {
+        copy.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    }
     AcpProtocol::injectToolCallPath(copy.rawInput, QJsonArray{});
     AcpProtocol::stripTerminalContentBlocks(copy.content);
     copy.content = AcpProtocol::ensureDiffContent(copy.content, copy.rawInput, copy.rawOutput);
@@ -686,6 +706,9 @@ void AcpSessionModel::onToolCallUpdated(const AcpToolCallUpdate &update)
             AcpProtocol::appendToolCallTextDelta(tc.content, *update.terminalOutputDelta);
         }
         tc.groupId = m_currentGroupId;
+        if (!AcpProtocol::toolCallStatusIsTerminal(tc.status)) {
+            tc.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+        }
         m_toolCalls.insert(update.id, tc);
 
         AcpTimelineEntry entry;
@@ -706,6 +729,11 @@ void AcpSessionModel::onToolCallUpdated(const AcpToolCallUpdate &update)
         }
         if (update.status.has_value()) {
             it.value().status = *update.status;
+            AcpToolCall &cur = it.value();
+            if (cur.durationMs < 0 && cur.startedAtMs > 0
+                && AcpProtocol::toolCallStatusIsTerminal(cur.status)) {
+                cur.durationMs = qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - cur.startedAtMs);
+            }
         }
         if (update.content.has_value()) {
             it.value().content = *update.content;
@@ -872,6 +900,9 @@ void AcpSessionModel::onPromptStarted()
 void AcpSessionModel::onPromptEnded()
 {
     m_isProcessing = false;
+    m_resumableAssistantMessageId = m_streamingAssistantMessageIndex >= 0
+        ? m_streamingAssistantMessageId : QString();
+    m_resumableAssistantMessageIndex = m_streamingAssistantMessageIndex;
     m_streamingAssistantMessageId.clear();
     const int turnGroup = m_currentGroupId;
     m_streamingAssistantMessageIndex = -1;

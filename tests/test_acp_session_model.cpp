@@ -36,6 +36,7 @@ private slots:
     void streamingConcatenation();
     void messageIdChange_startsNewBubble();
     void promptEndedClosesStreaming();
+    void sameMessageIdAfterIdleTurnEndKeepsBubble();
     void blankOpeningChunkDoesNotCreateBubble();
     void thoughtStreamAutoClosesOnAssistantChunk();
     void toolCallMerge();
@@ -143,6 +144,36 @@ void TestAcpSessionModel::promptEndedClosesStreaming()
     QCOMPARE(model.messages().size(), 2);
     QCOMPARE(model.messages().at(0).content.first().text, QStringLiteral("first"));
     QCOMPARE(model.messages().at(1).content.first().text, QStringLiteral("second"));
+}
+
+void TestAcpSessionModel::sameMessageIdAfterIdleTurnEndKeepsBubble()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+
+    // Wake-up turn: the host's idle timer ended the turn between two chunks of
+    // one agent message.
+    model.onPromptStarted();
+    model.onMessageChunk(QStringLiteral("Task nền `"), QStringLiteral("msg_a"));
+    model.onPromptEnded();
+    model.onPromptStarted();
+    model.onMessageChunk(QStringLiteral("bll7` đã chạy"), QStringLiteral("msg_a"));
+    model.onPromptEnded();
+
+    QCOMPARE(model.messages().size(), 1);
+    QCOMPARE(model.messages().at(0).content.first().text, QStringLiteral("Task nền `bll7` đã chạy"));
+
+    // A different messageId is a new bubble.
+    model.onPromptStarted();
+    model.onMessageChunk(QStringLiteral("next"), QStringLiteral("msg_b"));
+    QCOMPARE(model.messages().size(), 2);
+
+    // Something landing after the bubble (a user message) blocks the resume.
+    model.onPromptEnded();
+    model.appendUserMessage(QStringLiteral("hi"), {}, false);
+    model.onPromptStarted();
+    model.onMessageChunk(QStringLiteral("late"), QStringLiteral("msg_b"));
+    QCOMPARE(model.messages().size(), 4);
 }
 
 void TestAcpSessionModel::blankOpeningChunkDoesNotCreateBubble()

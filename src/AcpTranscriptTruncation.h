@@ -74,9 +74,13 @@ struct Plan
     int visibleCount = 0;
 };
 
+// `skip` (optional, indexed like `timeline`): entries already not rendered for
+// another reason (folded under a "Worked for" row). They don't count toward the
+// cap, are never hide candidates, never produce a gap, and report visible = 0.
 Plan compute(const QVector<AcpTimelineEntry> &timeline,
              const QVector<AcpMessage> &messages,
-             int maxVisible = kMaxVisibleEvents);
+             int maxVisible = kMaxVisibleEvents,
+             const QVector<std::uint8_t> *skip = nullptr);
 
 } // namespace AcpTranscriptTruncation
 

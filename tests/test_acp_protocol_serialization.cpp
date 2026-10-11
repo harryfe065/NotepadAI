@@ -47,6 +47,7 @@ private slots:
     void rpcErrorIsSessionBusy_alreadyProcessingMessage();
     void rpcErrorIsSessionBusy_typedReason();
     void rpcErrorIsSessionBusy_otherErrors();
+    void rpcErrorIsIncompleteServerToolCall_serverToolsOnly();
     void stripPiAcpQueueNotices_dropsStatusKeepsBody();
     void toolCallStatusIsTerminal_matchesFinalStatesOnly();
     void asyncTaskEvent_spawnedFromWire();
@@ -56,6 +57,12 @@ private slots:
     void toolCallUpdateIsBackgrounded_readsAirMarker();
     void clientCapabilitiesMeta_declaresAsyncTasks();
     void formatWaitDuration_secondsMinutesHours();
+    void formatToolDuration_compactUnits();
+    void rawOutputToObject_wrapsNonObjects();
+    void commandsIncludeAdvisor_matchesNameOnly();
+    void advisorModelFor_stepsUpOneLevel();
+    void advisorModelFor_readsFamilyFromValueOrLabel();
+    void advisorCommandText_onAndOff();
 
 
 
@@ -488,6 +495,110 @@ void TestAcpProtocolSerialization::rpcErrorIsSessionBusy_otherErrors()
     err.insert(QStringLiteral("message"), QStringLiteral("Session not found"));
     QVERIFY(!AcpProtocol::rpcErrorIsSessionBusy(err));
     QVERIFY(!AcpProtocol::rpcErrorIsSessionBusy(QJsonValue()));
+}
+
+void TestAcpProtocolSerialization::formatToolDuration_compactUnits()
+{
+    QCOMPARE(AcpProtocol::formatToolDuration(-5), QStringLiteral("<1s"));
+    QCOMPARE(AcpProtocol::formatToolDuration(800), QStringLiteral("<1s"));
+    QCOMPARE(AcpProtocol::formatToolDuration(40000), QStringLiteral("40s"));
+    QCOMPARE(AcpProtocol::formatToolDuration(65000), QStringLiteral("1m5s"));
+    QCOMPARE(AcpProtocol::formatToolDuration(3665000), QStringLiteral("1h1m5s"));
+}
+
+void TestAcpProtocolSerialization::commandsIncludeAdvisor_matchesNameOnly()
+{
+    QVERIFY(!AcpProtocol::commandsIncludeAdvisor({}));
+    AcpProtocol::AcpCommandInfo compact;
+    compact.name = QStringLiteral("compact");
+    compact.description = QStringLiteral("consult an advisor");
+    QVERIFY(!AcpProtocol::commandsIncludeAdvisor({compact}));
+    AcpProtocol::AcpCommandInfo adv;
+    adv.name = QStringLiteral("/Advisor");
+    QVERIFY(AcpProtocol::commandsIncludeAdvisor({compact, adv}));
+    adv.name = QStringLiteral(" advisor ");
+    QVERIFY(AcpProtocol::commandsIncludeAdvisor({adv}));
+}
+
+void TestAcpProtocolSerialization::advisorModelFor_stepsUpOneLevel()
+{
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("haiku")), QStringLiteral("sonnet"));
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("sonnet")), QStringLiteral("opus"));
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("opus")), QStringLiteral("fable"));
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("fable")), QStringLiteral("fable"));
+}
+
+void TestAcpProtocolSerialization::advisorModelFor_readsFamilyFromValueOrLabel()
+{
+    // Pinned full ids carry the family in the value.
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("claude-haiku-4-5-20251001")),
+             QStringLiteral("sonnet"));
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("claude-opus-4-8")),
+             QStringLiteral("fable"));
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("claude-fable-5")),
+             QStringLiteral("fable"));
+    // "default" has no family in its value; the label may.
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("default"), QStringLiteral("Sonnet 5.5")),
+             QStringLiteral("opus"));
+    // Case-insensitive.
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("X"), QStringLiteral("HAIKU 4.5")),
+             QStringLiteral("sonnet"));
+    // Unknown family: opus, the common advisor.
+    QCOMPARE(AcpProtocol::advisorModelFor(QStringLiteral("default"),
+                                          QStringLiteral("Default (recommended)")),
+             QStringLiteral("opus"));
+    QCOMPARE(AcpProtocol::advisorModelFor(QString()), QStringLiteral("opus"));
+}
+
+void TestAcpProtocolSerialization::advisorCommandText_onAndOff()
+{
+    QCOMPARE(AcpProtocol::advisorCommandText(true, QStringLiteral("sonnet")),
+             QStringLiteral("/advisor opus"));
+    QCOMPARE(AcpProtocol::advisorCommandText(true, QStringLiteral("fable")),
+             QStringLiteral("/advisor fable"));
+    QCOMPARE(AcpProtocol::advisorCommandText(false, QStringLiteral("sonnet")),
+             QStringLiteral("/advisor off"));
+}
+
+void TestAcpProtocolSerialization::rawOutputToObject_wrapsNonObjects()
+{
+    const QJsonObject s = AcpProtocol::rawOutputToObject(
+        QJsonValue(QStringLiteral("(Bash completed with no output)")));
+    QCOMPARE(s.value(QStringLiteral("output")).toString(),
+             QStringLiteral("(Bash completed with no output)"));
+    QJsonObject obj;
+    obj.insert(QStringLiteral("stdout"), QStringLiteral("x"));
+    QCOMPARE(AcpProtocol::rawOutputToObject(QJsonValue(obj)), obj);
+    QVERIFY(AcpProtocol::rawOutputToObject(QJsonValue()).isEmpty());
+    QVERIFY(AcpProtocol::rawOutputToObject(QJsonValue(QJsonValue::Null)).isEmpty());
+}
+
+void TestAcpProtocolSerialization::rpcErrorIsIncompleteServerToolCall_serverToolsOnly()
+{
+    const auto make = [](const QString &kind, const QString &ids) {
+        QJsonObject data;
+        data.insert(QStringLiteral("errorKind"), kind);
+        QJsonObject err;
+        err.insert(QStringLiteral("code"), -32603);
+        err.insert(QStringLiteral("message"),
+                   QStringLiteral("Internal error: Claude ended the turn without returning "
+                                  "results for tool calls: ") + ids);
+        err.insert(QStringLiteral("data"), data);
+        return err;
+    };
+    const QString kind = QStringLiteral("incomplete_tool_call");
+    QVERIFY(AcpProtocol::rpcErrorIsIncompleteServerToolCall(
+        make(kind, QStringLiteral("srvtoolu_01BnrAbnbCsDGgL7ai7UWiUX"))));
+    QVERIFY(AcpProtocol::rpcErrorIsIncompleteServerToolCall(
+        make(kind, QStringLiteral("srvtoolu_a, srvtoolu_b"))));
+    // A real client tool left open is a genuine failure.
+    QVERIFY(!AcpProtocol::rpcErrorIsIncompleteServerToolCall(
+        make(kind, QStringLiteral("srvtoolu_a, toolu_01XYZ"))));
+    QVERIFY(!AcpProtocol::rpcErrorIsIncompleteServerToolCall(
+        make(QStringLiteral("other"), QStringLiteral("srvtoolu_a"))));
+    QVERIFY(!AcpProtocol::rpcErrorIsIncompleteServerToolCall(QJsonValue()));
+    QVERIFY(AcpProtocol::isAdvisorToolName(QStringLiteral("advisor")));
+    QVERIFY(!AcpProtocol::isAdvisorToolName(QStringLiteral("Read")));
 }
 
 void TestAcpProtocolSerialization::stripPiAcpQueueNotices_dropsStatusKeepsBody()

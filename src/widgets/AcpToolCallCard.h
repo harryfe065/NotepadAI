@@ -84,13 +84,16 @@ private:
     void maybeAutoExpandForDiff();
     QString statusGlyph() const;
     QString computeEnrichedTitle() const;
+    void refreshDuration();
 
     QString m_id;
     QString m_title;
+    QString m_name; // wire tool name (Bash / Grep / Read ...); empty for agents that omit it
     QString m_kind;
     QString m_status;
     bool m_backgroundRunning = false; // an async task this call started is still alive
     int m_groupId = 0;
+    qint64 m_durationMs = -1;
     QJsonArray m_content;
     QJsonObject m_rawInput;
     QJsonObject m_rawOutput;
@@ -111,6 +114,7 @@ private:
 
     QLabel *m_statusIcon = nullptr;
     QLabel *m_titleLabel = nullptr;
+    QLabel *m_durationLabel = nullptr;
     QToolButton *m_expandBtn = nullptr;
     QTextBrowser *m_body = nullptr;
     QVBoxLayout *m_outer = nullptr;
