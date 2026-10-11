@@ -175,7 +175,7 @@ bool ScheduledJobTracker::commit(const QString &toolCallId, const PendingCall &c
         if (!jobs.isArray())
             return false;
         QSet<QString> live;
-        for (const QJsonValue &j : jobs.toArray())
+        for (const auto &j : jobs.toArray())
             live.insert(j.toObject().value(QStringLiteral("id")).toString());
         const qsizetype before = m_jobs.size();
         m_jobs.erase(std::remove_if(m_jobs.begin(), m_jobs.end(),

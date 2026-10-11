@@ -1223,7 +1223,8 @@ void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
     // to the report, then to whatever follows the turn.
     QWidget *before = nullptr;
     for (int i : turn.folded) {
-        if ((before = widgetForTimelineEntry(timeline.at(i))))
+        before = widgetForTimelineEntry(timeline.at(i));
+        if (before)
             break;
     }
     if (!before && turn.survivor >= 0)

@@ -24,6 +24,7 @@
 #include <QString>
 #include <QVector>
 
+#include <cstdint>
 #include <functional>
 
 namespace AcpProtocol {
@@ -34,7 +35,7 @@ namespace AcpProtocol {
 // `session/cancel` nor `_session/async_task/stop` can cancel these.
 struct AcpScheduledJob
 {
-    enum class Kind { Wake, Cron };
+    enum class Kind : std::uint8_t { Wake, Cron };
 
     Kind kind = Kind::Wake;
     QString id;            // cron job id; the tool-call id for a wake-up
