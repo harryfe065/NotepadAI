@@ -37,8 +37,9 @@
 //     report the user reads; it stays visible beside the fold row
 //   - every other entry that would render (tool calls, thoughts, earlier
 //     assistant messages) is folded
-// The LAST turn is never folded: the user reviews it; it folds once a newer
-// prompt starts a new turn.
+// The LAST turn is never folded: the user reviews it. Once it ends the view
+// shows its "Worked for Xs" row expanded; it folds when a newer prompt starts
+// a new turn.
 //
 // Complexity: O(n) time over the timeline, one pass.
 namespace AcpTurnFolding {
@@ -55,10 +56,12 @@ struct Turn
 
 bool messageHasVisibleContent(const AcpMessage &msg);
 
-// Every foldable turn except the newest turn. Turns with nothing to fold are omitted.
+// Every foldable turn except the newest turn (included when includeNewest is
+// set; the view then shows its row expanded). Turns with nothing to fold are omitted.
 QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
                       const QVector<AcpMessage> &messages,
-                      const QHash<QString, AcpProtocol::AcpToolCall> &toolCalls);
+                      const QHash<QString, AcpProtocol::AcpToolCall> &toolCalls,
+                      bool includeNewest = false);
 
 } // namespace AcpTurnFolding
 

@@ -194,13 +194,15 @@ private:
 
     // "Worked for Xs" folding of finished turns. Folded entries have NO widgets
     // (nothing to lay out or paint); expanding instantiates them, collapsing
-    // destroys them. The newest turn is never folded.
+    // destroys them. The newest turn is never folded; once it ends it only gains
+    // an expanded row (showNewestTurnRow) that folds with the next prompt.
     void foldCompletedTurns();
     void foldTurn(const AcpTurnFolding::Turn &turn);
+    void showNewestTurnRow();
     void setTurnExpanded(int turnBegin, bool expanded);
     void removeEntryWidget(const AcpTimelineEntry &entry);
     QWidget *createEntryWidget(const AcpTimelineEntry &entry);
-    AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn);
+    AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn, bool expanded = false);
     void setFoldedMask(const QVector<int> &entries, bool folded);
     void pruneStaleFoldedTurns();
     void syncTranscriptHostWidth();
@@ -377,6 +379,7 @@ private:
         QPointer<AcpTurnFoldRow> row;
         QVector<int> entries; // timeline indices hidden while collapsed
         bool expanded = false;
+        bool autoExpanded = false; // newest turn's row, untouched by the user; collapses on the next prompt
     };
     QHash<int, FoldedTurn> m_foldedTurns; // key: first timeline index of the turn
     QVector<std::uint8_t> m_foldedMask;   // per timeline index; 1 = currently folded (no widget)

@@ -24,6 +24,7 @@ class TestAcpTurnFolding : public QObject
 private slots:
     void emptyTimeline();
     void singleTurnIsNeverFolded();
+    void includeNewestReturnsNewestTurn();
     void finishedTurnFoldsToolsAndEarlierMessages();
     void survivorIsLastAssistantMessageNotTrailingTool();
     void turnWithOnlyReportHasNothingToFold();
@@ -98,6 +99,21 @@ void TestAcpTurnFolding::singleTurnIsNeverFolded()
     f.tool(QStringLiteral("t1"));
     f.msg("assistant", QStringLiteral("done"));
     QVERIFY(f.run().isEmpty());
+}
+
+void TestAcpTurnFolding::includeNewestReturnsNewestTurn()
+{
+    Fx f;
+    f.msg("user", QStringLiteral("go"), 1000);
+    const int t1 = f.tool(QStringLiteral("t1"));
+    const int rep = f.msg("assistant", QStringLiteral("done"), 4000);
+
+    const auto turns = AcpTurnFolding::compute(f.tl, f.msgs, f.tools, true);
+    QCOMPARE(turns.size(), 1);
+    QCOMPARE(turns.at(0).end, f.tl.size());
+    QCOMPARE(turns.at(0).survivor, rep);
+    QCOMPARE(turns.at(0).folded, (QVector<int>{t1}));
+    QCOMPARE(turns.at(0).workedMs, qint64(3000));
 }
 
 void TestAcpTurnFolding::finishedTurnFoldsToolsAndEarlierMessages()

@@ -851,14 +851,17 @@ void AcpSessionView::hydrateFromModel()
     const auto &toolCalls = m_model->toolCalls();
     // Finished turns fold to a "Worked for Xs" row: their tool calls and
     // intermediate messages are never instantiated until the user expands.
-    const QVector<AcpTurnFolding::Turn> turns =
-        AcpTurnFolding::compute(timeline, messages, toolCalls);
+    // An idle session's newest turn gets an expanded row instead (its entries
+    // stay rendered); a mid-turn session gains it in onTurnEnded.
+    const QVector<AcpTurnFolding::Turn> turns = AcpTurnFolding::compute(
+        timeline, messages, toolCalls, !m_model->isProcessing());
     m_foldedMask.fill(0, timeline.size());
     m_foldedCount = 0;
     QHash<int, const AcpTurnFolding::Turn *> foldAt; // first folded entry -> its turn
     for (const AcpTurnFolding::Turn &turn : turns) {
         foldAt.insert(turn.folded.first(), &turn);
-        setFoldedMask(turn.folded, true);
+        if (turn.end < timeline.size())
+            setFoldedMask(turn.folded, true);
     }
     const AcpTranscriptTruncation::Plan plan =
         AcpTranscriptTruncation::compute(timeline, messages,
@@ -868,17 +871,17 @@ void AcpSessionView::hydrateFromModel()
 
     int pendingHidden = 0;
     for (int i = 0; i < timeline.size(); ++i) {
-        if (m_foldedMask.at(i) != 0) {
-            const auto fold = foldAt.constFind(i);
-            if (fold != foldAt.constEnd()) {
-                if (pendingHidden > 0) {
-                    insertTimelineWidget(makeTruncationPlaceholder(pendingHidden), false);
-                    pendingHidden = 0;
-                }
-                insertTimelineWidget(makeFoldRow(*fold.value()), false);
+        const auto fold = foldAt.constFind(i);
+        if (fold != foldAt.constEnd()) {
+            if (pendingHidden > 0) {
+                insertTimelineWidget(makeTruncationPlaceholder(pendingHidden), false);
+                pendingHidden = 0;
             }
-            continue;
+            insertTimelineWidget(makeFoldRow(*fold.value(), fold.value()->end == timeline.size()),
+                                 false);
         }
+        if (m_foldedMask.at(i) != 0)
+            continue;
         if (plan.visible.at(i) == 0) {
             ++pendingHidden;
             continue;
@@ -1177,16 +1180,20 @@ void AcpSessionView::setFoldedMask(const QVector<int> &entries, bool folded)
     }
 }
 
-AcpTurnFoldRow *AcpSessionView::makeFoldRow(const AcpTurnFolding::Turn &turn)
+AcpTurnFoldRow *AcpSessionView::makeFoldRow(const AcpTurnFolding::Turn &turn, bool expanded)
 {
     auto *row = new AcpTurnFoldRow(turn.workedMs, m_transcriptHost);
     row->setChatFont(chatFont());
     const int begin = turn.begin;
     connect(row, &AcpTurnFoldRow::expandedChanged, this,
-            [this, begin](bool expanded) { setTurnExpanded(begin, expanded); });
+            [this, begin](bool nowExpanded) { setTurnExpanded(begin, nowExpanded); });
     FoldedTurn ft;
     ft.row = row;
     ft.entries = turn.folded;
+    ft.expanded = expanded;
+    ft.autoExpanded = expanded;
+    if (expanded)
+        row->setExpanded(true);
     m_foldedTurns.insert(begin, ft);
     return row;
 }
@@ -1199,8 +1206,16 @@ void AcpSessionView::foldCompletedTurns()
         timeline, m_model->messages(), m_model->toolCalls());
     bool any = false;
     for (const AcpTurnFolding::Turn &turn : turns) {
-        if (m_foldedTurns.contains(turn.begin))
-            continue; // already folded (possibly re-expanded by the user)
+        const auto it = m_foldedTurns.constFind(turn.begin);
+        if (it != m_foldedTurns.constEnd()) {
+            // Already folded (possibly re-expanded by the user). The former
+            // newest turn's default-expanded row folds now that a prompt followed.
+            if (it->autoExpanded) {
+                setTurnExpanded(turn.begin, false);
+                any = true;
+            }
+            continue;
+        }
         foldTurn(turn);
         any = true;
     }
@@ -1243,11 +1258,38 @@ void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
     setFoldedMask(turn.folded, true);
 }
 
+// The newest turn has ended: label it "Worked for Xs", expanded. Nothing is
+// removed or masked — its widgets already exist; the row just heads them.
+void AcpSessionView::showNewestTurnRow()
+{
+    if (!m_model || !m_transcriptLayout) return;
+    const auto &timeline = m_model->timeline();
+    const QVector<AcpTurnFolding::Turn> turns = AcpTurnFolding::compute(
+        timeline, m_model->messages(), m_model->toolCalls(), true);
+    if (turns.isEmpty()) return;
+    const AcpTurnFolding::Turn &turn = turns.last();
+    if (turn.end != timeline.size() || m_foldedTurns.contains(turn.begin))
+        return; // not the newest turn, or it already has a row
+
+    QWidget *before = nullptr;
+    for (int i : turn.folded) {
+        before = widgetForTimelineEntry(timeline.at(i));
+        if (before)
+            break;
+    }
+    if (!before) return; // nothing rendered to head (e.g. all truncated)
+    const int at = m_transcriptLayout->indexOf(before);
+    if (at < 0) return;
+    m_transcriptLayout->insertWidget(at, makeFoldRow(turn, true));
+    syncTranscriptHostWidth();
+}
+
 void AcpSessionView::setTurnExpanded(int turnBegin, bool expanded)
 {
     auto it = m_foldedTurns.find(turnBegin);
     if (it == m_foldedTurns.end() || !m_model || !m_transcriptLayout) return;
     FoldedTurn &ft = it.value();
+    ft.autoExpanded = false; // any toggle (user or auto-fold) ends the default state
     if (ft.expanded == expanded) return;
     ft.expanded = expanded;
     if (ft.row) ft.row->setExpanded(expanded);
@@ -1822,6 +1864,7 @@ void AcpSessionView::onTurnEnded(int groupId)
 {
     Q_UNUSED(groupId);
     foldCompletedTurns(); // e.g. a steering prompt landed mid-turn
+    showNewestTurnRow();
     if (m_currentGroupCards.size() > 3) {
         for (auto *card : m_currentGroupCards) {
             if (card && !card->shouldPreserveExpanded()) card->setCollapsed(true);

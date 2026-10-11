@@ -52,7 +52,8 @@ bool messageHasVisibleContent(const AcpMessage &msg)
 
 QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
                       const QVector<AcpMessage> &messages,
-                      const QHash<QString, AcpProtocol::AcpToolCall> &toolCalls)
+                      const QHash<QString, AcpProtocol::AcpToolCall> &toolCalls,
+                      bool includeNewest)
 {
     QVector<Turn> out;
     const int n = timeline.size();
@@ -69,8 +70,10 @@ QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
     starts.append(n);
     const int turnCount = starts.size() - 1;
 
-    // The newest turn stays open for review; only older ones can fold.
-    for (int t = 0; t + 1 < turnCount; ++t) {
+    // The newest turn stays open for review; only older ones can fold, unless
+    // the caller wants it too (to give it an expanded "Worked for Xs" row).
+    const int lastTurn = includeNewest ? turnCount : turnCount - 1;
+    for (int t = 0; t < lastTurn; ++t) {
         Turn turn;
         turn.begin = starts.at(t);
         turn.end = starts.at(t + 1);
