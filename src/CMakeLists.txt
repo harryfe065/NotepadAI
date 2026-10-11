@@ -476,6 +476,13 @@ qt_add_executable(NotepadAI
 	widgets/AcpTurnFoldRow.h
 	widgets/AcpUsageIndicator.cpp
 	widgets/AcpUsageIndicator.h
+	widgets/UsageButton.cpp
+	widgets/UsageButton.h
+	widgets/UsagePopover.cpp
+	widgets/UsagePopover.h
+	widgets/UsageStyle.h
+	widgets/UsageWindowBar.cpp
+	widgets/UsageWindowBar.h
 	widgets/AiDockSessionStrip.cpp
 	widgets/AiDockSessionStrip.h
     widgets/DockMiddleClickCloser.cpp
@@ -563,6 +570,10 @@ qt_add_executable(NotepadAI
 	ai/SsePartialParser.cpp
 	ai/CredentialStore.h
 	ai/CredentialStore_Common.cpp
+	ai/ClaudeUsage.cpp
+	ai/ClaudeUsage.h
+	ai/ClaudeUsageService.cpp
+	ai/ClaudeUsageService.h
 	ai/IAnthropicMessagesClient.h
 	ai/AnthropicMessagesClient.h
 	ai/AnthropicMessagesClient.cpp

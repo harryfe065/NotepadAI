@@ -910,6 +910,18 @@ target_sources(test_acp_usage_indicator PRIVATE
 )
 add_test(NAME AcpUsageIndicator COMMAND test_acp_usage_indicator)
 
+# --- ClaudeUsage: usage parsing/formatting rules + ClaudeUsageService (fake transport) ---
+qt_add_executable(test_claude_usage test_claude_usage.cpp)
+target_include_directories(test_claude_usage PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_claude_usage PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Test)
+target_sources(test_claude_usage PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsage.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsage.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsageService.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsageService.h
+)
+add_test(NAME ClaudeUsage COMMAND test_claude_usage)
+
 # --- AcpPromptQueue: send-while-busy enqueue vs send-now / side-prompt ---
 qt_add_executable(test_acp_prompt_queue test_acp_prompt_queue.cpp)
 target_include_directories(test_acp_prompt_queue PRIVATE ${CMAKE_SOURCE_DIR}/src)

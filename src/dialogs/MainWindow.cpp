@@ -150,6 +150,8 @@
 #include "InteractiveRebaseDialog.h"
 
 #include "TabsQuickActionsBar.h"
+#include "UsageButton.h"
+#include "ai/ClaudeUsageService.h"
 
 #include "QuickFindWidget.h"
 #include "QuickFileOpenDialog.h"
@@ -1584,8 +1586,27 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
         mb.exec();
     });
 
-    tabsQuickActionsBar = new TabsQuickActionsBar(ui->menuBar);
-    ui->menuBar->setCornerWidget(tabsQuickActionsBar, Qt::TopRightCorner);
+    // The menu bar has a single top-right corner slot: host the Claude usage
+    // chip and the tab quick actions side by side in one container.
+    auto *cornerHost = new QWidget(ui->menuBar);
+    auto *cornerLayout = new QHBoxLayout(cornerHost);
+    cornerLayout->setContentsMargins(0, 0, 0, 0);
+    cornerLayout->setSpacing(0);
+
+    auto *usageService = new ai::ClaudeUsageService(new ai::ClaudeUsageHttpTransport(this), QString(), this);
+    auto *usageButton = new UsageButton(usageService, cornerHost);
+    usageButton->setPercentMode(app->getSettings()->usagePercentRemaining()
+                                    ? ai::claudeusage::PercentMode::Remaining
+                                    : ai::claudeusage::PercentMode::Used);
+    connect(usageButton, &UsageButton::percentModeChanged, this, [app](ai::claudeusage::PercentMode mode) {
+        app->getSettings()->setUsagePercentRemaining(mode == ai::claudeusage::PercentMode::Remaining);
+    });
+    cornerLayout->addWidget(usageButton);
+
+    tabsQuickActionsBar = new TabsQuickActionsBar(cornerHost);
+    cornerLayout->addWidget(tabsQuickActionsBar);
+    ui->menuBar->setCornerWidget(cornerHost, Qt::TopRightCorner);
+    usageService->startPolling();
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::createNewTabClicked, this, [this]() { newFile(true); });
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::closeCurrentTabClicked, this, &MainWindow::closeCurrentFile);
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::tabsMenuAboutToShow, this, [this](QMenu *editorsMenu) {

@@ -188,6 +188,7 @@ CREATE_SETTING(Ai, CommitMessageStreamIdleTimeoutSec, commitMessageStreamIdleTim
 CREATE_SETTING(Ai, CommitMessageGenerateShortcut, commitMessageGenerateShortcut, QString, QStringLiteral("Ctrl+Alt+G"))
 
 CREATE_SETTING(Ai, SyncWorkspaceOnAiSwitch, syncWorkspaceOnAiSwitch, bool, true)
+CREATE_SETTING(Ai, UsagePercentRemaining, usagePercentRemaining, bool, false)
 // NOLINTEND(bugprone-throwing-static-initialization,performance-unnecessary-value-param)
 
 // --- AI / ACP agent settings ---------------------------------------------------

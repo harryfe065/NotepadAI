@@ -221,6 +221,10 @@ signals:
 
     DEFINE_SETTING(SyncWorkspaceOnAiSwitch, syncWorkspaceOnAiSwitch, bool)
 
+    // Claude usage chip (menu-bar corner): show "% left" instead of "% used".
+    // Storage key Ai/UsagePercentRemaining.
+    DEFINE_SETTING(UsagePercentRemaining, usagePercentRemaining, bool)
+
     // AI / ACP agent settings. Stored under the "Ai/" group.
 public:
     QString defaultAiAgentId() const;
