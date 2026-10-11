@@ -48,6 +48,14 @@ private slots:
     void rpcErrorIsSessionBusy_typedReason();
     void rpcErrorIsSessionBusy_otherErrors();
     void stripPiAcpQueueNotices_dropsStatusKeepsBody();
+    void toolCallStatusIsTerminal_matchesFinalStatesOnly();
+    void asyncTaskEvent_spawnedFromWire();
+    void asyncTaskEvent_progressAndStateFromWire();
+    void asyncTaskEvent_ignoresOtherKinds();
+    void asyncTaskStateIsLive_runningAndPausedOnly();
+    void toolCallUpdateIsBackgrounded_readsAirMarker();
+    void clientCapabilitiesMeta_declaresAsyncTasks();
+    void formatWaitDuration_secondsMinutesHours();
 
 
 
@@ -501,6 +509,138 @@ void TestAcpProtocolSerialization::stripPiAcpQueueNotices_dropsStatusKeepsBody()
              QStringLiteral("Hello"));
 }
 
+
+void TestAcpProtocolSerialization::toolCallStatusIsTerminal_matchesFinalStatesOnly()
+{
+    QVERIFY(AcpProtocol::toolCallStatusIsTerminal(QStringLiteral("completed")));
+    QVERIFY(AcpProtocol::toolCallStatusIsTerminal(QStringLiteral("failed")));
+    QVERIFY(AcpProtocol::toolCallStatusIsTerminal(QStringLiteral("cancelled")));
+    QVERIFY(AcpProtocol::toolCallStatusIsTerminal(QStringLiteral("canceled")));
+    QVERIFY(!AcpProtocol::toolCallStatusIsTerminal(QStringLiteral("pending")));
+    QVERIFY(!AcpProtocol::toolCallStatusIsTerminal(QStringLiteral("in_progress")));
+    QVERIFY(!AcpProtocol::toolCallStatusIsTerminal(QString()));
+}
+
+// Wire shapes below were captured from @agentclientprotocol/claude-agent-acp
+// 0.89.1 with `_meta.jetbrains.air.capabilities: ["asyncTasks"]` declared.
+void TestAcpProtocolSerialization::asyncTaskEvent_spawnedFromWire()
+{
+    QJsonObject u;
+    u.insert(QStringLiteral("asyncTaskId"), QStringLiteral("b9b0j72p2"));
+    u.insert(QStringLiteral("name"), QStringLiteral("Sleep then print BGDONE"));
+    u.insert(QStringLiteral("taskType"), QStringLiteral("shell"));
+    u.insert(QStringLiteral("description"), QStringLiteral("Sleep then print BGDONE"));
+    u.insert(QStringLiteral("showInTranscript"), false);
+    u.insert(QStringLiteral("canStop"), true);
+    u.insert(QStringLiteral("toolCallId"), QStringLiteral("toolu_013"));
+
+    const auto ev = AcpProtocol::asyncTaskEventFromUpdate(QStringLiteral("async_task_spawned"), u);
+    QVERIFY(ev.has_value());
+    QCOMPARE(ev->kind, AcpProtocol::AcpAsyncTaskEvent::Kind::Spawned);
+    QCOMPARE(ev->taskId, QStringLiteral("b9b0j72p2"));
+    QCOMPARE(ev->name, QStringLiteral("Sleep then print BGDONE"));
+    QCOMPARE(ev->taskType, QStringLiteral("shell"));
+    QCOMPARE(ev->toolCallId, QStringLiteral("toolu_013"));
+    QVERIFY(ev->canStop);
+
+    // Missing canStop means the agent did not offer a stop for this task.
+    u.remove(QStringLiteral("canStop"));
+    const auto noStop = AcpProtocol::asyncTaskEventFromUpdate(QStringLiteral("async_task_spawned"), u);
+    QVERIFY(noStop.has_value());
+    QVERIFY(!noStop->canStop);
+}
+
+void TestAcpProtocolSerialization::asyncTaskEvent_progressAndStateFromWire()
+{
+    QJsonObject progress;
+    progress.insert(QStringLiteral("asyncTaskId"), QStringLiteral("t1"));
+    progress.insert(QStringLiteral("toolCallId"), QStringLiteral("call-9"));
+    progress.insert(QStringLiteral("summary"), QStringLiteral("halfway"));
+    const auto p = AcpProtocol::asyncTaskEventFromUpdate(
+        QStringLiteral("async_task_progress"), progress);
+    QVERIFY(p.has_value());
+    QCOMPARE(p->kind, AcpProtocol::AcpAsyncTaskEvent::Kind::Progress);
+    QCOMPARE(p->taskId, QStringLiteral("t1"));
+    QCOMPARE(p->toolCallId, QStringLiteral("call-9"));
+    QCOMPARE(p->summary, QStringLiteral("halfway"));
+
+    QJsonObject state;
+    state.insert(QStringLiteral("asyncTaskId"), QStringLiteral("t1"));
+    state.insert(QStringLiteral("state"), QStringLiteral("completed"));
+    const auto s = AcpProtocol::asyncTaskEventFromUpdate(
+        QStringLiteral("async_task_state_update"), state);
+    QVERIFY(s.has_value());
+    QCOMPARE(s->kind, AcpProtocol::AcpAsyncTaskEvent::Kind::StateChanged);
+    QCOMPARE(s->state, QStringLiteral("completed"));
+}
+
+void TestAcpProtocolSerialization::asyncTaskEvent_ignoresOtherKinds()
+{
+    QJsonObject u;
+    u.insert(QStringLiteral("asyncTaskId"), QStringLiteral("t1"));
+    QVERIFY(!AcpProtocol::asyncTaskEventFromUpdate(QStringLiteral("tool_call"), u).has_value());
+    // A task event without an id cannot be tracked.
+    QVERIFY(!AcpProtocol::asyncTaskEventFromUpdate(
+        QStringLiteral("async_task_spawned"), QJsonObject{}).has_value());
+}
+
+void TestAcpProtocolSerialization::asyncTaskStateIsLive_runningAndPausedOnly()
+{
+    QVERIFY(AcpProtocol::asyncTaskStateIsLive(QStringLiteral("running")));
+    QVERIFY(AcpProtocol::asyncTaskStateIsLive(QStringLiteral("paused")));
+    QVERIFY(!AcpProtocol::asyncTaskStateIsLive(QStringLiteral("completed")));
+    QVERIFY(!AcpProtocol::asyncTaskStateIsLive(QStringLiteral("failed")));
+    QVERIFY(!AcpProtocol::asyncTaskStateIsLive(QStringLiteral("stopped")));
+}
+
+void TestAcpProtocolSerialization::toolCallUpdateIsBackgrounded_readsAirMarker()
+{
+    QJsonObject marked;
+    marked.insert(QStringLiteral("_meta"), QJsonObject{
+        {QStringLiteral("jetbrains"), QJsonObject{
+            {QStringLiteral("air"), QJsonObject{
+                {QStringLiteral("asyncTasks"), QJsonObject{
+                    {QStringLiteral("backgrounded"), true}}}}}}}});
+    QVERIFY(AcpProtocol::toolCallUpdateIsBackgrounded(marked));
+
+    // commandTitle-only AIR meta (seen on every Bash call) is not the marker.
+    QJsonObject other;
+    other.insert(QStringLiteral("_meta"), QJsonObject{
+        {QStringLiteral("jetbrains"), QJsonObject{
+            {QStringLiteral("air"), QJsonObject{
+                {QStringLiteral("commandTitle"), QStringLiteral("Sleep")}}}}}});
+    QVERIFY(!AcpProtocol::toolCallUpdateIsBackgrounded(other));
+    QVERIFY(!AcpProtocol::toolCallUpdateIsBackgrounded(QJsonObject{}));
+}
+
+void TestAcpProtocolSerialization::clientCapabilitiesMeta_declaresAsyncTasks()
+{
+    // claude-agent-acp accepts a capability only when version is an integer
+    // >= 1 and `capabilities` is an ARRAY containing the exact name.
+    const QJsonObject air = AcpProtocol::clientCapabilitiesMeta()
+        .value(QStringLiteral("jetbrains")).toObject()
+        .value(QStringLiteral("air")).toObject();
+    QCOMPARE(air.value(QStringLiteral("version")).toInt(), 1);
+    QVERIFY(air.value(QStringLiteral("capabilities")).isArray());
+    bool found = false;
+    for (const auto &v : air.value(QStringLiteral("capabilities")).toArray())
+        found = found || v.toString() == QLatin1String("asyncTasks");
+    QVERIFY(found);
+}
+
+
+void TestAcpProtocolSerialization::formatWaitDuration_secondsMinutesHours()
+{
+    QCOMPARE(AcpProtocol::formatWaitDuration(0), QStringLiteral("0.0s"));
+    QCOMPARE(AcpProtocol::formatWaitDuration(4200), QStringLiteral("4.2s"));
+    QCOMPARE(AcpProtocol::formatWaitDuration(59999), QStringLiteral("59.9s"));
+    QCOMPARE(AcpProtocol::formatWaitDuration(60000), QStringLiteral("1m 00s"));
+    QCOMPARE(AcpProtocol::formatWaitDuration(125000), QStringLiteral("2m 05s"));
+    QCOMPARE(AcpProtocol::formatWaitDuration(3600000), QStringLiteral("1h 00m"));
+    QCOMPARE(AcpProtocol::formatWaitDuration(3725000), QStringLiteral("1h 02m"));
+    // A negative clock reading (invalid QElapsedTimer) never renders garbage.
+    QCOMPARE(AcpProtocol::formatWaitDuration(-5), QStringLiteral("0.0s"));
+}
 
 QTEST_GUILESS_MAIN(TestAcpProtocolSerialization)
 #include "test_acp_protocol_serialization.moc"

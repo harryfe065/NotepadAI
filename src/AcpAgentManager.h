@@ -61,6 +61,14 @@ public:
     explicit AcpAgentManager(ApplicationSettings *settings, QObject *parent = nullptr);
     ~AcpAgentManager() override;
 
+    // Applied to every connection wired afterwards so one-shot cron jobs drop
+    // off the session's "Scheduled" label at their next fire time. Set by the
+    // app (CronExpression stays out of this translation unit).
+    void setScheduledNextFireProvider(AcpProtocol::ScheduledJobTracker::NextFireFn fn)
+    {
+        m_scheduledNextFire = std::move(fn);
+    }
+
     AcpAgentRegistry *registry() const { return m_registry; }
     AcpHistoryStore *historyStore() const { return m_historyStore; }
 
@@ -168,6 +176,7 @@ private:
 
     AcpAgentRegistry *m_registry = nullptr;
     ApplicationSettings *m_settings = nullptr;
+    AcpProtocol::ScheduledJobTracker::NextFireFn m_scheduledNextFire;
     AcpHistoryStore *m_historyStore = nullptr;
     QThread *m_historyThread = nullptr;
     QTimer *m_idleReaperTimer = nullptr;

@@ -501,6 +501,8 @@ void AcpAgentManager::onDockDestroyed(QObject *obj)
 
 void AcpAgentManager::wireConnectionToModel(AcpConnection *conn, AcpSessionModel *model)
 {
+    if (m_scheduledNextFire)
+        conn->setScheduledNextFireProvider(m_scheduledNextFire);
     connect(conn, &AcpConnection::initialized,
             model, &AcpSessionModel::onInitialized);
     connect(conn, &AcpConnection::messageChunk,
@@ -527,6 +529,8 @@ void AcpAgentManager::wireConnectionToModel(AcpConnection *conn, AcpSessionModel
             model, &AcpSessionModel::onPromptStarted);
     connect(conn, &AcpConnection::promptEnded,
             model, &AcpSessionModel::onPromptEnded);
+    connect(conn, &AcpConnection::asyncTasksChanged,
+            model, &AcpSessionModel::onAsyncTasksChanged);
     // permissionRequested + errorOccurred bypass the model — the view will
     // connect directly to the connection for those (the dock holds both
     // pointers). See AiAgentDock for the wiring (Group 5).

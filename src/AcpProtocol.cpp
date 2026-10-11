@@ -513,6 +513,83 @@ QString toolCallStatusForUi(const QString &status)
     return status;
 }
 
+bool toolCallStatusIsTerminal(const QString &status)
+{
+    return status == QLatin1String("completed")
+        || status == QLatin1String("failed")
+        || status == QLatin1String("cancelled")
+        || status == QLatin1String("canceled");
+}
+
+std::optional<AcpAsyncTaskEvent> asyncTaskEventFromUpdate(const QString &kind,
+                                                          const QJsonObject &update)
+{
+    AcpAsyncTaskEvent ev;
+    if (kind == QLatin1String("async_task_spawned")) {
+        ev.kind = AcpAsyncTaskEvent::Kind::Spawned;
+    } else if (kind == QLatin1String("async_task_progress")) {
+        ev.kind = AcpAsyncTaskEvent::Kind::Progress;
+    } else if (kind == QLatin1String("async_task_state_update")) {
+        ev.kind = AcpAsyncTaskEvent::Kind::StateChanged;
+    } else {
+        return std::nullopt;
+    }
+    ev.taskId = update.value(QStringLiteral("asyncTaskId")).toString();
+    if (ev.taskId.isEmpty()) {
+        return std::nullopt;
+    }
+    ev.name = update.value(QStringLiteral("name")).toString();
+    ev.taskType = update.value(QStringLiteral("taskType")).toString();
+    ev.description = update.value(QStringLiteral("description")).toString();
+    ev.toolCallId = update.value(QStringLiteral("toolCallId")).toString();
+    ev.state = update.value(QStringLiteral("state")).toString();
+    ev.summary = update.value(QStringLiteral("summary")).toString();
+    ev.canStop = update.value(QStringLiteral("canStop")).toBool(false);
+    return ev;
+}
+
+bool asyncTaskStateIsLive(const QString &state)
+{
+    return state == QLatin1String("running") || state == QLatin1String("paused");
+}
+
+bool toolCallUpdateIsBackgrounded(const QJsonObject &update)
+{
+    return update.value(QStringLiteral("_meta")).toObject()
+        .value(QStringLiteral("jetbrains")).toObject()
+        .value(QStringLiteral("air")).toObject()
+        .value(QStringLiteral("asyncTasks")).toObject()
+        .value(QStringLiteral("backgrounded")).toBool(false);
+}
+
+QString formatWaitDuration(qint64 ms)
+{
+    if (ms < 0) {
+        ms = 0;
+    }
+    const qint64 totalSeconds = ms / 1000;
+    if (totalSeconds < 60) {
+        return QStringLiteral("%1.%2s").arg(totalSeconds).arg((ms % 1000) / 100);
+    }
+    const qint64 minutes = totalSeconds / 60;
+    if (minutes < 60) {
+        return QStringLiteral("%1m %2s").arg(minutes).arg(totalSeconds % 60, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1h %2m").arg(minutes / 60).arg(minutes % 60, 2, 10, QLatin1Char('0'));
+}
+
+QJsonObject clientCapabilitiesMeta()
+{
+    QJsonObject air;
+    air.insert(QStringLiteral("version"), 1);
+    air.insert(QStringLiteral("capabilities"), QJsonArray{QStringLiteral("asyncTasks")});
+    QJsonObject jetbrains;
+    jetbrains.insert(QStringLiteral("air"), air);
+    QJsonObject meta;
+    meta.insert(QStringLiteral("jetbrains"), jetbrains);
+    return meta;
+}
+
 QString toolCallMutatedPath(const QJsonObject &rawInput,
                             const QJsonArray &content,
                             const QJsonObject &rawOutput,

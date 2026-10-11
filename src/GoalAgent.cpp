@@ -114,6 +114,8 @@ bool GoalAgent::start(const StartRequest &req)
     // Subscribe to target's promptEnded signal.
     connect(m_targetConnection, &AcpConnection::promptEnded,
             this, &GoalAgent::onTargetPromptEnded);
+    connect(m_targetConnection, &AcpConnection::backgroundIdle,
+            this, &GoalAgent::onTargetBackgroundIdle);
     connect(m_targetConnection, &QObject::destroyed,
             this, &GoalAgent::onTargetDestroyed);
 
@@ -138,7 +140,7 @@ bool GoalAgent::start(const StartRequest &req)
         if (m_prefixGoal)
             sendFirstCriterionGoal();
         else if (!m_targetModel->isProcessing())
-            evaluateCurrentCriterion();
+            evaluateWhenTargetSettled(QStringLiteral("start"));
     } else {
         m_lastSeenTargetMessageCount = m_targetModel->messages().size();
         logDebug(QStringLiteral("start: OK, %1 criteria, agent=%2, maxIter=%3")
@@ -245,7 +247,7 @@ void GoalAgent::noteDeferredGoalDropped()
         return;
     if (m_targetModel && m_targetModel->isProcessing())
         return;
-    evaluateCurrentCriterion();
+    evaluateWhenTargetSettled(QStringLiteral("noteDeferredGoalDropped"));
 }
 
 void GoalAgent::stop()
@@ -270,7 +272,10 @@ void GoalAgent::markTerminal(Status s, const QString &reason)
     if (m_targetConnection) {
         disconnect(m_targetConnection, &AcpConnection::promptEnded,
                    this, &GoalAgent::onTargetPromptEnded);
+        disconnect(m_targetConnection, &AcpConnection::backgroundIdle,
+                   this, &GoalAgent::onTargetBackgroundIdle);
     }
+    m_deferredForBackground = false;
     setStatus(s);
     if (s == Achieved)
         maybeSendAutoCompact();
@@ -536,8 +541,33 @@ void GoalAgent::onTargetPromptEnded()
         logDebug(QStringLiteral("onTargetPromptEnded: skipped (deferred /goal still queued)"));
         return;
     }
-    logDebug(QStringLiteral("onTargetPromptEnded: evaluating criterion %1").arg(m_currentCriterionIndex));
+    evaluateWhenTargetSettled(QStringLiteral("onTargetPromptEnded"));
+}
+
+void GoalAgent::evaluateWhenTargetSettled(const QString &origin)
+{
+    // A turn that ended while Claude Code background tasks are still alive is
+    // not the end of the work: wait for every task and for the wake-up turn
+    // that reads its output.
+    if (m_targetConnection && m_targetConnection->hasPendingBackgroundWork()) {
+        m_deferredForBackground = true;
+        logDebug(QStringLiteral("%1: deferred (background tasks running)").arg(origin));
+        return;
+    }
+    m_deferredForBackground = false;
+    logDebug(QStringLiteral("%1: evaluating criterion %2").arg(origin).arg(m_currentCriterionIndex));
     evaluateCurrentCriterion();
+}
+
+void GoalAgent::onTargetBackgroundIdle()
+{
+    if (!m_deferredForBackground || m_status != Active)
+        return;
+    if (m_awaitingJudgeResponse || m_awaitingAuthoring || m_deferredPrefixGoal)
+        return;
+    if (m_targetModel && m_targetModel->isProcessing())
+        return; // that turn's promptEnded will evaluate
+    evaluateWhenTargetSettled(QStringLiteral("onTargetBackgroundIdle"));
 }
 
 void GoalAgent::onTargetDestroyed()
@@ -848,6 +878,8 @@ void GoalAgent::restartWatchedSession(const QString &prompt)
     if (m_targetConnection) {
         disconnect(m_targetConnection, &AcpConnection::promptEnded,
                    this, &GoalAgent::onTargetPromptEnded);
+        disconnect(m_targetConnection, &AcpConnection::backgroundIdle,
+                   this, &GoalAgent::onTargetBackgroundIdle);
         disconnect(m_targetConnection, &QObject::destroyed,
                    this, &GoalAgent::onTargetDestroyed);
     }
@@ -867,8 +899,11 @@ void GoalAgent::restartWatchedSession(const QString &prompt)
 
     connect(m_targetConnection, &AcpConnection::promptEnded,
             this, &GoalAgent::onTargetPromptEnded);
+    connect(m_targetConnection, &AcpConnection::backgroundIdle,
+            this, &GoalAgent::onTargetBackgroundIdle);
     connect(m_targetConnection, &QObject::destroyed,
             this, &GoalAgent::onTargetDestroyed);
+    m_deferredForBackground = false;
 
     logDebug(QStringLiteral("restartWatchedSession: %1 -> %2, forwarding prompt (%3 chars)")
                  .arg(oldId, restarted.sessionId)

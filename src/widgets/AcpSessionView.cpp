@@ -70,6 +70,10 @@
 #include <QShortcut>
 #include <QStyle>
 #include <QTimer>
+#include <QMenu>
+#include <QCursor>
+#include <QAction>
+#include <QFontMetrics>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -379,6 +383,11 @@ void AcpSessionView::buildUi()
     m_elapsedLabel->setStyleSheet(QStringLiteral(
         "QLabel { color: palette(placeholder-text); font-style: italic; }"));
     m_elapsedLabel->setToolTip(tr("Time since the last new event from the agent"));
+    // The row carries a "Stop" link while stoppable background tasks exist.
+    m_elapsedLabel->setTextFormat(Qt::RichText);
+    m_elapsedLabel->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    connect(m_elapsedLabel, &QLabel::linkActivated,
+            this, &AcpSessionView::onBackgroundStopRequested);
     m_elapsedLabel->hide();
     m_transcriptLayout->addWidget(m_elapsedLabel);
 
@@ -795,6 +804,8 @@ void AcpSessionView::wireSignals()
                 this, &AcpSessionView::onCurrentModeChanged);
         connect(m_model, &AcpSessionModel::isProcessingChanged,
                 this, &AcpSessionView::onIsProcessingChanged);
+        connect(m_model, &AcpSessionModel::backgroundTaskCountChanged,
+                this, &AcpSessionView::onBackgroundTaskCountChanged);
         connect(m_model, &AcpSessionModel::turnEnded,
                 this, &AcpSessionView::onTurnEnded);
         connect(m_model, &AcpSessionModel::goalJudgeTurnRemoved,
@@ -806,6 +817,8 @@ void AcpSessionView::wireSignals()
                 this, &AcpSessionView::onPermissionRequested);
         connect(m_connection, &AcpConnection::requestFailed,
                 this, &AcpSessionView::onRequestFailed);
+        connect(m_connection, &AcpConnection::scheduledJobsChanged,
+                this, &AcpSessionView::onScheduledJobsChanged);
         connect(m_connection, &AcpConnection::errorOccurred,
                 this, &AcpSessionView::onErrorOccurred);
         connect(m_connection, &AcpConnection::planReceived,
@@ -954,6 +967,7 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_model = model;
     m_connection = connection;
     m_savedPrefsApplied = false;
+    ++m_scheduledRev; // the cached tooltip described the previous connection's jobs
 
     // Clear the transcript: drop bubbles, cards, plan, permission prompts.
     // Leave the trailing stretch in place, and skip the inline heartbeat
@@ -1337,6 +1351,7 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
             upd.kind = tc.kind;
         }
         upd.status = tc.status;
+        upd.backgroundRunning = tc.backgroundRunning;
         upd.content = tc.content;
         if (!tc.rawInput.isEmpty()) {
             upd.rawInput = tc.rawInput;
@@ -1524,16 +1539,14 @@ void AcpSessionView::onIsProcessingChanged(bool processing)
         m_cancelBtn->setEnabled(processing);
         m_cancelBtn->setVisible(processing);
     }
-    // Heartbeat indicator: visible only while the agent is processing.
+    // Heartbeat indicator: the 100 ms tick runs while the agent is processing
+    // or background tasks are alive (updateElapsedLabel owns start/stop).
     if (processing) {
         resetElapsed();
-        if (m_elapsedLabel) m_elapsedLabel->show();
-        if (m_elapsedTimer) m_elapsedTimer->start();
         // Hide goal heartbeat while agent heartbeat is active.
         if (m_goalElapsedLabel) m_goalElapsedLabel->hide();
     } else {
-        if (m_elapsedTimer) m_elapsedTimer->stop();
-        if (m_elapsedLabel) m_elapsedLabel->hide();
+        updateElapsedLabel();
         // Restore goal heartbeat if goal timer is still running, and reset
         // the counter so it shows time since the last turn ended.
         if (m_goalElapsedTimer && m_goalElapsedTimer->isActive()) {
@@ -2089,19 +2102,125 @@ void AcpSessionView::onJumpToBottomClicked()
 void AcpSessionView::resetElapsed()
 {
     m_elapsedMs = 0;
-    if (m_elapsedLabel) {
-        m_elapsedLabel->setText(QStringLiteral("0.0s"));
-    }
+    updateElapsedLabel();
 }
 
 void AcpSessionView::onElapsedTick()
 {
-    m_elapsedMs += 100;
-    if (m_elapsedLabel) {
-        const int whole = m_elapsedMs / 1000;
-        const int tenths = (m_elapsedMs % 1000) / 100;
-        m_elapsedLabel->setText(QStringLiteral("%1.%2s").arg(whole).arg(tenths));
+    if (m_model && m_model->isProcessing())
+        m_elapsedMs += 100;
+    updateElapsedLabel();
+}
+
+void AcpSessionView::onBackgroundTaskCountChanged(int)
+{
+    updateElapsedLabel();
+}
+
+void AcpSessionView::onBackgroundStopRequested()
+{
+    if (!m_connection)
+        return;
+    // Snapshot now; a task that ends before the click makes stop a no-op.
+    const auto tasks = m_connection->backgroundTasks();
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const QFontMetrics fm(menu->font());
+    const QPointer<AcpConnection> conn(m_connection);
+    int offered = 0;
+    for (const auto &task : tasks) {
+        if (!task.canStop)
+            continue;
+        QString name = task.name.isEmpty() ? task.taskId : task.name;
+        name = fm.elidedText(name, Qt::ElideRight, 360).replace(QLatin1Char('&'), QStringLiteral("&&"));
+        QAction *act = menu->addAction(QStringLiteral("⏹ ") + tr("Stop: %1").arg(name));
+        const QString taskId = task.taskId;
+        connect(act, &QAction::triggered, this, [conn, taskId]() {
+            if (conn)
+                conn->stopBackgroundTask(taskId);
+        });
+        ++offered;
     }
+    if (offered == 0) {
+        delete menu;
+        return;
+    }
+    menu->popup(QCursor::pos());
+}
+
+void AcpSessionView::onScheduledJobsChanged()
+{
+    ++m_scheduledRev;
+    updateElapsedLabel();
+}
+
+void AcpSessionView::updateElapsedLabel()
+{
+    if (!m_elapsedLabel) return;
+    const bool processing = m_model && m_model->isProcessing();
+    const int background = m_model ? m_model->backgroundTaskCount() : 0;
+    const auto scheduledJobs = m_connection ? m_connection->scheduledJobs()
+                                            : QVector<AcpProtocol::AcpScheduledJob>();
+    const int scheduled = static_cast<int>(scheduledJobs.size());
+
+    QString text;
+    if (processing) {
+        text = QStringLiteral("%1.%2s").arg(m_elapsedMs / 1000).arg((m_elapsedMs % 1000) / 100);
+    }
+    // Background wait clock: starts on the 0→N edge and runs to the right of
+    // the label until every task has finished, whatever the turn state.
+    if (background > 0 && !m_bgWaitClock.isValid())
+        m_bgWaitClock.start();
+    else if (background == 0 && m_bgWaitClock.isValid())
+        m_bgWaitClock.invalidate();
+    if (m_elapsedTimer && (processing || background > 0) != m_elapsedTimer->isActive()) {
+        if (processing || background > 0)
+            m_elapsedTimer->start();
+        else
+            m_elapsedTimer->stop();
+    }
+    if (background > 0) {
+        if (!text.isEmpty())
+            text += QStringLiteral("  ·  ");
+        text += tr("📡 Waiting background (%1)  %2")
+                    .arg(background)
+                    .arg(AcpProtocol::formatWaitDuration(m_bgWaitClock.elapsed()));
+        if (m_connection && m_connection->hasStoppableBackgroundTask())
+            text += QStringLiteral("  <a href=\"stop\">⏹ ") + tr("Stop") + QStringLiteral("</a>");
+    }
+    // Wake-ups / cron jobs the agent set for itself. Display only (the agent
+    // cannot be told to drop them) and no ticking clock: absolute times live
+    // in the tooltip, so an idle session with a daily cron costs nothing.
+    if (scheduled > 0) {
+        if (!text.isEmpty())
+            text += QStringLiteral("  ·  ");
+        text += tr("⏰ Scheduled (%1)").arg(scheduled);
+    }
+    // Called per streamed event: only touch the tooltip on a state edge or
+    // when the scheduled-job list changed.
+    if ((background > 0) != m_elapsedTipIsBackground || m_scheduledRev != m_elapsedTipScheduledRev) {
+        m_elapsedTipIsBackground = background > 0;
+        m_elapsedTipScheduledRev = m_scheduledRev;
+        // Rich text so a prompt containing "<" or "&" cannot be misparsed.
+        QStringList lines;
+        if (m_elapsedTipIsBackground)
+            lines << tr("Background tasks started by the agent are still running").toHtmlEscaped();
+        else if (scheduled == 0)
+            lines << tr("Time since the last new event from the agent").toHtmlEscaped();
+        if (scheduled > 0) {
+            if (!lines.isEmpty())
+                lines << QString();
+            lines << tr("Scheduled by the agent (cannot be cancelled from here):").toHtmlEscaped();
+            for (const auto &job : scheduledJobs)
+                lines << QStringLiteral("• ") + AcpProtocol::formatScheduledJob(job).toHtmlEscaped();
+        }
+        const QString tip = QStringLiteral("<div>") + lines.join(QStringLiteral("<br>"))
+                          + QStringLiteral("</div>");
+        m_elapsedLabel->setToolTip(tip);
+    }
+    m_elapsedLabel->setVisible(processing || background > 0 || scheduled > 0);
+    if (m_elapsedLabel->text() != text)
+        m_elapsedLabel->setText(text);
 }
 
 void AcpSessionView::refreshBusyPlaceholder()

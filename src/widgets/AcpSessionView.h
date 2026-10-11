@@ -209,6 +209,15 @@ private:
     // sees "still working, last new event was X.Xs ago".
     void resetElapsed();
     void onElapsedTick();
+    // Heartbeat row text + visibility: timer while the agent is processing,
+    // "waiting background (N)" to its right while Claude Code background tasks
+    // are alive (also after the turn that spawned them has ended).
+    void updateElapsedLabel();
+    void onBackgroundTaskCountChanged(int count);
+    // Wake-ups / cron jobs the agent scheduled: "⏰ Scheduled (N)" on the row.
+    void onScheduledJobsChanged();
+    // "Stop" link on the waiting-background row: pick one task to stop.
+    void onBackgroundStopRequested();
 
     // Input-placeholder busy clock. Distinct from the transcript-tail
     // heartbeats above: those reset on every structural event, whereas this
@@ -313,6 +322,10 @@ private:
     QLabel *m_elapsedLabel = nullptr;
     QTimer *m_elapsedTimer = nullptr;
     int m_elapsedMs = 0;
+    bool m_elapsedTipIsBackground = false;
+    int m_scheduledRev = 0;            // bumped per scheduledJobsChanged
+    int m_elapsedTipScheduledRev = -1; // revision the cached tooltip reflects
+    QElapsedTimer m_bgWaitClock; // valid while background tasks are alive
 
     // Goal heartbeat — shown at the transcript tail while a goal is active.
     QLabel *m_goalElapsedLabel = nullptr;

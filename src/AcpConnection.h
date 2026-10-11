@@ -29,6 +29,8 @@
 #include <QObject>
 #include <QPair>
 #include <QPointer>
+#include <QSet>
+#include <QVector>
 #include <QProcess>
 #include <QString>
 #include <QStringList>
@@ -38,6 +40,7 @@
 #include "AcpAgentDefinition.h"
 #include "AcpErrorClassifier.h"
 #include "AcpProtocol.h"
+#include "AcpScheduledJobs.h"
 
 Q_DECLARE_LOGGING_CATEGORY(lcAcp)
 
@@ -110,6 +113,28 @@ public:
     }
 
     void setSessionIdForTest(const QString &id) { m_sessionId = id; }
+
+    // Live background (async) tasks the agent reported via AIR `async_task_*`.
+    int backgroundTaskCount() const { return m_liveAsyncTasks.size(); }
+    // Live background tasks in spawn order (for a "stop which one?" picker).
+    QList<AcpProtocol::AcpBackgroundTask> backgroundTasks() const
+    {
+        return QList<AcpProtocol::AcpBackgroundTask>(m_liveAsyncTasks.cbegin(), m_liveAsyncTasks.cend());
+    }
+    bool hasStoppableBackgroundTask() const;
+    // Wake-ups / cron jobs the agent scheduled for itself, in creation order.
+    const QVector<AcpProtocol::AcpScheduledJob> &scheduledJobs() const { return m_scheduledJobs.jobs(); }
+    // Lets one-shot cron jobs expire at their next fire time (default: 7 days).
+    void setScheduledNextFireProvider(AcpProtocol::ScheduledJobTracker::NextFireFn fn)
+    {
+        m_scheduledJobs.setNextFireProvider(std::move(fn));
+    }
+    // True while background tasks are alive, and for a short grace after the
+    // last one finished: Claude Code wakes the model to read the result, and
+    // that wake-up turn starts a moment after the task's final state update.
+    // Supervisors (goal judge, auto-compact) must not act before it settles.
+    bool hasPendingBackgroundWork() const;
+    void setBackgroundWakeGraceMsForTest(int ms) { m_bgWakeGraceMs = ms; }
     QJsonArray mcpServersForTest() const { return m_mcpServers; }
 
 public slots:
@@ -117,6 +142,11 @@ public slots:
     void sendPrompt(const QString &text, const QList<QPair<QByteArray, QString>> &images);
     void sendSidePrompt(const QString &text);
     void cancelPrompt();
+    // Ask the agent to stop one background task (claude-agent-acp
+    // `_session/async_task/stop`). No-op for an unknown task or one the agent
+    // did not mark stoppable. The task leaves the live list when the agent
+    // reports `stopped`, not here.
+    void stopBackgroundTask(const QString &taskId);
     void setMode(const QString &id);
     void setModel(const QString &id);
     void setConfigOption(const QString &id, const QJsonValue &value);
@@ -150,6 +180,18 @@ signals:
     void usageReplaced(const AcpProtocol::AcpUsage &usage);
     void promptStarted();
     void promptEnded();
+
+    // Snapshot of live background tasks: how many, and the tool-call ids that
+    // started them (tasks whose tool call is not known yet only count). Emitted
+    // only when the snapshot changes.
+    void asyncTasksChanged(int liveCount, const QStringList &liveToolCallIds);
+    // All background tasks finished and no wake-up turn followed within the
+    // grace window. If a wake-up turn did start, its promptEnded is the settle
+    // signal instead and this stays silent.
+    void backgroundIdle();
+    // Live ScheduleWakeup / CronCreate jobs changed (display only: the agent
+    // offers no host-side way to cancel them). Emitted only on a real change.
+    void scheduledJobsChanged();
 
     void permissionRequested(const AcpProtocol::AcpPermissionRequest &req);
 
@@ -226,6 +268,16 @@ private:
     void notePromptClosed();
     void noteStreamingActivity();
     void schedulePromptIdleEnd();
+    // True while the agent still has unfinished work the idle timer cannot
+    // see as traffic: an open tool call or a permission waiting on the user.
+    bool hasOpenWork() const;
+    void trackToolCallStatus(const QString &toolCallId, const QString &status);
+    void applyAsyncTaskEvent(const AcpProtocol::AcpAsyncTaskEvent &ev);
+    void emitAsyncTasksIfChanged();
+    // Feed a tool_call / tool_call_update payload to the scheduled-job tracker.
+    void noteScheduledJobUpdate(const QJsonObject &update);
+    // Re-arm the single-shot expiry timer for the earliest job, or stop it.
+    void rearmScheduledJobExpiry();
     void dispatchSessionPrompt(const QString &text, const QList<QPair<QByteArray, QString>> &images);
     void startSessionBusyRetry(const QString &text, const QList<QPair<QByteArray, QString>> &images);
     void stopSessionBusyRetry();
@@ -272,6 +324,21 @@ private:
     QJsonArray m_mcpServers;
 
     QHash<QString, std::function<void(const QString &outcome, const QString &optionId)>> m_pendingPermissions;
+    // Tool calls reported but not yet in a final state. Wake-up turns have no
+    // session/prompt to bound them, so this is what keeps the turn open while
+    // a long tool runs silently.
+    QSet<QString> m_openToolCalls;
+    QVector<AcpProtocol::AcpBackgroundTask> m_liveAsyncTasks; // spawn order; a handful at most
+    int liveTaskIndex(const QString &taskId) const;
+    QStringList m_lastEmittedAsyncToolIds;
+    int m_lastEmittedAsyncCount = 0;
+    QTimer *m_bgIdleTimer = nullptr;
+    AcpProtocol::ScheduledJobTracker m_scheduledJobs;
+    QTimer *m_scheduledExpiryTimer = nullptr; // fires at the earliest job expiry, no polling
+    // Observed gap task-completed -> wake-up turn: ~1.4 s (claude-agent-acp
+    // 0.89.1). Generous margin for a slow model start.
+    static constexpr int kBackgroundWakeGraceMs = 8000;
+    int m_bgWakeGraceMs = kBackgroundWakeGraceMs;
     std::function<QString()> m_autoApproveProvider;
 
     QHash<QString, TerminalState> m_terminals;

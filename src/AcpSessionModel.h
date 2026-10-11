@@ -25,6 +25,7 @@
 #include <QList>
 #include <QObject>
 #include <QPair>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -113,6 +114,9 @@ public:
     void setAcpSessionId(const QString &id);
 
     bool isProcessing() const { return m_isProcessing; }
+    // Live background tasks (Claude Code async tasks). Independent of
+    // isProcessing: the turn that spawned them has usually already ended.
+    int backgroundTaskCount() const { return m_backgroundTaskCount; }
     bool isEmpty() const { return m_messages.isEmpty() && m_toolCalls.isEmpty(); }
 
     const QVector<AcpMessage> &messages() const { return m_messages; }
@@ -164,6 +168,9 @@ public slots:
     void onUsageReplaced(const AcpProtocol::AcpUsage &usage);
     void onPromptStarted();
     void onPromptEnded();
+    // Snapshot from AcpConnection::asyncTasksChanged. Live-only state, never
+    // persisted: a restored session has no running tasks.
+    void onAsyncTasksChanged(int liveCount, const QStringList &liveToolCallIds);
 
     // -- User-initiated input ----------------------------------------------
     // Appends a user-role message. `images` is a list of (data, mimeType)
@@ -200,6 +207,7 @@ signals:
     void currentModeChanged(const QString &modeId);
     void usageChanged();
     void isProcessingChanged(bool processing);
+    void backgroundTaskCountChanged(int count);
     void turnEnded(int groupId);
     void goalJudgeTurnRemoved(const QVector<int> &messageIndices,
                               const QStringList &toolCallIds);
@@ -237,6 +245,8 @@ private:
     AcpProtocol::AcpAgentInfo m_agentInfo;
 
     bool m_isProcessing = false;
+    int m_backgroundTaskCount = 0;
+    QSet<QString> m_backgroundToolCallIds;
     int m_streamingAssistantMessageIndex = -1;
     QString m_streamingAssistantMessageId;
     int m_streamingThoughtMessageIndex = -1;

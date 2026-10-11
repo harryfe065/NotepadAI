@@ -879,6 +879,7 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     , m_title(initial.title)
     , m_kind(initial.kind)
     , m_status(initial.status)
+    , m_backgroundRunning(initial.backgroundRunning)
     , m_groupId(initial.groupId)
     , m_content(initial.content)
     , m_rawInput(initial.rawInput)
@@ -997,6 +998,10 @@ void AcpToolCallCard::apply(const AcpProtocol::AcpToolCallUpdate &update)
             headerChanged = true;
         }
     }
+    if (update.backgroundRunning.has_value() && m_backgroundRunning != *update.backgroundRunning) {
+        m_backgroundRunning = *update.backgroundRunning;
+        headerChanged = true;
+    }
     if (update.content.has_value()) {
         m_content = *update.content;
         bodyChanged = true;
@@ -1061,6 +1066,10 @@ void AcpToolCallCard::maybeAutoExpandForDiff()
 
 QString AcpToolCallCard::statusGlyph() const
 {
+    // Claude reports a backgrounded command as `completed` the moment it is
+    // handed off; the work is still running, so show that instead of a check.
+    if (m_backgroundRunning)
+        return QStringLiteral("📡");
     const QString ui = AcpProtocol::toolCallStatusForUi(m_status);
     if (ui == QLatin1String("completed")) return QStringLiteral("✓");
     if (ui == QLatin1String("failed"))    return QStringLiteral("✗");
@@ -1255,6 +1264,7 @@ QString AcpToolCallCard::computeEnrichedTitle() const
 void AcpToolCallCard::refreshHeader()
 {
     m_statusIcon->setText(statusGlyph());
+    m_statusIcon->setToolTip(m_backgroundRunning ? tr("Running in the background") : QString());
     const QString shown = firstLines(computeEnrichedTitle(), 2);
 
     const int availableWidth = m_titleLabel->width();

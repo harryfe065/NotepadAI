@@ -179,6 +179,19 @@ private slots:
     void promptEnded_waitsIdleAfterRpcResult();
     void promptEnded_chunkAfterRpcKeepsTurnOpen();
     void promptEnded_availableCommandsDoesNotKeepTurnOpen();
+    void promptEnded_wakeTurnWithOpenToolCallStaysOpen();
+    void promptEnded_wakeTurnEndsWhenToolCallCompletes();
+    void promptEnded_rpcResultDropsStaleOpenToolCalls();
+    void promptEnded_cancelEndsWakeTurnWithOpenToolCall();
+    void asyncTasks_trackLiveCountFromWire();
+    void initialize_declaresAsyncTasksCapability();
+    void backgroundIdle_firesAfterWakeGraceWhenNoWakeTurn();
+    void backgroundIdle_cancelledWhenWakeTurnStarts();
+    void backgroundTasks_exposeNameAndCanStop();
+    void stopBackgroundTask_sendsAsyncTaskStopRequest();
+    void stopBackgroundTask_ignoresUnknownOrUnstoppableTask();
+    void goalJudge_defersWhileBackgroundTaskLive();
+    void goalJudge_waitsForWakeTurnAfterTasksFinish();
     void streamingChunk_whileIdle_startsTurn();
     void sessionBusy_doesNotFail_retriesPrompt();
     void sessionBusy_followUpAfterRpc_doesNotFireUntilIdle();
@@ -2123,6 +2136,405 @@ void TestGoalAgent::promptEnded_availableCommandsDoesNotKeepTurnOpen()
         QStringLiteral("available_commands_update"),
         QJsonObject{{QStringLiteral("availableCommands"), QJsonArray{}}}));
     QTRY_COMPARE(ended, 1);
+}
+
+namespace {
+QByteArray toolCallFrame(const QString &id, const QString &status)
+{
+    return sessionUpdateFrame(QStringLiteral("tool_call"), QJsonObject{
+        {QStringLiteral("toolCallId"), id},
+        {QStringLiteral("status"), status},
+        {QStringLiteral("title"), QStringLiteral("Terminal")}});
+}
+
+QByteArray toolCallStatusFrame(const QString &id, const QString &status)
+{
+    return sessionUpdateFrame(QStringLiteral("tool_call_update"), QJsonObject{
+        {QStringLiteral("toolCallId"), id},
+        {QStringLiteral("status"), status}});
+}
+} // namespace
+
+// Real wire (claude-agent-acp 0.89.1): a wake-up turn has no session/prompt
+// open and runs a foreground tool for seconds with zero traffic. The 250 ms
+// idle gate must not end the turn while that tool call is still open.
+void TestGoalAgent::promptEnded_wakeTurnWithOpenToolCallStaysOpen()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    int started = 0;
+    int ended = 0;
+    connect(&conn, &AcpConnection::promptStarted, &conn, [&]() { ++started; });
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() { ++ended; });
+
+    channel->pushStdout(toolCallFrame(QStringLiteral("t1"), QStringLiteral("pending")));
+    QCOMPARE(started, 1);
+    QTest::qWait(700); // well past the 250 ms idle delay
+    QCOMPARE(ended, 0);
+}
+
+void TestGoalAgent::promptEnded_wakeTurnEndsWhenToolCallCompletes()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    int ended = 0;
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() { ++ended; });
+
+    channel->pushStdout(toolCallFrame(QStringLiteral("t1"), QStringLiteral("pending")));
+    QTest::qWait(400);
+    QCOMPARE(ended, 0);
+    channel->pushStdout(toolCallStatusFrame(QStringLiteral("t1"), QStringLiteral("completed")));
+    QCOMPARE(ended, 0);
+    QTRY_COMPARE(ended, 1);
+}
+
+// The agent's own session/prompt result is authoritative: a tool call it
+// never closed must not keep the UI busy forever.
+void TestGoalAgent::promptEnded_rpcResultDropsStaleOpenToolCalls()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    int ended = 0;
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() { ++ended; });
+
+    conn.sendPrompt(QStringLiteral("hi"), {});
+    channel->pushStdout(toolCallFrame(QStringLiteral("t1"), QStringLiteral("pending")));
+    channel->pushStdout(rpcResultFrame(1));
+    QTRY_COMPARE(ended, 1);
+}
+
+void TestGoalAgent::promptEnded_cancelEndsWakeTurnWithOpenToolCall()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    int ended = 0;
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() { ++ended; });
+
+    channel->pushStdout(toolCallFrame(QStringLiteral("t1"), QStringLiteral("pending")));
+    QTest::qWait(400);
+    QCOMPARE(ended, 0);
+    conn.cancelPrompt();
+    QVERIFY(channel->wroteSessionCancel());
+    QTRY_COMPARE(ended, 1);
+}
+
+// Wire shapes captured from claude-agent-acp 0.89.1 (shell task lifecycle).
+void TestGoalAgent::asyncTasks_trackLiveCountFromWire()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    QSignalSpy spy(&conn, &AcpConnection::asyncTasksChanged);
+    QVERIFY(spy.isValid());
+
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_spawned"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("b9b0")},
+        {QStringLiteral("name"), QStringLiteral("Sleep")},
+        {QStringLiteral("taskType"), QStringLiteral("shell")},
+        {QStringLiteral("toolCallId"), QStringLiteral("toolu_1")},
+        {QStringLiteral("canStop"), true}}));
+    QCOMPARE(conn.backgroundTaskCount(), 1);
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.last().at(0).toInt(), 1);
+    QCOMPARE(spy.last().at(1).toStringList(), QStringList{QStringLiteral("toolu_1")});
+
+    // Progress without a liveness change must not re-emit.
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_progress"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("b9b0")},
+        {QStringLiteral("outputFilePath"), QStringLiteral("C:/tmp/b9b0.output")}}));
+    QCOMPARE(spy.count(), 1);
+
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_state_update"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("b9b0")},
+        {QStringLiteral("state"), QStringLiteral("completed")}}));
+    QCOMPARE(conn.backgroundTaskCount(), 0);
+    QCOMPARE(spy.count(), 2);
+    QCOMPARE(spy.last().at(0).toInt(), 0);
+}
+
+// claude-agent-acp only emits async_task_* when initialize declares
+// clientCapabilities._meta.jetbrains.air.capabilities ⊇ ["asyncTasks"].
+void TestGoalAgent::initialize_declaresAsyncTasksCapability()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+
+    emit channel->started();
+
+    QJsonObject init;
+    for (const QByteArray &line : channel->written.split('\n')) {
+        const QJsonObject o = QJsonDocument::fromJson(line).object();
+        if (o.value(QStringLiteral("method")).toString() == QLatin1String("initialize"))
+            init = o.value(QStringLiteral("params")).toObject();
+    }
+    QVERIFY(!init.isEmpty());
+    const QJsonObject air = init.value(QStringLiteral("clientCapabilities")).toObject()
+        .value(QStringLiteral("_meta")).toObject()
+        .value(QStringLiteral("jetbrains")).toObject()
+        .value(QStringLiteral("air")).toObject();
+    QCOMPARE(air.value(QStringLiteral("version")).toInt(), 1);
+    QVERIFY(air.value(QStringLiteral("capabilities")).toArray()
+                .contains(QJsonValue(QStringLiteral("asyncTasks"))));
+}
+
+namespace {
+void spawnAsyncTask(RecordingChannel *channel, const QString &taskId)
+{
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_spawned"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), taskId},
+        {QStringLiteral("name"), QStringLiteral("Sleep")},
+        {QStringLiteral("taskType"), QStringLiteral("shell")},
+        {QStringLiteral("canStop"), true},
+        {QStringLiteral("toolCallId"), QStringLiteral("toolu_") + taskId}}));
+}
+
+void finishAsyncTask(RecordingChannel *channel, const QString &taskId)
+{
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_state_update"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), taskId},
+        {QStringLiteral("state"), QStringLiteral("completed")}}));
+}
+
+bool logsHave(const QSignalSpy &logs, const char *needle)
+{
+    for (const auto &row : logs) {
+        if (row.at(0).toString().contains(QLatin1String(needle)))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
+// Wire shape captured from claude-agent-acp 0.89.1:
+//   -> {"method":"_session/async_task/stop","params":{"sessionId":..,"asyncTaskId":..}}
+//   <- {"result":{"stopped":true}}  (then async_task_state_update state=stopped)
+void TestGoalAgent::backgroundTasks_exposeNameAndCanStop()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_spawned"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("a")},
+        {QStringLiteral("name"), QStringLiteral("npm run dev")},
+        {QStringLiteral("toolCallId"), QStringLiteral("toolu_a")},
+        {QStringLiteral("canStop"), true}}));
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_spawned"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("b")},
+        {QStringLiteral("name"), QStringLiteral("watcher")},
+        {QStringLiteral("canStop"), false}}));
+
+    const auto tasks = conn.backgroundTasks();
+    QCOMPARE(tasks.size(), 2);
+    QCOMPARE(tasks.at(0).taskId, QStringLiteral("a")); // spawn order
+    QCOMPARE(tasks.at(0).name, QStringLiteral("npm run dev"));
+    QVERIFY(tasks.at(0).canStop);
+    QVERIFY(!tasks.at(1).canStop);
+    QVERIFY(conn.hasStoppableBackgroundTask());
+
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_state_update"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("a")},
+        {QStringLiteral("state"), QStringLiteral("stopped")}}));
+    QCOMPARE(conn.backgroundTasks().size(), 1);
+    QVERIFY(!conn.hasStoppableBackgroundTask());
+}
+
+void TestGoalAgent::stopBackgroundTask_sendsAsyncTaskStopRequest()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    spawnAsyncTask(channel, QStringLiteral("t1"));
+    conn.stopBackgroundTask(QStringLiteral("t1"));
+
+    QJsonObject req;
+    for (const QByteArray &line : channel->written.split('\n')) {
+        const QJsonObject o = QJsonDocument::fromJson(line).object();
+        if (o.value(QStringLiteral("method")).toString() == QLatin1String("_session/async_task/stop"))
+            req = o;
+    }
+    QVERIFY(!req.isEmpty());
+    const QJsonObject params = req.value(QStringLiteral("params")).toObject();
+    QCOMPARE(params.value(QStringLiteral("sessionId")).toString(), QStringLiteral("s1"));
+    QCOMPARE(params.value(QStringLiteral("asyncTaskId")).toString(), QStringLiteral("t1"));
+
+    // The task stays listed until the agent reports `stopped`; a `stopped:false`
+    // reply (already finished) must not throw or clear anything by itself.
+    channel->pushStdout(rpcResultFrame(req.value(QStringLiteral("id")).toInt(),
+                                       QJsonObject{{QStringLiteral("stopped"), false}}));
+    QCOMPARE(conn.backgroundTaskCount(), 1);
+}
+
+void TestGoalAgent::stopBackgroundTask_ignoresUnknownOrUnstoppableTask()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    channel->pushStdout(sessionUpdateFrame(QStringLiteral("async_task_spawned"), QJsonObject{
+        {QStringLiteral("asyncTaskId"), QStringLiteral("nostop")},
+        {QStringLiteral("canStop"), false}}));
+    conn.stopBackgroundTask(QStringLiteral("nostop"));
+    conn.stopBackgroundTask(QStringLiteral("unknown"));
+    QVERIFY(!channel->written.contains("async_task/stop"));
+}
+
+// Real wire: the wake-up turn starts ~1.4 s after async_task_state_update
+// completed. backgroundIdle only fires when that turn does NOT come.
+void TestGoalAgent::backgroundIdle_firesAfterWakeGraceWhenNoWakeTurn()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+    conn.setBackgroundWakeGraceMsForTest(100);
+
+    QSignalSpy idle(&conn, &AcpConnection::backgroundIdle);
+    spawnAsyncTask(channel, QStringLiteral("t1"));
+    QVERIFY(conn.hasPendingBackgroundWork());
+    finishAsyncTask(channel, QStringLiteral("t1"));
+    QCOMPARE(conn.backgroundTaskCount(), 0);
+    QVERIFY(conn.hasPendingBackgroundWork()); // still waiting for a possible wake-up
+    QCOMPARE(idle.count(), 0);
+    QTRY_COMPARE(idle.count(), 1);
+    QVERIFY(!conn.hasPendingBackgroundWork());
+}
+
+void TestGoalAgent::backgroundIdle_cancelledWhenWakeTurnStarts()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+    conn.setBackgroundWakeGraceMsForTest(150);
+
+    QSignalSpy idle(&conn, &AcpConnection::backgroundIdle);
+    spawnAsyncTask(channel, QStringLiteral("t1"));
+    finishAsyncTask(channel, QStringLiteral("t1"));
+    // The wake-up turn begins inside the grace window; its own promptEnded
+    // is the settle signal, so backgroundIdle must stay silent.
+    channel->pushStdout(toolCallFrame(QStringLiteral("t2"), QStringLiteral("pending")));
+    QTest::qWait(400);
+    QCOMPARE(idle.count(), 0);
+    QVERIFY(!conn.hasPendingBackgroundWork());
+}
+
+// The judge must not run while Claude Code background tasks are alive, and a
+// task finishing must not judge before the wake-up turn that reads its output.
+void TestGoalAgent::goalJudge_defersWhileBackgroundTaskLive()
+{
+    ApplicationSettings settings;
+    GoalAgent goal(nullptr, &settings);
+
+    AcpConnection target;
+    auto *channel = new RecordingChannel(&target);
+    target.attachChannelForTest(channel);
+    channel->start();
+    target.setSessionIdForTest(QStringLiteral("s1"));
+    target.setBackgroundWakeGraceMsForTest(100);
+
+    QTemporaryDir historyDir;
+    QVERIFY(historyDir.isValid());
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("p1"), historyDir.path());
+    model.appendUserMessage(QStringLiteral("do the work"), {});
+    model.onPromptStarted();
+    goal.setTargetSession(&target, &model);
+
+    QSignalSpy logs(&goal, &GoalAgent::debugLogEntry);
+
+    GoalAgent::StartRequest req;
+    req.targetSessionId = QStringLiteral("s1");
+    req.successCriteriaList = QStringList{QStringLiteral("done")};
+    req.agentId = QLatin1String(GoalHttpJudge::kAgentId);
+    req.attachToExistingConversation = true;
+    QVERIFY(goal.start(req));
+
+    spawnAsyncTask(channel, QStringLiteral("t1"));
+    model.onPromptEnded();
+    goal.onTargetPromptEnded();
+    QVERIFY(!logsHave(logs, "evaluateViaHttp"));
+    QVERIFY(logsHave(logs, "background"));
+
+    // Task finishes, no wake-up turn arrives: judge once after the grace.
+    finishAsyncTask(channel, QStringLiteral("t1"));
+    QVERIFY(!logsHave(logs, "evaluateViaHttp"));
+    QTRY_VERIFY(logsHave(logs, "evaluateViaHttp"));
+}
+
+void TestGoalAgent::goalJudge_waitsForWakeTurnAfterTasksFinish()
+{
+    ApplicationSettings settings;
+    GoalAgent goal(nullptr, &settings);
+
+    AcpConnection target;
+    auto *channel = new RecordingChannel(&target);
+    target.attachChannelForTest(channel);
+    channel->start();
+    target.setSessionIdForTest(QStringLiteral("s1"));
+    target.setBackgroundWakeGraceMsForTest(150);
+
+    QTemporaryDir historyDir;
+    QVERIFY(historyDir.isValid());
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("p1"), historyDir.path());
+    model.appendUserMessage(QStringLiteral("do the work"), {});
+    model.onPromptStarted();
+    goal.setTargetSession(&target, &model);
+
+    QSignalSpy logs(&goal, &GoalAgent::debugLogEntry);
+
+    GoalAgent::StartRequest req;
+    req.targetSessionId = QStringLiteral("s1");
+    req.successCriteriaList = QStringList{QStringLiteral("done")};
+    req.agentId = QLatin1String(GoalHttpJudge::kAgentId);
+    req.attachToExistingConversation = true;
+    QVERIFY(goal.start(req));
+
+    spawnAsyncTask(channel, QStringLiteral("t1"));
+    model.onPromptEnded();
+    goal.onTargetPromptEnded();
+    finishAsyncTask(channel, QStringLiteral("t1"));
+
+    // Wake-up turn starts inside the grace window and is still running.
+    channel->pushStdout(toolCallFrame(QStringLiteral("w1"), QStringLiteral("pending")));
+    model.onPromptStarted();
+    QTest::qWait(400);
+    QVERIFY(!logsHave(logs, "evaluateViaHttp"));
+
+    // Its end is what judges.
+    channel->pushStdout(toolCallStatusFrame(QStringLiteral("w1"), QStringLiteral("completed")));
+    model.onPromptEnded();
+    goal.onTargetPromptEnded();
+    QVERIFY(logsHave(logs, "evaluateViaHttp"));
 }
 
 void TestGoalAgent::streamingChunk_whileIdle_startsTurn()

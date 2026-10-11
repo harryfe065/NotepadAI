@@ -28,6 +28,7 @@
 #include "TranslationManager.h"
 #include "ApplicationSettings.h"
 #include "AcpAgentManager.h"
+#include "CronExpression.h"
 #include "AcpAgentDefinition.h"
 #include "IAcpProcessChannel.h"
 #include "SshAcpProcessChannel.h"
@@ -56,6 +57,7 @@
 
 #include <chrono>
 
+#include <QDateTime>
 #include <QCommandLineParser>
 
 #include <QDir>
@@ -229,6 +231,13 @@ bool NotepadNextApplication::init()
         recentWorkspacesListManager = new RecentFilesListManager(this, /*maxFiles=*/100);
         editorManager = new EditorManager(settings, this);
         aiAgentManager_ = new AcpAgentManager(settings, this);
+        aiAgentManager_->setScheduledNextFireProvider([](const QString &cron, qint64 fromMs) -> qint64 {
+            const auto expr = CronExpression::parse(cron);
+            if (!expr)
+                return 0;
+            const QDateTime next = expr->nextFireTime(QDateTime::fromMSecsSinceEpoch(fromMs));
+            return next.isValid() ? next.toMSecsSinceEpoch() : 0;
+        });
         credentialStore_ = new ai::CredentialStore(this);
         commitMessageGenerator_ = new ai::CommitMessageGenerator(settings, credentialStore_, this);
         sshProfileRegistry_ = new remote::SshProfileRegistry(settings, this);

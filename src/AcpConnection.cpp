@@ -23,6 +23,7 @@
 #include "remote/ExecutionContext.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -35,6 +36,9 @@
 #include <QTime>
 #include <QTimer>
 #include <QUuid>
+
+#include <algorithm>
+#include <limits>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -158,9 +162,24 @@ AcpConnection::AcpConnection(QObject *parent)
     m_promptIdleEndTimer = new QTimer(this);
     m_promptIdleEndTimer->setSingleShot(true);
     connect(m_promptIdleEndTimer, &QTimer::timeout, this, [this]() {
-        if (m_openPrompts > 0 || m_busyRetryPending)
+        if (m_openPrompts > 0 || m_busyRetryPending || hasOpenWork())
             return;
         endPrompt();
+    });
+
+    m_bgIdleTimer = new QTimer(this);
+    m_bgIdleTimer->setSingleShot(true);
+    connect(m_bgIdleTimer, &QTimer::timeout, this, [this]() {
+        if (m_liveAsyncTasks.isEmpty() && !m_promptInFlight)
+            emit backgroundIdle();
+    });
+
+    m_scheduledExpiryTimer = new QTimer(this);
+    m_scheduledExpiryTimer->setSingleShot(true);
+    connect(m_scheduledExpiryTimer, &QTimer::timeout, this, [this]() {
+        if (m_scheduledJobs.expire(QDateTime::currentMSecsSinceEpoch()))
+            emit scheduledJobsChanged();
+        rearmScheduledJobExpiry();
     });
 
     m_sessionBusyRetryTimer = new QTimer(this);
@@ -394,6 +413,13 @@ void AcpConnection::sendInitialize()
                   AcpProtocol::kProtocolVersion);
     params.insert(QStringLiteral("client"), client);
     params.insert(QStringLiteral("capabilities"), caps);
+    // Spec field names (`clientInfo` / `clientCapabilities`). Only the opt-in
+    // extension meta goes here: fs/terminal stay on the legacy keys above so
+    // agents that already read those keep behaving exactly as before.
+    params.insert(QStringLiteral("clientInfo"), client);
+    QJsonObject specCaps;
+    specCaps.insert(QStringLiteral("_meta"), AcpProtocol::clientCapabilitiesMeta());
+    params.insert(QStringLiteral("clientCapabilities"), specCaps);
 
     sendRequest(AcpProtocol::kMethodInitialize, params,
                 [this](const QJsonValue &result, const QJsonValue &error) {
@@ -725,11 +751,16 @@ void AcpConnection::cancelPrompt()
 {
     const bool hadBusyRetry = m_busyRetryPending;
     stopSessionBusyRetry();
+    // A cancelled turn may never close its tool calls. Drop them so a wake-up
+    // turn (no session/prompt to answer) can still end.
+    m_openToolCalls.clear();
     QJsonObject params;
     params.insert(QStringLiteral("sessionId"), m_sessionId);
     sendNotification(AcpProtocol::kMethodSessionCancel, params);
     if (hadBusyRetry)
         notePromptClosed();
+    else
+        schedulePromptIdleEnd();
 }
 
 void AcpConnection::setMode(const QString &id)
@@ -918,8 +949,10 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
         tc.rawInput = update.value(QStringLiteral("rawInput")).toObject();
         tc.rawOutput = update.value(QStringLiteral("rawOutput")).toObject();
         tc.groupId = update.value(QStringLiteral("groupId")).toInt(0);
+        noteScheduledJobUpdate(update);
         AcpProtocol::injectToolCallPath(
             tc.rawInput, update.value(QStringLiteral("locations")).toArray());
+        trackToolCallStatus(tc.id, tc.status.isEmpty() ? QStringLiteral("pending") : tc.status);
         emit toolCallReceived(tc);
     } else if (kind == QLatin1String("tool_call_update")) {
         m_promptProducedOutput = true;
@@ -941,7 +974,12 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
         const QJsonValue st = update.value(QStringLiteral("status"));
         if (st.isString()) {
             u.status = st.toString();
+            trackToolCallStatus(u.id, *u.status);
         }
+        if (AcpProtocol::toolCallUpdateIsBackgrounded(update)) {
+            u.backgrounded = true;
+        }
+        noteScheduledJobUpdate(update);
         const QJsonValue c = update.value(QStringLiteral("content"));
         if (c.isArray()) {
             u.content = c.toArray();
@@ -1050,6 +1088,10 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
             }
         }
         emit usageReplaced(usage);
+    } else if (const auto asyncEv = AcpProtocol::asyncTaskEventFromUpdate(kind, update)) {
+        // Task lifecycle is liveness info, not turn traffic: it must neither
+        // start a turn nor delay the idle end of one.
+        applyAsyncTaskEvent(*asyncEv);
     } else if (kind == QLatin1String("prompt_start")) {
         beginPrompt();
     } else if (kind == QLatin1String("prompt_end")) {
@@ -1475,6 +1517,15 @@ void AcpConnection::handleProcessFinished(int exitCode, QProcess::ExitStatus sta
     if (m_promptIdleEndTimer)
         m_promptIdleEndTimer->stop();
     m_openPrompts = 0;
+    m_openToolCalls.clear();
+    // Background tasks die with their agent process.
+    m_liveAsyncTasks.clear();
+    emitAsyncTasksIfChanged();
+    m_bgIdleTimer->stop(); // dead process: no wake-up will come
+    // Wake-ups and cron jobs are session-only and die with the process.
+    if (m_scheduledJobs.clear())
+        emit scheduledJobsChanged();
+    rearmScheduledJobExpiry();
     // If the process died mid-turn, close the turn so the UI re-enables Send.
     endPrompt();
     // Surface the exit so the dock can switch into the "Agent exited" state.
@@ -1499,6 +1550,8 @@ void AcpConnection::beginPrompt()
     }
     m_promptInFlight = true;
     m_promptProducedOutput = false;
+    // A turn is running: its own promptEnded settles supervisors from here.
+    m_bgIdleTimer->stop();
     emit promptStarted();
 }
 
@@ -1528,8 +1581,12 @@ void AcpConnection::notePromptClosed()
 {
     if (m_openPrompts > 0)
         --m_openPrompts;
-    if (m_openPrompts == 0)
+    if (m_openPrompts == 0) {
+        // The session/prompt result is the agent's own end-of-turn verdict;
+        // tool calls it left unclosed (cancelled, backgrounded) are stale.
+        m_openToolCalls.clear();
         schedulePromptIdleEnd();
+    }
 }
 
 void AcpConnection::noteStreamingActivity()
@@ -1542,9 +1599,155 @@ void AcpConnection::noteStreamingActivity()
 
 void AcpConnection::schedulePromptIdleEnd()
 {
-    if (!m_promptInFlight || m_openPrompts > 0 || m_busyRetryPending)
+    if (!m_promptInFlight || m_openPrompts > 0 || m_busyRetryPending || hasOpenWork())
         return;
     m_promptIdleEndTimer->start(kPromptIdleEndDelayMs);
+}
+
+int AcpConnection::liveTaskIndex(const QString &taskId) const
+{
+    for (int i = 0; i < m_liveAsyncTasks.size(); ++i) {
+        if (m_liveAsyncTasks.at(i).taskId == taskId)
+            return i;
+    }
+    return -1;
+}
+
+bool AcpConnection::hasStoppableBackgroundTask() const
+{
+    for (const auto &t : m_liveAsyncTasks) {
+        if (t.canStop)
+            return true;
+    }
+    return false;
+}
+
+void AcpConnection::stopBackgroundTask(const QString &taskId)
+{
+    const int idx = liveTaskIndex(taskId);
+    if (idx < 0 || !m_liveAsyncTasks.at(idx).canStop || m_sessionId.isEmpty())
+        return;
+    QJsonObject params;
+    params.insert(QStringLiteral("sessionId"), m_sessionId);
+    params.insert(QStringLiteral("asyncTaskId"), taskId);
+    sendRequest(AcpProtocol::kMethodAsyncTaskStop, params,
+                [this, taskId](const QJsonValue &result, const QJsonValue &error) {
+                    if (!error.isUndefined() && !error.isNull()) {
+                        emit requestFailed(rpcErrorMessage(error));
+                        return;
+                    }
+                    // `stopped:false` = already finished or not stoppable. The
+                    // authoritative removal is the async_task_state_update.
+                    appendDebugLog(QStringLiteral("async_task/stop %1: stopped=%2")
+                                       .arg(taskId,
+                                            result.toObject().value(QStringLiteral("stopped")).toBool()
+                                                ? QStringLiteral("true") : QStringLiteral("false")));
+                });
+}
+
+void AcpConnection::noteScheduledJobUpdate(const QJsonObject &update)
+{
+    if (!m_scheduledJobs.apply(update, QDateTime::currentMSecsSinceEpoch()))
+        return;
+    emit scheduledJobsChanged();
+    rearmScheduledJobExpiry();
+}
+
+void AcpConnection::rearmScheduledJobExpiry()
+{
+    const qint64 next = m_scheduledJobs.nextExpiryMs();
+    if (next == 0) {
+        m_scheduledExpiryTimer->stop();
+        return;
+    }
+    const qint64 delay = std::max<qint64>(next - QDateTime::currentMSecsSinceEpoch(), 0);
+    // QTimer takes an int; the 7-day cap on recurring jobs fits with room to spare.
+    m_scheduledExpiryTimer->start(static_cast<int>(std::min<qint64>(delay, std::numeric_limits<int>::max())));
+}
+
+bool AcpConnection::hasPendingBackgroundWork() const
+{
+    return !m_liveAsyncTasks.isEmpty() || (m_bgIdleTimer && m_bgIdleTimer->isActive());
+}
+
+bool AcpConnection::hasOpenWork() const
+{
+    return !m_openToolCalls.isEmpty() || !m_pendingPermissions.isEmpty();
+}
+
+void AcpConnection::trackToolCallStatus(const QString &toolCallId, const QString &status)
+{
+    if (toolCallId.isEmpty() || status.isEmpty())
+        return;
+    if (AcpProtocol::toolCallStatusIsTerminal(status)) {
+        if (m_openToolCalls.remove(toolCallId) && m_openToolCalls.isEmpty()
+            && m_openPrompts == 0 && !m_busyRetryPending) {
+            // Last open tool just closed: the turn may now go quiet and end.
+            schedulePromptIdleEnd();
+        }
+    } else {
+        m_openToolCalls.insert(toolCallId);
+    }
+}
+
+void AcpConnection::applyAsyncTaskEvent(const AcpProtocol::AcpAsyncTaskEvent &ev)
+{
+    using Kind = AcpProtocol::AcpAsyncTaskEvent::Kind;
+    switch (ev.kind) {
+    case Kind::Spawned: {
+        AcpProtocol::AcpBackgroundTask task{ev.taskId, ev.name.isEmpty() ? ev.description : ev.name,
+                                            ev.toolCallId, ev.canStop};
+        const int idx = liveTaskIndex(ev.taskId);
+        if (idx < 0)
+            m_liveAsyncTasks.append(task);
+        else
+            m_liveAsyncTasks[idx] = task;
+        break;
+    }
+    case Kind::Progress: {
+        // The tool-call id can arrive late, on progress (air-extensions.md,
+        // "Tool call of a task"). Never resurrect a task already finished.
+        const int idx = liveTaskIndex(ev.taskId);
+        if (idx >= 0 && !ev.toolCallId.isEmpty())
+            m_liveAsyncTasks[idx].toolCallId = ev.toolCallId;
+        break;
+    }
+    case Kind::StateChanged: {
+        const int idx = liveTaskIndex(ev.taskId);
+        if (AcpProtocol::asyncTaskStateIsLive(ev.state)) {
+            if (idx < 0)
+                m_liveAsyncTasks.append({ev.taskId, ev.name, ev.toolCallId, ev.canStop});
+        } else if (idx >= 0) {
+            m_liveAsyncTasks.removeAt(idx);
+        }
+        break;
+    }
+    }
+    emitAsyncTasksIfChanged();
+}
+
+void AcpConnection::emitAsyncTasksIfChanged()
+{
+    QStringList ids;
+    ids.reserve(m_liveAsyncTasks.size());
+    for (const auto &task : std::as_const(m_liveAsyncTasks)) {
+        if (!task.toolCallId.isEmpty())
+            ids.append(task.toolCallId);
+    }
+    ids.sort();
+    const int count = m_liveAsyncTasks.size();
+    if (count == m_lastEmittedAsyncCount && ids == m_lastEmittedAsyncToolIds)
+        return;
+    const int previousCount = m_lastEmittedAsyncCount;
+    m_lastEmittedAsyncCount = count;
+    m_lastEmittedAsyncToolIds = ids;
+    if (count > 0) {
+        m_bgIdleTimer->stop();
+    } else if (previousCount > 0) {
+        // Last task done: give the wake-up turn a window to begin.
+        m_bgIdleTimer->start(m_bgWakeGraceMs);
+    }
+    emit asyncTasksChanged(count, ids);
 }
 
 void AcpConnection::clearDebugLog()

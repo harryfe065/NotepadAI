@@ -154,6 +154,7 @@ private slots:
     // button and the composer Cancel button. No-op when no goal is active.
     void stopGoalAgentIfActive();
     void onNativeGoalPromptEnded();
+    void onNativeGoalBackgroundIdle();
     void onDeferredGoalDispatched();
     void onDeferredGoalRemoved();
     void onPromptQueueChanged();

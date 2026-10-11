@@ -55,6 +55,8 @@ private slots:
     void imageBlocksSurviveRoundTrip();
     void detachingHistoryStoreFlushesPendingSnapshot();
     void usageReplace_zeroUsedSameSizeDuringTurnDoesNotClobberOccupancy();
+    void backgroundedMarker_setsToolCallFlag();
+    void asyncTasksChanged_flagsLiveToolCallsAndCount();
     void usageReplace_smallerNonZeroDuringTurnReplacesOccupancy();
     void usageReplace_zeroUsedWhileIdleReplacesOccupancy();
     void usageReplace_zeroUsedDifferentSizeDuringTurnReplacesOccupancy();
@@ -763,6 +765,67 @@ void TestAcpSessionModel::removeGoalJudgeTurn_dropsSuffixKeepsPrior()
     QVERIFY(!model.messages().at(1).fromGoalJudge);
     QVERIFY(model.toolCalls().isEmpty());
     QCOMPARE(spy.count(), 1);
+}
+
+void TestAcpSessionModel::backgroundedMarker_setsToolCallFlag()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+
+    AcpProtocol::AcpToolCall tc;
+    tc.id = QStringLiteral("call-1");
+    tc.title = QStringLiteral("sleep 20");
+    tc.status = QStringLiteral("pending");
+    model.onToolCallReceived(tc);
+    QVERIFY(!model.toolCalls().value(QStringLiteral("call-1")).backgrounded);
+
+    AcpProtocol::AcpToolCallUpdate up;
+    up.id = QStringLiteral("call-1");
+    up.status = QStringLiteral("completed");
+    up.backgrounded = true;
+    model.onToolCallUpdated(up);
+
+    const auto stored = model.toolCalls().value(QStringLiteral("call-1"));
+    QVERIFY(stored.backgrounded);
+    QCOMPARE(stored.status, QStringLiteral("completed"));
+}
+
+void TestAcpSessionModel::asyncTasksChanged_flagsLiveToolCallsAndCount()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+    QSignalSpy countSpy(&model, &AcpSessionModel::backgroundTaskCountChanged);
+    QSignalSpy cardSpy(&model, &AcpSessionModel::toolCallAddedOrUpdated);
+
+    AcpProtocol::AcpToolCall tc;
+    tc.id = QStringLiteral("call-1");
+    tc.status = QStringLiteral("completed");
+    model.onToolCallReceived(tc);
+    cardSpy.clear();
+
+    // A live task whose tool call is known flags that card as running in
+    // the background and counts once.
+    model.onAsyncTasksChanged(1, QStringList{QStringLiteral("call-1")});
+    QCOMPARE(model.backgroundTaskCount(), 1);
+    QVERIFY(model.toolCalls().value(QStringLiteral("call-1")).backgroundRunning);
+    QCOMPARE(countSpy.count(), 1);
+    QCOMPARE(cardSpy.count(), 1);
+
+    // Same snapshot again: no churn.
+    model.onAsyncTasksChanged(1, QStringList{QStringLiteral("call-1")});
+    QCOMPARE(countSpy.count(), 1);
+    QCOMPARE(cardSpy.count(), 1);
+
+    // A second live task with no known tool call still counts.
+    model.onAsyncTasksChanged(2, QStringList{QStringLiteral("call-1")});
+    QCOMPARE(model.backgroundTaskCount(), 2);
+    QCOMPARE(countSpy.count(), 2);
+
+    // Tasks end: flag clears, count drops to zero.
+    model.onAsyncTasksChanged(0, QStringList{});
+    QCOMPARE(model.backgroundTaskCount(), 0);
+    QVERIFY(!model.toolCalls().value(QStringLiteral("call-1")).backgroundRunning);
+    QCOMPARE(countSpy.count(), 3);
 }
 
 QTEST_GUILESS_MAIN(TestAcpSessionModel)

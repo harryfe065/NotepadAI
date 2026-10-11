@@ -60,6 +60,8 @@ constexpr const char *kMethodSessionRequestPermission = "session/request_permiss
 constexpr const char *kMethodRequestPermission   = "request_permission";
 constexpr const char *kMethodSessionUpdate       = "session/update";
 constexpr const char *kMethodExtMethod           = "ext_method";
+// claude-agent-acp AIR extension: stop one background (async) task.
+constexpr const char *kMethodAsyncTaskStop       = "_session/async_task/stop";
 
 bool isPermissionRequestMethod(const QString &method);
 
@@ -96,6 +98,11 @@ struct AcpToolCall
     QJsonObject rawInput;
     QJsonObject rawOutput;
     int groupId{0};
+    // Claude Code moved this tool call to the background (the call itself is
+    // reported `completed`). `backgroundRunning` is live-only state: the async
+    // task it started is still alive.
+    bool backgrounded{false};
+    bool backgroundRunning{false};
 };
 
 // Needle match for ACP tool name or title. Prefer extra over dropping a write.
@@ -136,6 +143,10 @@ struct AcpToolCallUpdate
     // The session model appends this onto a text content block; the card stays
     // collapsed (title = command) until the user expands.
     std::optional<QString> terminalOutputDelta;
+    // `_meta.jetbrains.air.asyncTasks.backgrounded` on the update.
+    std::optional<bool> backgrounded;
+    // Host-side (not wire): the session view mirrors AcpToolCall::backgroundRunning.
+    std::optional<bool> backgroundRunning;
 };
 
 struct AcpPlanEntry
@@ -276,6 +287,52 @@ void appendToolCallTextDelta(QJsonArray &content, const QString &delta);
 
 // omp acp emits `pending` / `in_progress` instead of Claude/Codex `running`.
 QString toolCallStatusForUi(const QString &status);
+
+// Final tool-call states. `pending` / `in_progress` / empty are still open.
+bool toolCallStatusIsTerminal(const QString &status);
+
+// ----- AIR async tasks (claude-agent-acp background work) ------------------
+// Emitted only when `initialize` declares the `asyncTasks` capability, see
+// clientCapabilitiesMeta().
+struct AcpAsyncTaskEvent
+{
+    enum class Kind : std::uint8_t { Spawned, Progress, StateChanged };
+
+    Kind kind = Kind::Spawned;
+    QString taskId;
+    QString name;
+    QString taskType;
+    QString description;
+    QString toolCallId; // may arrive late, on a later progress update
+    QString state;      // StateChanged: running | paused | completed | failed | stopped
+    QString summary;
+    bool canStop = false; // Spawned: the agent accepts _session/async_task/stop for it
+};
+
+// A live background task as tracked by the connection (spawn order).
+struct AcpBackgroundTask
+{
+    QString taskId;
+    QString name;
+    QString toolCallId; // may be empty until a later progress update
+    bool canStop = false;
+};
+
+// `kind` is the `sessionUpdate` value. nullopt for any other kind or when the
+// payload carries no `asyncTaskId`.
+std::optional<AcpAsyncTaskEvent> asyncTaskEventFromUpdate(const QString &kind,
+                                                          const QJsonObject &update);
+bool asyncTaskStateIsLive(const QString &state);
+
+// `_meta.jetbrains.air.asyncTasks.backgrounded == true` on a tool_call_update.
+bool toolCallUpdateIsBackgrounded(const QJsonObject &update);
+
+// Compact wait clock: "4.2s" under a minute, "2m 05s" under an hour, then "1h 02m".
+QString formatWaitDuration(qint64 ms);
+
+// `initialize.clientCapabilities._meta`: opt in to the AIR async-task events.
+// The agent requires `version` >= 1 and `capabilities` to be an array.
+QJsonObject clientCapabilitiesMeta();
 
 // Path for git refresh and titles. Claude uses `file_path`; omp uses `path`,
 // `locations[]`, type:diff.path, or a hashline `input` (`[file#tag]`).

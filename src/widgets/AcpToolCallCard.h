@@ -89,6 +89,7 @@ private:
     QString m_title;
     QString m_kind;
     QString m_status;
+    bool m_backgroundRunning = false; // an async task this call started is still alive
     int m_groupId = 0;
     QJsonArray m_content;
     QJsonObject m_rawInput;

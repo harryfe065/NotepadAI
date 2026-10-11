@@ -367,6 +367,16 @@ target_sources(test_acp_protocol_serialization PRIVATE
 )
 add_test(NAME AcpProtocolSerialization COMMAND test_acp_protocol_serialization)
 
+# --- AcpScheduledJobs: live ScheduleWakeup / CronCreate job tracking ---
+qt_add_executable(test_acp_scheduled_jobs test_acp_scheduled_jobs.cpp)
+target_include_directories(test_acp_scheduled_jobs PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_scheduled_jobs PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_scheduled_jobs PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.h
+)
+add_test(NAME AcpScheduledJobs COMMAND test_acp_scheduled_jobs)
+
 # --- AcpHistoryStore: debounced atomic per-session JSON writes ---
 qt_add_executable(test_acp_history_store test_acp_history_store.cpp)
 target_include_directories(test_acp_history_store PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -445,6 +455,7 @@ target_sources(test_goal_draft_generator PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.h
@@ -563,6 +574,7 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.cpp
@@ -655,6 +667,7 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.cpp
@@ -745,6 +758,7 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.cpp
     ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.cpp
@@ -1730,6 +1744,7 @@ target_sources(test_acp_remote_transport PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/FakeSshTransport.h
     ${CMAKE_SOURCE_DIR}/src/AcpAgentDefinition.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.h
@@ -1898,6 +1913,7 @@ target_sources(test_goal_agent PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.h

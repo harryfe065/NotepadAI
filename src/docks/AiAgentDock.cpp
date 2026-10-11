@@ -194,6 +194,9 @@ void AiAgentDock::wireSlotSignals(Slot &slot)
         connect(slot.connection, &AcpConnection::promptEnded,
                 this, &AiAgentDock::onNativeGoalPromptEnded,
                 Qt::UniqueConnection);
+        connect(slot.connection, &AcpConnection::backgroundIdle,
+                this, &AiAgentDock::onNativeGoalBackgroundIdle,
+                Qt::UniqueConnection);
     }
     if (slot.view) {
         connect(slot.view, &AcpSessionView::retryRequested,
@@ -272,6 +275,11 @@ void AiAgentDock::onNativeGoalPromptEnded()
     maybeSendNativeAutoCompact(slotForConnection(sender()));
 }
 
+void AiAgentDock::onNativeGoalBackgroundIdle()
+{
+    maybeSendNativeAutoCompact(slotForConnection(sender()));
+}
+
 void AiAgentDock::onDeferredGoalDispatched()
 {
     Slot *slot = slotForView(qobject_cast<AcpSessionView *>(sender()));
@@ -296,6 +304,10 @@ void AiAgentDock::maybeSendNativeAutoCompact(Slot *slot)
     if (!slot || !slot->nativeAutoCompact || !slot->connection)
         return;
     if (slot->model && slot->model->isProcessing())
+        return;
+    // Never compact under a running background task or before the wake-up
+    // turn that reads its result; backgroundIdle re-drives this.
+    if (slot->connection->hasPendingBackgroundWork())
         return;
     if (slot->view && slot->view->queuedPromptCount() > 0)
         return;

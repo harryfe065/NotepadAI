@@ -238,6 +238,7 @@ void AcpSessionModel::loadFromDisk()
         tc.rawInput = to.value(QStringLiteral("rawInput")).toObject();
         tc.rawOutput = to.value(QStringLiteral("rawOutput")).toObject();
         tc.groupId = to.value(QStringLiteral("groupId")).toInt();
+        tc.backgrounded = to.value(QStringLiteral("backgrounded")).toBool(false);
         if (!tc.id.isEmpty()) {
             m_toolCalls.insert(tc.id, tc);
             if (tc.groupId > m_currentGroupId) {
@@ -325,6 +326,9 @@ QJsonObject AcpSessionModel::toHistoryJson() const
         to.insert(QStringLiteral("status"), tc.status);
         to.insert(QStringLiteral("content"), tc.content);
         to.insert(QStringLiteral("groupId"), tc.groupId);
+        if (tc.backgrounded) {
+            to.insert(QStringLiteral("backgrounded"), true);
+        }
         if (!tc.rawInput.isEmpty()) {
             QJsonObject slim;
             auto copyField = [&](const QLatin1String &key) {
@@ -723,6 +727,10 @@ void AcpSessionModel::onToolCallUpdated(const AcpToolCallUpdate &update)
         if (update.terminalOutputDelta.has_value()) {
             AcpProtocol::appendToolCallTextDelta(it.value().content, *update.terminalOutputDelta);
         }
+        if (update.backgrounded.has_value()) {
+            it.value().backgrounded = *update.backgrounded;
+            it.value().backgroundRunning = m_backgroundToolCallIds.contains(update.id);
+        }
     }
     emit toolCallAddedOrUpdated(update.id);
     schedulePersistIfNeeded();
@@ -819,6 +827,38 @@ void AcpSessionModel::onUsageReplaced(const AcpUsage &usage)
     m_usage = usage;
     emit usageChanged();
     schedulePersistIfNeeded();
+}
+
+void AcpSessionModel::onAsyncTasksChanged(int liveCount, const QStringList &liveToolCallIds)
+{
+    const QSet<QString> next(liveToolCallIds.cbegin(), liveToolCallIds.cend());
+    if (liveCount == m_backgroundTaskCount && next == m_backgroundToolCallIds)
+        return;
+
+    // Only cards whose membership flipped repaint: O(changed), not O(all).
+    QSet<QString> flipped = m_backgroundToolCallIds;
+    flipped.unite(next);
+    QSet<QString> unchanged = m_backgroundToolCallIds;
+    unchanged.intersect(next);
+    flipped.subtract(unchanged);
+    m_backgroundToolCallIds = next;
+
+    for (const QString &id : std::as_const(flipped)) {
+        auto it = m_toolCalls.find(id);
+        if (it == m_toolCalls.end())
+            continue; // task spawned before its tool call arrived; applied on update
+        it.value().backgroundRunning = next.contains(id);
+        // A running task proves the call was backgrounded even if the marker
+        // update was missed (or arrives after the spawn).
+        if (it.value().backgroundRunning)
+            it.value().backgrounded = true;
+        emit toolCallAddedOrUpdated(id);
+    }
+
+    if (liveCount != m_backgroundTaskCount) {
+        m_backgroundTaskCount = liveCount;
+        emit backgroundTaskCountChanged(liveCount);
+    }
 }
 
 void AcpSessionModel::onPromptStarted()

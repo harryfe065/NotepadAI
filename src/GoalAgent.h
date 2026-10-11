@@ -175,6 +175,7 @@ signals:
 
 private slots:
     void onTargetPromptEnded();
+    void onTargetBackgroundIdle();
     void onTargetDestroyed();
     void onJudgeMessageChunk(const QString &chunk);
     void onJudgePromptEnded();
@@ -236,6 +237,11 @@ private:
     bool m_autoCompact = false;
     bool m_prefixGoal = false;
     bool m_deferredPrefixGoal = false;
+    // Judge postponed because the target still has Claude Code background
+    // tasks (or is inside the wake-up grace). Re-driven by backgroundIdle or
+    // by the wake-up turn's own promptEnded.
+    bool m_deferredForBackground = false;
+    void evaluateWhenTargetSettled(const QString &origin);
     QString m_originalUserMessage;
     QString m_developerRequests;
     QString m_lastActionText;
