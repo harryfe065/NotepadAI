@@ -105,10 +105,9 @@ void TestAcpToolCallCard::collapsed_card_defers_body_render_until_expanded()
 
     AcpToolCallCard card(tc);
     card.resize(480, 120);
-    QTextBrowser *body = bodyFor(card);
-    QVERIFY(body);
+    // A collapsed card does not even build its body widget.
     QVERIFY(card.isCollapsed());
-    QVERIFY(body->toPlainText().isEmpty());
+    QVERIFY(!bodyFor(card));
 
     AcpProtocol::AcpToolCallUpdate update;
     update.id = tc.id;
@@ -117,10 +116,17 @@ void TestAcpToolCallCard::collapsed_card_defers_body_render_until_expanded()
     card.apply(update);
 
     QTest::qWait(120);
-    QVERIFY(body->toPlainText().isEmpty());
+    QVERIFY(!bodyFor(card));
 
     card.setCollapsed(false);
+    QTextBrowser *body = bodyFor(card);
+    QVERIFY(body);
     QVERIFY(body->toPlainText().contains(QStringLiteral("final output")));
+
+    // Collapse keeps the built body, hidden.
+    card.setCollapsed(true);
+    QCOMPARE(bodyFor(card), body);
+    QVERIFY(body->isHidden());
 }
 
 void TestAcpToolCallCard::expanded_card_coalesces_running_updates()
@@ -128,10 +134,10 @@ void TestAcpToolCallCard::expanded_card_coalesces_running_updates()
     AcpProtocol::AcpToolCall tc = baseCall();
     AcpToolCallCard card(tc);
     card.resize(480, 120);
-    QTextBrowser *body = bodyFor(card);
-    QVERIFY(body);
 
     card.setCollapsed(false);
+    QTextBrowser *body = bodyFor(card);
+    QVERIFY(body);
     QVERIFY(body->toPlainText().isEmpty());
 
     AcpProtocol::AcpToolCallUpdate first;
@@ -180,12 +186,10 @@ void TestAcpToolCallCard::running_diff_card_stays_collapsed()
 
     AcpToolCallCard card(tc);
     card.resize(480, 120);
-    QTextBrowser *body = bodyFor(card);
-    QVERIFY(body);
 
     QVERIFY(card.isCollapsed());
     QTest::qWait(120);
-    QVERIFY(body->toPlainText().isEmpty());
+    QVERIFY(!bodyFor(card));
 
     // Once it finishes, it auto-expands and renders.
     AcpProtocol::AcpToolCallUpdate update;
@@ -194,6 +198,8 @@ void TestAcpToolCallCard::running_diff_card_stays_collapsed()
     card.apply(update);
 
     QVERIFY(!card.isCollapsed());
+    QTextBrowser *body = bodyFor(card);
+    QVERIFY(body);
     QTRY_VERIFY(body->toPlainText().contains(QStringLiteral("a.cpp")));
 }
 
@@ -291,7 +297,7 @@ void TestAcpToolCallCard::omp_in_progress_diff_stays_collapsed()
     card.resize(480, 120);
     QVERIFY(card.isCollapsed());
     QTest::qWait(120);
-    QVERIFY(bodyFor(card)->toPlainText().isEmpty());
+    QVERIFY(!bodyFor(card));
 }
 
 void TestAcpToolCallCard::omp_write_title_from_kind_edit_content()

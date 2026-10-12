@@ -873,6 +873,7 @@ void AcpSessionView::hydrateFromModel()
                                          &m_foldedMask);
     recordTruncation(plan);
 
+    const QFont font = chatFont();
     int pendingHidden = 0;
     for (int i = 0; i < timeline.size(); ++i) {
         const auto fold = foldAt.constFind(i);
@@ -893,7 +894,7 @@ void AcpSessionView::hydrateFromModel()
             insertTimelineWidget(makeTruncationPlaceholder(pendingHidden), false);
             pendingHidden = 0;
         }
-        if (QWidget *w = createEntryWidget(timeline.at(i)))
+        if (QWidget *w = createEntryWidget(timeline.at(i), font))
             insertTimelineWidget(w, false);
     }
     if (pendingHidden > 0) {
@@ -997,6 +998,8 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_truncatedToolCallIds.clear();
     m_reportMessages.clear();
     m_foldedTurns.clear();
+    m_expandQueue.clear();
+    if (m_expandPump) m_expandPump->stop();
     m_foldedMask.clear();
     m_foldedCount = 0;
     m_liveRow.clear(); // already queued for deletion with the rest of the layout
@@ -1118,7 +1121,7 @@ void AcpSessionView::removeTranscriptWidget(QWidget *w)
 
 // Builds (and registers) the widget for one timeline entry; the caller places
 // it. Null when the entry renders nothing (empty bubble, unknown tool call).
-QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry)
+QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry, const QFont &font)
 {
     if (!m_model) return nullptr;
     if (entry.kind == AcpTimelineEntry::Kind::Message) {
@@ -1129,7 +1132,7 @@ QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry)
         if (!messageHasVisibleContent(msg))
             return nullptr;
         auto *w = new AcpMessageWidget(msg.role, m_transcriptHost);
-        w->setChatFont(chatFont()); // styled widget: must set font explicitly
+        w->setChatFont(font); // styled widget: must set font explicitly
         if (msg.fromGoalAgent
             || msg.marker == QLatin1String(kAcpMarkerGoalAchieved)) {
             w->setFromGoalAgent(true);
@@ -1145,7 +1148,7 @@ QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry)
     if (it == m_model->toolCalls().constEnd())
         return nullptr;
     auto *card = new AcpToolCallCard(it.value(), m_transcriptHost);
-    card->setChatFont(chatFont()); // styled widget: must set font explicitly
+    card->setChatFont(font); // styled widget: must set font explicitly
     if (isGoalJudgeToolId(it.key()))
         card->setGoalTint(true);
     m_toolCallCards.insert(entry.toolCallId, card);
@@ -1206,24 +1209,32 @@ void AcpSessionView::setFoldedMask(const QVector<int> &entries, bool folded)
     const auto &timeline = m_model->timeline();
     if (m_foldedMask.size() < timeline.size())
         m_foldedMask.resize(timeline.size());
-    for (int i : entries) {
-        if (i < 0 || i >= timeline.size())
-            continue;
-        const std::uint8_t want = folded ? 1 : 0;
-        if (m_foldedMask.at(i) == want)
-            continue;
-        m_foldedMask[i] = want;
-        m_foldedCount += folded ? 1 : -1;
-        // Updates for a folded entry must not resurrect its widget: reuse the
-        // truncation suppression sets that every update path already consults.
-        const AcpTimelineEntry &e = timeline.at(i);
-        if (e.kind == AcpTimelineEntry::Kind::Message) {
-            if (folded) m_truncatedMessageIndices.insert(e.messageIndex);
-            else m_truncatedMessageIndices.remove(e.messageIndex);
-        } else {
-            if (folded) m_truncatedToolCallIds.insert(e.toolCallId);
-            else m_truncatedToolCallIds.remove(e.toolCallId);
-        }
+    for (int i : entries)
+        setEntryFolded(i, folded);
+}
+
+void AcpSessionView::setEntryFolded(int i, bool folded)
+{
+    if (!m_model) return;
+    const auto &timeline = m_model->timeline();
+    if (i < 0 || i >= timeline.size())
+        return;
+    if (m_foldedMask.size() < timeline.size())
+        m_foldedMask.resize(timeline.size());
+    const std::uint8_t want = folded ? 1 : 0;
+    if (m_foldedMask.at(i) == want)
+        return;
+    m_foldedMask[i] = want;
+    m_foldedCount += folded ? 1 : -1;
+    // Updates for a folded entry must not resurrect its widget: reuse the
+    // truncation suppression sets that every update path already consults.
+    const AcpTimelineEntry &e = timeline.at(i);
+    if (e.kind == AcpTimelineEntry::Kind::Message) {
+        if (folded) m_truncatedMessageIndices.insert(e.messageIndex);
+        else m_truncatedMessageIndices.remove(e.messageIndex);
+    } else {
+        if (folded) m_truncatedToolCallIds.insert(e.toolCallId);
+        else m_truncatedToolCallIds.remove(e.toolCallId);
     }
 }
 
@@ -1374,22 +1385,29 @@ void AcpSessionView::setTurnExpanded(int turnBegin, bool expanded)
     ft.expanded = expanded;
     if (ft.row) ft.row->setExpanded(expanded);
 
-    const auto &timeline = m_model->timeline();
     if (expanded) {
-        setFoldedMask(ft.entries, false);
-        int at = ft.row ? m_transcriptLayout->indexOf(ft.row) + 1 : -1;
-        for (int i : ft.entries) {
-            if (i < 0 || i >= timeline.size())
-                continue;
-            QWidget *w = createEntryWidget(timeline.at(i));
-            if (!w)
-                continue;
-            if (at >= 0)
-                m_transcriptLayout->insertWidget(at++, w);
-            else
-                insertTimelineWidget(w, false);
+        // A turn can hold hundreds of tool calls and bubbles; building them all
+        // in this click handler froze the UI for seconds. The first slice runs
+        // now (the rows right under the fold row), the rest one slice per
+        // event-loop pass so paint and input keep flowing. Every entry is built.
+        ft.nextEntry = 0;
+        if (!materializeTurnSlice(turnBegin, chatFont())) {
+            if (!m_expandQueue.contains(turnBegin))
+                m_expandQueue.append(turnBegin);
+            if (!m_expandPump) {
+                m_expandPump = new QTimer(this);
+                m_expandPump->setSingleShot(true);
+                m_expandPump->setInterval(0);
+                connect(m_expandPump, &QTimer::timeout, this, &AcpSessionView::pumpExpandQueue);
+            }
+            m_expandPump->start();
         }
     } else {
+        // Collapsing mid-expansion drops the pending slices; entries never
+        // built have no widget and are still folded.
+        ft.nextEntry = -1;
+        m_expandQueue.removeOne(turnBegin);
+        const auto &timeline = m_model->timeline();
         for (int i : ft.entries) {
             if (i >= 0 && i < timeline.size())
                 removeEntryWidget(timeline.at(i));
@@ -1397,6 +1415,74 @@ void AcpSessionView::setTurnExpanded(int turnBegin, bool expanded)
         setFoldedMask(ft.entries, true);
     }
     syncTranscriptHostWidth();
+}
+
+bool AcpSessionView::materializeTurnSlice(int turnBegin, const QFont &font)
+{
+    // ~1/3 of a 60 Hz frame: leaves the rest for the layout pass and paint the
+    // new widgets trigger. Always builds at least one entry so a slice that
+    // overruns (a large diff card) still makes progress.
+    constexpr qint64 kSliceBudgetNs = 6'000'000;
+    auto it = m_foldedTurns.find(turnBegin);
+    if (it == m_foldedTurns.end() || !m_model || !m_transcriptLayout)
+        return true;
+    FoldedTurn &ft = it.value();
+    if (!ft.expanded || ft.nextEntry < 0)
+        return true;
+
+    const auto &timeline = m_model->timeline();
+    const int count = ft.entries.size();
+    // Insert after the last built entry still on screen (truncation may have
+    // dropped some between slices), else right under the fold row.
+    QWidget *anchor = nullptr;
+    for (int k = qMin(ft.nextEntry, count) - 1; k >= 0 && !anchor; --k) {
+        const int i = ft.entries.at(k);
+        if (i >= 0 && i < timeline.size())
+            anchor = widgetForTimelineEntry(timeline.at(i));
+    }
+    if (!anchor)
+        anchor = ft.row;
+    const int anchorIdx = anchor ? m_transcriptLayout->indexOf(anchor) : -1;
+    int at = anchorIdx >= 0 ? anchorIdx + 1 : -1; // -1: append at the tail
+
+    QElapsedTimer clock;
+    clock.start();
+    while (ft.nextEntry < count) {
+        const int i = ft.entries.at(ft.nextEntry++);
+        if (i < 0 || i >= timeline.size())
+            continue;
+        setEntryFolded(i, false);
+        const AcpTimelineEntry &entry = timeline.at(i);
+        if (QWidget *existing = widgetForTimelineEntry(entry)) {
+            // Rare: an update re-created it already. Keep order after it.
+            const int idx = m_transcriptLayout->indexOf(existing);
+            if (idx >= 0)
+                at = idx + 1;
+        } else if (QWidget *w = createEntryWidget(entry, font)) {
+            if (at >= 0)
+                m_transcriptLayout->insertWidget(at++, w);
+            else
+                insertTimelineWidget(w, false);
+        }
+        if (clock.nsecsElapsed() >= kSliceBudgetNs)
+            break;
+    }
+    if (ft.nextEntry < count)
+        return false;
+    ft.nextEntry = -1;
+    return true;
+}
+
+void AcpSessionView::pumpExpandQueue()
+{
+    if (m_expandQueue.isEmpty())
+        return;
+    const int turnBegin = m_expandQueue.first();
+    if (materializeTurnSlice(turnBegin, chatFont()))
+        m_expandQueue.removeFirst();
+    syncTranscriptHostWidth();
+    if (!m_expandQueue.isEmpty())
+        m_expandPump->start();
 }
 
 // A goal-judge turn is removed from the tail of the timeline; a fold recorded

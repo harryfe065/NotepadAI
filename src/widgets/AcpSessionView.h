@@ -202,14 +202,21 @@ private:
     void ensureLiveTurnRow();
     void dropLiveTurnRow();
     void setTurnExpanded(int turnBegin, bool expanded);
+    // Materializes one time-boxed slice of an expanding turn; true when nothing
+    // is left (done, collapsed, or the turn is gone).
+    bool materializeTurnSlice(int turnBegin, const QFont &font);
+    void pumpExpandQueue();
     void removeEntryWidget(const AcpTimelineEntry &entry);
     // Copy buttons under each finished turn's final report.
     // includeNewest: the newest turn has ended.
     void refreshResponseActions(bool includeNewest);
     void attachResponseActions(int messageIndex, AcpMessageWidget *w);
-    QWidget *createEntryWidget(const AcpTimelineEntry &entry);
+    // font: the chat typeface, resolved once by batch callers (chatFont() walks
+    // qApp's children and reads settings).
+    QWidget *createEntryWidget(const AcpTimelineEntry &entry, const QFont &font);
     AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn, AcpTurnFoldRow *adopt = nullptr);
     void setFoldedMask(const QVector<int> &entries, bool folded);
+    void setEntryFolded(int timelineIndex, bool folded);
     void pruneStaleFoldedTurns();
     void syncTranscriptHostWidth();
     void scrollToBottomDeferred();
@@ -386,8 +393,13 @@ private:
         QPointer<AcpTurnFoldRow> row;
         QVector<int> entries; // timeline indices hidden while collapsed
         bool expanded = false;
+        // Expanding builds widgets in time-boxed slices: next `entries` position
+        // to materialize, -1 when nothing is pending.
+        int nextEntry = -1;
     };
     QHash<int, FoldedTurn> m_foldedTurns; // key: first timeline index of the turn
+    QVector<int> m_expandQueue;           // turn begins with slices still pending, FIFO
+    QTimer *m_expandPump = nullptr;       // zero-interval: one slice per event-loop pass
     QVector<std::uint8_t> m_foldedMask;   // per timeline index; 1 = currently folded (no widget)
     int m_foldedCount = 0;
     QPointer<AcpTurnFoldRow> m_liveRow; // heads the running turn; ticks once per second

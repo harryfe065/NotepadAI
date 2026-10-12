@@ -73,6 +73,7 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
+    void ensureBody();
     void refreshHeader();
     void scheduleBodyRender();
     void flushBodyRender();
@@ -110,13 +111,13 @@ private:
     bool m_autoExpandedForDiff = false;  // we've already auto-expanded once for a completed diff
     bool m_bodyDirty = true;             // body document is stale vs m_content/rawInput/rawOutput
     bool m_refitScheduled = false;       // a deferred refit is already queued
-    QTimer *m_renderTimer = nullptr;     // coalesces expensive QTextDocument body renders
+    QTimer *m_renderTimer = nullptr;     // coalesces expensive QTextDocument body renders; built with m_body
 
     QLabel *m_statusIcon = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_durationLabel = nullptr;
     QToolButton *m_expandBtn = nullptr;
-    QTextBrowser *m_body = nullptr;
+    QTextBrowser *m_body = nullptr;      // null until first expand (ensureBody)
     QVBoxLayout *m_outer = nullptr;
 };
 

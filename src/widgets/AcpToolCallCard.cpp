@@ -928,27 +928,14 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
 
     outer->addLayout(header);
 
-    m_body = new QTextBrowser(this);
-    m_body->setStyleSheet(QStringLiteral("QTextBrowser { background: transparent; border: none; }"));
-    m_body->setOpenExternalLinks(true);
-    // Cards size to content. Internal scroll on a card produces a nested
-    // scrollbar inside the transcript's own scroll area — bad UX. The expand
-    // button collapses verbose output instead.
-    m_body->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_body->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_body->setFrameShape(QFrame::NoFrame);
-    m_body->document()->setDocumentMargin(0);
-    outer->addWidget(m_body);
+    // The body (QTextBrowser: scroll area, viewport, two scrollbars, document)
+    // and its render timer are built on first expand — ensureBody(). Most cards
+    // stay collapsed, and an expanded "Worked for" turn instantiates hundreds.
 
     connect(m_expandBtn, &QToolButton::toggled, this, [this](bool checked) {
         m_userToggled = true;
         setCollapsed(!checked);
     });
-
-    m_renderTimer = new QTimer(this);
-    m_renderTimer->setSingleShot(true);
-    m_renderTimer->setInterval(kBodyRenderDebounceMs);
-    connect(m_renderTimer, &QTimer::timeout, this, &AcpToolCallCard::flushBodyRender);
 
     refreshHeader();
     // Cards land collapsed by default — the title alone is enough to scan a
@@ -959,6 +946,28 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     // at terminal status with diff content — auto-expand it here too, not just
     // on a later apply().
     maybeAutoExpandForDiff();
+}
+
+void AcpToolCallCard::ensureBody()
+{
+    if (m_body) return;
+    m_body = new QTextBrowser(this);
+    m_body->setStyleSheet(QStringLiteral("QTextBrowser { background: transparent; border: none; }"));
+    m_body->setOpenExternalLinks(true);
+    // Cards size to content. Internal scroll on a card produces a nested
+    // scrollbar inside the transcript's own scroll area — bad UX. The expand
+    // button collapses verbose output instead.
+    m_body->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_body->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_body->setFrameShape(QFrame::NoFrame);
+    m_body->document()->setDocumentMargin(0);
+    if (m_chatFontSet) m_body->document()->setDefaultFont(m_chatFont);
+    m_outer->addWidget(m_body);
+
+    m_renderTimer = new QTimer(this);
+    m_renderTimer->setSingleShot(true);
+    m_renderTimer->setInterval(kBodyRenderDebounceMs);
+    connect(m_renderTimer, &QTimer::timeout, this, &AcpToolCallCard::flushBodyRender);
 }
 
 void AcpToolCallCard::setGoalTint(bool on)
@@ -1628,6 +1637,7 @@ void AcpToolCallCard::showEvent(QShowEvent *event)
 void AcpToolCallCard::setCollapsed(bool collapsed)
 {
     m_collapsed = collapsed;
+    if (!collapsed) ensureBody();
     if (m_body) m_body->setVisible(!collapsed);
     if (collapsed && m_renderTimer && m_renderTimer->isActive()) {
         m_renderTimer->stop();
