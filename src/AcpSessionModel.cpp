@@ -18,6 +18,8 @@
 
 #include "AcpSessionModel.h"
 
+#include "AskUserForm.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -333,7 +335,10 @@ QJsonObject AcpSessionModel::toHistoryJson() const
         if (tc.durationMs >= 0) {
             to.insert(QStringLiteral("durationMs"), static_cast<double>(tc.durationMs));
         }
-        if (!tc.rawInput.isEmpty()) {
+        if (AskUserForm::isAskUserToolCall(tc.name, tc.title, tc.rawInput)) {
+            // Small (validated: <= 30 questions) and needed to restore the form.
+            to.insert(QStringLiteral("rawInput"), tc.rawInput);
+        } else if (!tc.rawInput.isEmpty()) {
             QJsonObject slim;
             auto copyField = [&](const QLatin1String &key) {
                 if (tc.rawInput.contains(key))

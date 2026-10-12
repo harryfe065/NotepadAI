@@ -363,6 +363,9 @@ void TestAskUserForm::recognisesOmpDeviceWrite()
     QJsonObject otherDevice = raw;
     otherDevice.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__other_ask_user"));
     QVERIFY(!isAskUserToolCall(QString(), intent, otherDevice));
+    // Reading the device (its schema/help) is not a call: no `content`.
+    const QJsonObject read{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")}};
+    QVERIFY(!isAskUserToolCall(QStringLiteral("read"), QStringLiteral("Read the ask_user device"), read));
     QJsonObject file = raw;
     file.insert(QStringLiteral("path"), QStringLiteral("notepadai_ask_user.json"));
     QVERIFY(!isAskUserToolCall(QStringLiteral("write"), intent, file));
@@ -374,7 +377,8 @@ void TestAskUserForm::recognisesOmpDeviceWrite()
     QCOMPARE(spec->questions.size(), 1);
 
     // Completion carries the parsed arguments in rawOutput.details.xdev.
-    const QJsonObject noContent{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")}};
+    const QJsonObject noContent{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")},
+                                {QStringLiteral("content"), QStringLiteral("not json")}};
     const QJsonObject rawOutput{{QStringLiteral("details"), QJsonObject{{QStringLiteral("xdev"), QJsonObject{
         {QStringLiteral("tool"), QStringLiteral("mcp__notepadai_ask_user")},
         {QStringLiteral("args"), QJsonDocument::fromJson(argsJson.toUtf8()).object()}}}}}};

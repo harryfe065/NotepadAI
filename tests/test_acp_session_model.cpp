@@ -33,6 +33,7 @@ class TestAcpSessionModel : public QObject
 private slots:
     void initTestCase();
     void emptySessionDoesNotPersist();
+    void askUserRawInputSurvivesHistory();
     void streamingConcatenation();
     void messageIdChange_startsNewBubble();
     void promptEndedClosesStreaming();
@@ -78,6 +79,44 @@ private slots:
 void TestAcpSessionModel::initTestCase()
 {
     DataPaths::init(QDir::tempPath(), DataPaths::Source::Default);
+}
+
+void TestAcpSessionModel::askUserRawInputSurvivesHistory()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    AcpSessionModel model(QStringLiteral("au1"), QStringLiteral("proj"), tmp.path());
+    model.appendUserMessage(QStringLiteral("grill me"), {});
+    AcpProtocol::AcpToolCall ask;
+    ask.id = QStringLiteral("t-ask");
+    ask.title = QStringLiteral("mcp__notepadai__ask_user");
+    ask.status = QStringLiteral("completed");
+    ask.rawInput = QJsonObject{{QStringLiteral("questions"), QJsonArray{QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("Q1")}, {QStringLiteral("title"), QStringLiteral("What?")},
+        {QStringLiteral("type"), QStringLiteral("text")}}}}};
+    model.onToolCallReceived(ask);
+    AcpProtocol::AcpToolCall other;
+    other.id = QStringLiteral("t-write");
+    other.title = QStringLiteral("Write");
+    other.status = QStringLiteral("completed");
+    other.rawInput = QJsonObject{{QStringLiteral("path"), QStringLiteral("a.txt")},
+                                 {QStringLiteral("content"), QStringLiteral("big body")}};
+    model.onToolCallReceived(other);
+
+    const QJsonArray calls = model.toHistoryJson().value(QStringLiteral("toolCalls")).toArray();
+    QJsonObject askJson;
+    QJsonObject writeJson;
+    for (const QJsonValue &v : calls) {
+        const QJsonObject o = v.toObject();
+        if (o.value(QStringLiteral("toolCallId")).toString() == QLatin1String("t-ask"))
+            askJson = o;
+        else
+            writeJson = o;
+    }
+    // ask_user keeps its arguments (the form is rebuilt from them)...
+    QCOMPARE(askJson.value(QStringLiteral("rawInput")).toObject(), ask.rawInput);
+    // ...other tools stay slim.
+    QVERIFY(!writeJson.value(QStringLiteral("rawInput")).toObject().contains(QStringLiteral("content")));
 }
 
 void TestAcpSessionModel::emptySessionDoesNotPersist()

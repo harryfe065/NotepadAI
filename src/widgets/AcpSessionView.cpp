@@ -2154,6 +2154,10 @@ void AcpSessionView::showAskUserToolCallForm(const AcpProtocol::AcpToolCall &tc)
     QString error;
     const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc.rawInput, tc.rawOutput), &error);
     if (!spec) {
+        // A form is already waiting on the user: a stray, unparseable call must
+        // not start another turn (the agent would run on without the answers).
+        if (m_pendingForm)
+            return;
         // The agent believes the form is on screen and waits: tell it.
         sendHostPrompt(QLatin1String(AskUserForm::kAnswersHeader)
                            + QStringLiteral("\nThe form could not be shown: %1. Fix the input and call "

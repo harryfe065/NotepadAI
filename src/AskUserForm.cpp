@@ -365,8 +365,11 @@ constexpr QLatin1String kDevicePrefix("xd://");
 
 // omp mounts MCP tools as devices and calls them through its `write` tool:
 // rawInput = {path: "xd://mcp__notepadai_ask_user", content: "<args JSON>"}.
+// A `read` of the same path (the device's schema) has no content: not a call.
 bool isAskUserDevice(const QJsonObject &rawInput)
 {
+    if (!rawInput.contains(QStringLiteral("content")))
+        return false;
     const QString path = rawInput.value(QStringLiteral("path")).toString().trimmed();
     return path.startsWith(kDevicePrefix, Qt::CaseInsensitive) && nameMatches(path.mid(kDevicePrefix.size()));
 }

@@ -409,6 +409,8 @@ target_sources(test_acp_session_model PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
@@ -425,6 +427,8 @@ target_sources(test_acp_transcript_truncation PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.h
@@ -446,6 +450,8 @@ target_sources(test_acp_session_model_persistence_integration PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
@@ -2231,6 +2237,8 @@ target_sources(test_acp_turn_folding PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.h
@@ -2253,6 +2261,8 @@ target_sources(test_acp_conversation_copy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
