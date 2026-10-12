@@ -18,6 +18,7 @@
 
 #include "TerminalDock.h"
 #include "TerminalTabTitle.h"
+#include "TerminalTaskLauncher.h"
 #include "TerminalWidget.h"
 #include "NotepadNextApplication.h"
 #include "ApplicationSettings.h"
@@ -27,16 +28,11 @@
 
 #include "DockWidget.h"
 
-#include <QHBoxLayout>
-#include <QFontMetrics>
-
-#include <QLabel>
+#include <QDir>
+#include <QFileInfo>
 #include <QMessageBox>
-#include <QToolButton>
-#include <QToolTip>
-#include <QCursor>
-#include <QHelpEvent>
-#include <QWidget>
+#include <QShowEvent>
+#include <QVBoxLayout>
 
 namespace {
 
@@ -49,6 +45,13 @@ int childMemoryLimitGb()
     }
     return 0;
 }
+
+constexpr bool kWindowsCommandLine =
+#ifdef Q_OS_WIN
+    true;
+#else
+    false;
+#endif
 
 } // namespace
 
@@ -69,8 +72,6 @@ TerminalDock::TerminalDock(const QString &shell, const QString &cwd, const QStri
     , m_taskEnv(env)
 {
     init(shell, cwd);
-
-    setWindowTitle(tr("Task — %1").arg(m_taskName));
 }
 
 TerminalDock::TerminalDock(remote::ExecutionContext *ctx, const QString &shell, const QString &cwd, QWidget *parent)
@@ -94,9 +95,9 @@ TerminalDock::TerminalDock(remote::ExecutionContext *ctx, const QString &remoteC
     , m_remoteSession(true)
 {
     init(QString(), remoteCwd);
-
-    setWindowTitle(tr("Task — %1").arg(m_taskName));
 }
+
+TerminalDock::~TerminalDock() = default;
 
 void TerminalDock::init(const QString &shell, const QString &cwd)
 {
@@ -109,21 +110,10 @@ void TerminalDock::init(const QString &shell, const QString &cwd)
     m_terminal = new TerminalWidget(this);
     lay->addWidget(m_terminal);
 
-    if (m_taskCommand.isEmpty()) {
-        QString initialTitle;
-        if (auto *rctx = qobject_cast<remote::RemoteExecutionContext *>(m_context.data())) {
-            const remote::SshProfile &p = rctx->profile();
-            initialTitle = p.username.isEmpty() ? p.host
-                                                : (p.username + QLatin1Char('@') + p.host);
-        }
-        if (initialTitle.isEmpty())
-            initialTitle = terminalTabTitle(cwd);
-        setWindowTitle(initialTitle);
+    if (auto *rctx = qobject_cast<remote::RemoteExecutionContext *>(m_context.data())) {
+        const remote::SshProfile &p = rctx->profile();
+        m_remoteLabel = p.username.isEmpty() ? p.host : (p.username + QLatin1Char('@') + p.host);
     }
-
-    connect(m_terminal, &TerminalWidget::spawnFailed, this, [this](const QString &msg) {
-        QMessageBox::critical(this, tr("Terminal"), msg);
-    });
 
     // Surface SSH connection loss visibly rather than hanging silently: inject a
     // red marked line via the same injectOutput mechanism as the task cwd
@@ -140,143 +130,178 @@ void TerminalDock::init(const QString &shell, const QString &cwd)
                 });
     }
 
+    connectTerminal();
+    startTerminal(shell, cwd);
+    refreshTitle();
+}
+
+void TerminalDock::connectTerminal()
+{
+    connect(m_terminal, &TerminalWidget::spawnFailed, this, [this](const QString &msg) {
+        QMessageBox::critical(this, tr("Terminal"), msg);
+    });
+    connect(m_terminal, &TerminalWidget::titleChanged, this, [this](const QString &title) {
+        m_programTitle = title;
+        refreshTitle();
+    });
+    connect(m_terminal, &TerminalWidget::cwdChanged, this, &TerminalDock::refreshTitle);
+    connect(m_terminal, &TerminalWidget::taskExited, this, [this](int code) {
+        if (isTask() && m_taskReportsExit) {
+            setTaskState(code == 0 ? TaskState::Succeeded : TaskState::Failed);
+        }
+    });
+    connect(m_terminal, &TerminalWidget::bellRung, this, [this]() {
+        // Only a tab the user is not looking at needs the reminder.
+        if (!isVisible() && !m_bellPending) {
+            m_bellPending = true;
+            emit presentationChanged();
+        }
+    });
+    connect(m_terminal, &TerminalWidget::processExited, this, [this](int code) {
+        setProcessStats({});
+        if (m_taskState == TaskState::Running) {
+            setTaskState(code == 0 ? TaskState::Succeeded : TaskState::Failed);
+        }
+    });
+}
+
+void TerminalDock::startTerminal(const QString &shell, const QString &cwd)
+{
     m_terminal->setChildMemoryLimitGb(childMemoryLimitGb());
+
+    // Local tasks run as a shell argument so their exit code comes back; an
+    // unknown shell (or a remote one) gets the command typed in instead.
+    bool typeCommand = isTask();
+    m_taskReportsExit = false;
+    if (isTask() && !m_remoteSession) {
+        const TerminalTaskLaunch launch = terminalTaskLaunch(
+            shell, m_taskCommand, tr("Task finished (exit code %1)"), kWindowsCommandLine);
+        if (!launch.arguments.isEmpty()) {
+            m_terminal->setLaunchArguments(launch.arguments);
+            typeCommand = false;
+            m_taskReportsExit = launch.reportsExit;
+        }
+    }
+    if (isTask()) {
+        setTaskState(m_taskReportsExit ? TaskState::Running : TaskState::None);
+    }
+
     m_terminal->start(shell, cwd, m_taskEnv, m_context.data());
 
-    if (!m_taskCommand.isEmpty()) {
-        connect(m_terminal, &TerminalWidget::firstOutputReceived, this, [this]() {
+    if (isTask()) {
+        connect(m_terminal, &TerminalWidget::firstOutputReceived, this, [this, typeCommand]() {
             if (!m_cwdWarning.isEmpty()) {
-                QByteArray warning = QStringLiteral("\x1b[33m⚠ %1\x1b[0m\r\n")
+                const QByteArray warning = QStringLiteral("\x1b[33m⚠ %1\x1b[0m\r\n")
                     .arg(m_cwdWarning).toUtf8();
                 m_terminal->injectOutput(warning);
             }
-            QByteArray cmd = m_taskCommand.toUtf8();
-            cmd.append('\r');
-            m_terminal->writeToPty(cmd);
+            if (typeCommand) {
+                QByteArray cmd = m_taskCommand.toUtf8();
+                cmd.append('\r');
+                m_terminal->writeToPty(cmd);
+            }
         }, Qt::SingleShotConnection);
     }
-
-    if (!m_remoteSession || !m_taskCommand.isEmpty())
-        setupChrome();
-    wireTerminalStats();
-
 }
 
-TerminalDock::~TerminalDock() = default;
-
-void TerminalDock::setupChrome()
+remote::ExecutionContext *TerminalDock::executionContext() const
 {
-    auto *titleBar = new QWidget(this);
-    auto *layout = new QHBoxLayout(titleBar);
-    layout->setContentsMargins(4, 2, 4, 2);
-    layout->setSpacing(4);
+    return m_context.data();
+}
 
-    if (!m_taskCommand.isEmpty()) {
-        auto *label = new QLabel(m_taskName, titleBar);
-        label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        layout->addWidget(label);
+QString TerminalDock::currentCwd() const
+{
+    const QString reported = m_terminal ? m_terminal->reportedCwd() : QString();
+    return reported.isEmpty() ? m_initialCwd : reported;
+}
+
+void TerminalDock::refreshTitle()
+{
+    QString title;
+    if (isTask()) {
+        title = elideTerminalTitle(m_taskName);
+    } else if (m_remoteSession && m_customName.isEmpty()
+               && isShellImageTitle(m_programTitle, m_shell) && !m_remoteLabel.isEmpty()) {
+        title = m_remoteLabel;
     } else {
-        layout->addStretch(1);
+        title = terminalDisplayTitle(m_customName, m_programTitle, m_shell, currentCwd());
     }
-
-    if (!m_remoteSession) {
-        m_cpuLabel = new QLabel(titleBar);
-        m_ramLabel = new QLabel(titleBar);
-        const QString style = QStringLiteral("color: palette(placeholder-text);");
-        m_cpuLabel->setStyleSheet(style);
-        m_ramLabel->setStyleSheet(style);
-        m_cpuLabel->setTextFormat(Qt::PlainText);
-        m_ramLabel->setTextFormat(Qt::PlainText);
-        m_cpuLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_ramLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        const QFontMetrics fm(m_cpuLabel->font());
-        m_cpuLabel->setMinimumWidth(fm.horizontalAdvance(QStringLiteral("CPU 100%")));
-        m_cpuLabel->installEventFilter(this);
-        m_ramLabel->setMinimumWidth(fm.horizontalAdvance(QStringLiteral("RAM 1023 MB")));
-        m_cpuLabel->setText(TerminalProcessStats::cpuLabel(false, 0.0));
-        m_ramLabel->setText(TerminalProcessStats::ramLabel(false, 0));
-        layout->addWidget(m_cpuLabel);
-        layout->addWidget(m_ramLabel);
-    }
-
-    if (!m_taskCommand.isEmpty()) {
-        m_restartBtn = new QToolButton(titleBar);
-        m_restartBtn->setText(tr("Restart"));
-        m_restartBtn->setToolTip(tr("Restart task"));
-        connect(m_restartBtn, &QToolButton::clicked, this, &TerminalDock::restartTask);
-        layout->addWidget(m_restartBtn);
-    }
-
-    auto *outer = qobject_cast<QVBoxLayout *>(this->layout());
-    outer->insertWidget(0, titleBar);
+    setWindowTitle(title);
+    emit presentationChanged();
 }
 
-void TerminalDock::wireTerminalStats()
+QString TerminalDock::tabToolTip() const
 {
-    if (!m_terminal)
-        return;
-    connect(m_terminal, &TerminalWidget::processExited, this, [this](int) {
-        setProcessStats({});
-    });
+    QStringList lines;
+    if (isTask()) {
+        lines << tr("Task: %1").arg(m_taskName) << m_taskCommand;
+    } else if (!m_programTitle.trimmed().isEmpty() && !isShellImageTitle(m_programTitle, m_shell)) {
+        lines << m_programTitle.trimmed();
+    }
+    if (!m_remoteLabel.isEmpty()) {
+        lines << m_remoteLabel;
+    }
+    const QString cwd = currentCwd();
+    if (!cwd.isEmpty()) {
+        lines << (m_remoteSession ? cwd : terminalTabTitle(cwd));
+    }
+    QString shellLine = m_shell.isEmpty() ? tr("Default shell") : QFileInfo(m_shell).fileName();
+    if (m_terminal && m_terminal->ptyPid() > 0 && !m_remoteSession) {
+        shellLine += tr(" · PID %1").arg(m_terminal->ptyPid());
+    }
+    lines << shellLine;
+    switch (m_taskState) {
+    case TaskState::Running:   lines << tr("Running"); break;
+    case TaskState::Succeeded: lines << tr("Finished successfully"); break;
+    case TaskState::Failed:    lines << tr("Failed"); break;
+    default: break;
+    }
+    if (m_bellPending) {
+        lines << tr("Bell rang");
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+void TerminalDock::setTaskState(TaskState state)
+{
+    if (state == m_taskState) return;
+    m_taskState = state;
+    emit presentationChanged();
+}
+
+void TerminalDock::setCustomName(const QString &name)
+{
+    if (isTask()) return;
+    const QString trimmed = name.trimmed();
+    if (trimmed == m_customName) return;
+    m_customName = trimmed;
+    refreshTitle();
+}
+
+void TerminalDock::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    if (m_bellPending) {
+        m_bellPending = false;
+        emit presentationChanged();
+    }
 }
 
 void TerminalDock::setProcessStats(const TerminalProcessStats::TreeStats &stats)
 {
-    if (m_cpuLabel)
-        m_cpuLabel->setText(TerminalProcessStats::cpuLabel(stats.valid, stats.cpuPercent));
-    if (m_ramLabel)
-        m_ramLabel->setText(TerminalProcessStats::ramLabel(stats.valid, stats.rssBytes));
-    if (!stats.valid)
-        setCoreLoad({});
-}
-
-bool TerminalDock::cpuLabelUnderMouse() const
-{
-    return m_cpuLabel && m_cpuLabel->underMouse();
+    m_stats = stats;
+    if (!stats.valid) {
+        m_coreLoad.clear();
+    }
+    emit statsChanged();
 }
 
 void TerminalDock::setCoreLoad(const QString &label)
 {
-    if (!m_cpuLabel)
-        return;
-    const bool visible = QToolTip::isVisible();
-    const QString shown = visible ? QToolTip::text() : QString();
-    const bool over = m_cpuLabel->underMouse();
-    m_cpuLabel->setToolTip(label);
-    if (!TerminalProcessStats::coreTipNeedsPush(visible, over, shown, label))
-        return;
-    if (label.isEmpty()) {
-        QToolTip::hideText();
-        return;
-    }
-    QPoint anchor = m_coreTipAnchor.isNull() ? QCursor::pos() : m_coreTipAnchor;
-    if (m_coreTipAnchor.isNull())
-        m_coreTipAnchor = anchor;
-    // Same anchor so Qt reuses the tip instead of jumping it to the cursor.
-    QToolTip::showText(anchor, label, m_cpuLabel, m_cpuLabel->rect());
+    if (label == m_coreLoad) return;
+    m_coreLoad = label;
+    emit statsChanged();
 }
-
-bool TerminalDock::eventFilter(QObject *watched, QEvent *event)
-{
-    if (watched == m_cpuLabel) {
-        switch (event->type()) {
-        case QEvent::Enter:
-        case QEvent::Leave:
-        case QEvent::Hide:
-            if (event->type() != QEvent::Enter)
-                m_coreTipAnchor = {};
-            emit cpuHoverChanged();
-            break;
-        case QEvent::ToolTip:
-            m_coreTipAnchor = static_cast<QHelpEvent *>(event)->globalPos();
-            break;
-        default:
-            break;
-        }
-    }
-    return QWidget::eventFilter(watched, event);
-}
-
 
 void TerminalDock::restartTask()
 {
@@ -289,31 +314,30 @@ void TerminalDock::restartTask()
 
     m_terminal = new TerminalWidget(this);
     lay->addWidget(m_terminal);
+    m_programTitle.clear();
     emit terminalRecreated();
 
-    connect(m_terminal, &TerminalWidget::spawnFailed, this, [this](const QString &msg) {
-        QMessageBox::critical(this, tr("Terminal"), msg);
-    });
-
-    m_terminal->setChildMemoryLimitGb(childMemoryLimitGb());
-    m_terminal->start(m_shell, m_initialCwd, m_taskEnv, m_context.data());
-
-    connect(m_terminal, &TerminalWidget::firstOutputReceived, this, [this]() {
-        if (!m_cwdWarning.isEmpty()) {
-            QByteArray warning = QStringLiteral("\x1b[33m⚠ %1\x1b[0m\r\n")
-                .arg(m_cwdWarning).toUtf8();
-            m_terminal->injectOutput(warning);
-        }
-        QByteArray cmd = m_taskCommand.toUtf8();
-        cmd.append('\r');
-        m_terminal->writeToPty(cmd);
-    }, Qt::SingleShotConnection);
-
+    connectTerminal();
+    startTerminal(m_shell, m_initialCwd);
     m_terminal->setFocus();
-
     setProcessStats({});
-    wireTerminalStats();
+    refreshTitle();
+}
 
+void TerminalDock::clearTerminal()
+{
+    if (!m_terminal) return;
+    m_terminal->clearScrollback();
+    if (m_terminal->hasExited()) return;
+    if (!m_remoteSession && terminalShellKind(m_shell) == TerminalShellKind::Cmd) {
+        // cmd.exe has no clear-screen key: wipe locally, then an empty
+        // command line makes it print a fresh prompt.
+        m_terminal->injectOutput(QByteArrayLiteral("\x1b[H\x1b[2J"));
+        m_terminal->writeToPty(QByteArrayLiteral("\r"));
+    } else {
+        // Ctrl+L: bash, zsh, fish and PSReadLine clear and redraw the prompt.
+        m_terminal->writeToPty(QByteArrayLiteral("\x0c"));
+    }
 }
 
 bool TerminalDock::confirmClose()

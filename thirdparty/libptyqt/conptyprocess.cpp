@@ -229,6 +229,15 @@ bool ConPtyProcess::startProcess(const QString &shellPath, const QString &workin
     }
 
     std::wstring cmdLine = shellPath.toStdWString();
+    if (!m_arguments.isEmpty()) {
+        // With arguments the image path must be quoted, or a path with spaces
+        // would split; without them keep the historical unquoted form.
+        cmdLine = L"\"" + QDir::toNativeSeparators(shellPath).toStdWString() + L"\"";
+        for (const QString &arg : m_arguments) {
+            cmdLine += L' ';
+            cmdLine += arg.toStdWString();
+        }
+    }
     std::vector<wchar_t> cmdMutable(cmdLine.begin(), cmdLine.end());
     cmdMutable.push_back(L'\0');
 

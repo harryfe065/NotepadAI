@@ -88,6 +88,15 @@ public:
     // 0 = uncapped. Ignored for remote PTYs.
     void setChildMemoryLimitGb(int gb);
     void setAppearance(const TerminalAppearance &appearance);
+    // Shell arguments for start() (see IPtyProcess::setArguments); empty =
+    // interactive shell.
+    void setLaunchArguments(const QStringList &arguments) { m_launchArguments = arguments; }
+    // Working directory last reported by the shell (OSC 7); empty if never.
+    QString reportedCwd() const { return m_reportedCwd; }
+    // Drops the scrollback (the live screen is the shell's to clear).
+    void clearScrollback();
+    // Shows the find bar (Ctrl+Shift+F).
+    void openSearch();
     void setScrollbackLines(int lines);
     const QFont &terminalFont() const { return m_font; }
 
@@ -113,6 +122,10 @@ signals:
     // Ctrl+wheel / Ctrl+=/-: change the shared terminal font size by `steps`;
     // 0 resets it.
     void zoomRequested(int steps);
+    // A wrapped task reported its exit code (TerminalTaskLauncher OSC).
+    void taskExited(int exitCode);
+    // The shell reported a new working directory (OSC 7).
+    void cwdChanged(const QString &cwd);
 
 protected:
     bool event(QEvent *event) override;
@@ -189,6 +202,8 @@ private:
     static int vtermSbPopLine(int cols, VTermScreenCell *cells, void *user);
     static int vtermSbClear(void *user);
     static void vtermOutput(const char *s, size_t len, void *user);
+    static int vtermOsc(int command, VTermStringFragment frag, void *user);
+    void handleOsc(int command, const QByteArray &payload);
 
     VTerm *m_vt = nullptr;
     VTermScreen *m_screen = nullptr;
@@ -211,6 +226,10 @@ private:
     qreal m_strikeY = 8;
     int m_frameIntervalMs = 16;
     int m_childMemoryLimitGb = 0;
+    QStringList m_launchArguments;
+    QString m_reportedCwd;
+    // OSC payloads arrive in fragments; collected until the final one.
+    QByteArray m_oscBuffer;
 
     TerminalContrastCache m_contrast;
     TerminalScrollBar *m_scrollBar = nullptr;

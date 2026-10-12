@@ -47,6 +47,13 @@ int nonToolTabCount(ads::CDockManager *manager);
 
 ads::CDockAreaWidget *findToolDockArea(ads::CDockManager *manager);
 
+// True when `area` fills (almost) all of its parent splitter.
+bool isToolAreaMaximized(ads::CDockAreaWidget *area);
+
+// Grows `area` to fill its splitter, or puts the previous sizes back (3:1 if
+// none were saved). Returns the new maximized state.
+bool toggleToolAreaMaximized(ads::CDockAreaWidget *area);
+
 // Place a content tab: Center into editorArea if present; otherwise Top of
 // toolArea (respawn after the last editor closed with a terminal still open).
 ads::CDockAreaWidget *addDockWidgetAsContent(

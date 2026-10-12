@@ -30,6 +30,11 @@
 #include "TerminalTaskRegistry.h"
 #include "TerminalWidget.h"
 #include "TerminalColorScheme.h"
+#include "TerminalAreaToolbar.h"
+#include "DockBottomToolTab.h"
+
+#include "DockAreaWidget.h"
+#include "DockWidgetTab.h"
 
 #include "iptyprocess.h"
 #include "ptyqt.h"
@@ -49,8 +54,11 @@
 #include <QCoreApplication>
 #include <QTimer>
 #include <QHash>
+#include <QInputDialog>
+#include <QMouseEvent>
 
 #include <algorithm>
+#include <functional>
 
 
 
@@ -63,7 +71,7 @@ TerminalManager::TerminalManager(NotepadNextApplication *app, MainWindow *mainWi
     m_statsTimer->setInterval(TerminalProcessStats::statsPollMs(false));
     m_statsTimer->setTimerType(Qt::CoarseTimer);
     connect(m_statsTimer, &QTimer::timeout, this, &TerminalManager::refreshProcessStats);
-    m_statsTimer->start();
+    // Started by updateStatsTimer() once a local terminal is on screen.
 
     if (ApplicationSettings *s = app ? app->getSettings() : nullptr) {
         connect(s, &ApplicationSettings::terminalLineHeightPctChanged, this, &TerminalManager::applyAppearance);
@@ -285,6 +293,31 @@ void TerminalManager::openRemoteTask(remote::ExecutionContext *ctx,
 
 namespace {
 
+// Double-clicking a terminal tab renames it (ADS would otherwise try to float it).
+class TabDoubleClickFilter : public QObject
+{
+public:
+    TabDoubleClickFilter(QObject *parent, std::function<void()> onDoubleClick)
+        : QObject(parent)
+        , m_onDoubleClick(std::move(onDoubleClick))
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::MouseButtonDblClick
+            && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+            m_onDoubleClick();
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    std::function<void()> m_onDoubleClick;
+};
+
 #ifdef Q_OS_MACOS
 constexpr qreal kDefaultTerminalPointSize = 12;
 #else
@@ -362,6 +395,7 @@ void TerminalManager::applyAppearance()
     for (const auto &d : m_docks) {
         if (!d.isNull()) {
             applyAppearanceTo(d.data(), a);
+            updateTab(d.data());
         }
     }
 }
@@ -411,9 +445,10 @@ void TerminalManager::refreshProcessStats()
     if (m_shuttingDown)
         return;
 
+    // Only terminals on screen are sampled; a hidden tab's numbers are not read.
     bool anyLive = false;
     for (const auto &d : m_docks) {
-        if (d.isNull() || d->isRemoteSession())
+        if (d.isNull() || d->isRemoteSession() || !d->isVisible())
             continue;
         TerminalWidget *w = d->terminalWidget();
         if (w && w->ptyPid() > 0) {
@@ -471,7 +506,7 @@ void TerminalManager::refreshProcessStats()
     const int n = m_processSnapshot.size();
 
     for (const auto &d : m_docks) {
-        if (d.isNull() || d->isRemoteSession())
+        if (d.isNull() || d->isRemoteSession() || !d->isVisible())
             continue;
         TerminalWidget *w = d->terminalWidget();
         const qint64 pid64 = w ? w->ptyPid() : 0;
@@ -564,6 +599,23 @@ void TerminalManager::placeInEditor(TerminalDock *dock)
     connect(dock, &QWidget::windowTitleChanged, dw, [dw](const QString &title) {
         dw->setWindowTitle(title);
     });
+    // The tab tooltip carries cwd/shell/PID, not just the title.
+    disconnect(dw, &QWidget::windowTitleChanged, dw->tabWidget(), &QWidget::setToolTip);
+    connect(dock, &TerminalDock::presentationChanged, this, [this, dock = QPointer<TerminalDock>(dock)]() {
+        if (dock)
+            updateTab(dock.data());
+    });
+    updateTab(dock);
+    dw->tabWidget()->installEventFilter(new TabDoubleClickFilter(dw->tabWidget(), [this, dock = QPointer<TerminalDock>(dock)]() {
+        if (dock)
+            renameTerminal(dock.data());
+    }));
+    // A tab can be dragged into another area; give that area the controls.
+    connect(dw, &ads::CDockWidget::visibilityChanged, this, [this, dw = QPointer<ads::CDockWidget>(dw)](bool visible) {
+        if (visible && dw)
+            installToolbar(dw->dockAreaWidget());
+        updateStatsTimer();
+    });
 
     dw->setFeature(ads::CDockWidget::DockWidgetFeature::CustomCloseHandling, true);
     connect(dw, &ads::CDockWidget::closeRequested, this,
@@ -588,9 +640,109 @@ void TerminalManager::placeInEditor(TerminalDock *dock)
 
     dw->toggleView(true);
     dw->raise();
+    installToolbar(dw->dockAreaWidget());
     if (auto *tw = dock->terminalWidget())
         tw->setFocus();
     applyWorkspaceFilter(m_filterActiveRoot, m_filterOpenRoots);
+    updateStatsTimer();
+}
+
+void TerminalManager::installToolbar(ads::CDockAreaWidget *area)
+{
+    if (!area)
+        return;
+    if (TerminalAreaToolbar *existing = TerminalAreaToolbar::find(area)) {
+        existing->syncToCurrent();
+        return;
+    }
+    auto *toolbar = new TerminalAreaToolbar(area);
+    m_toolbars.append(toolbar);
+    connect(toolbar, &TerminalAreaToolbar::findRequested, this, [](TerminalDock *dock) {
+        if (TerminalWidget *w = dock->terminalWidget())
+            w->openSearch();
+    });
+    connect(toolbar, &TerminalAreaToolbar::clearRequested, this, [](TerminalDock *dock) {
+        dock->clearTerminal();
+    });
+    connect(toolbar, &TerminalAreaToolbar::restartRequested, this, [](TerminalDock *dock) {
+        dock->restartTask();
+    });
+    connect(toolbar, &TerminalAreaToolbar::newTerminalRequested, this, &TerminalManager::openTerminalLike);
+    connect(toolbar, &TerminalAreaToolbar::maximizeRequested, this, [](TerminalAreaToolbar *tb) {
+        tb->setMaximized(toggleToolAreaMaximized(tb->area()));
+    });
+    connect(toolbar, &TerminalAreaToolbar::cpuHoverChanged, this, [this]() {
+        if (syncStatsPoll())
+            refreshProcessStats();
+    });
+    connect(toolbar, &TerminalAreaToolbar::currentDockChanged, this, [this]() {
+        updateStatsTimer();
+    });
+}
+
+void TerminalManager::openTerminalLike(TerminalDock *like)
+{
+    if (like && like->isRemoteSession()) {
+        if (remote::ExecutionContext *ctx = like->executionContext()) {
+            openRemoteTerminal(ctx, like->currentCwd(), QString());
+            return;
+        }
+    }
+    QString cwd = like ? like->currentCwd() : QString();
+    if (cwd.isEmpty() || !QFileInfo(cwd).isDir())
+        cwd = QDir::homePath();
+    openTerminal(cwd);
+}
+
+void TerminalManager::renameTerminal(TerminalDock *dock)
+{
+    if (!dock || dock->isTask())
+        return;
+    bool ok = false;
+    const QString current = dock->customName().isEmpty() ? dock->windowTitle() : dock->customName();
+    const QString name = QInputDialog::getText(m_mainWindow, tr("Rename Terminal"),
+                                               tr("Name (empty restores the automatic title):"),
+                                               QLineEdit::Normal, current, &ok);
+    // The dialog ran a nested event loop; the tab may be gone.
+    if (ok && m_docks.contains(QPointer<TerminalDock>(dock)))
+        dock->setCustomName(name);
+}
+
+QIcon TerminalManager::tabIcon(const TerminalDock *dock) const
+{
+    const QPalette pal = m_mainWindow->palette();
+    const bool dark = m_app ? m_app->isEffectiveThemeDark() : true;
+    QString svg = QStringLiteral(":/icons/square-terminal.svg");
+    QColor color = pal.color(QPalette::PlaceholderText);
+    switch (dock->taskState()) {
+    case TerminalDock::TaskState::Running:
+        svg = QStringLiteral(":/icons/play.svg");
+        color = pal.color(QPalette::ButtonText);
+        break;
+    case TerminalDock::TaskState::Succeeded:
+        svg = QStringLiteral(":/icons/check.svg");
+        color = dark ? QColor(0x3F, 0xB9, 0x50) : QColor(0x1A, 0x7F, 0x37);
+        break;
+    case TerminalDock::TaskState::Failed:
+        svg = QStringLiteral(":/icons/circle-x.svg");
+        color = dark ? QColor(0xF8, 0x51, 0x49) : QColor(0xCF, 0x22, 0x2E);
+        break;
+    case TerminalDock::TaskState::None:
+        if (dock->isTask())
+            svg = QStringLiteral(":/icons/play.svg");
+        break;
+    }
+    const QColor dot = dock->bellPending() ? pal.color(QPalette::Highlight) : QColor();
+    return terminalTintedIcon(svg, color, dot);
+}
+
+void TerminalManager::updateTab(TerminalDock *dock)
+{
+    ads::CDockWidget *dw = dock->hostDockWidget();
+    if (!dw)
+        return;
+    dw->setIcon(tabIcon(dock));
+    dw->setTabToolTip(dock->tabToolTip());
 }
 
 void TerminalManager::wireContextMenu(TerminalDock *dock)
@@ -629,22 +781,41 @@ void TerminalManager::rememberDock(TerminalDock *dock)
     connect(dock, &TerminalDock::terminalRecreated, this, [this, dock]() {
         configureDock(dock);
     });
-    connect(dock, &TerminalDock::cpuHoverChanged, this, [this]() {
-        if (syncStatsPoll())
-            refreshProcessStats();
-    });
     connect(dock, &QObject::destroyed, this, [this](QObject *obj) {
         if (forgetDock(obj))
             applyWorkspaceFilter(m_filterActiveRoot, m_filterOpenRoots);
         syncStatsPoll();
+        updateStatsTimer();
     });
+}
+
+void TerminalManager::updateStatsTimer()
+{
+    if (!m_statsTimer || m_shuttingDown)
+        return;
+    bool any = false;
+    for (const auto &d : m_docks) {
+        if (d && !d->isRemoteSession() && d->isVisible() && d->terminalWidget()
+            && d->terminalWidget()->ptyPid() > 0) {
+            any = true;
+            break;
+        }
+    }
+    if (any && !m_statsTimer->isActive()) {
+        m_statsTimer->start();
+        refreshProcessStats();
+    } else if (!any && m_statsTimer->isActive()) {
+        m_statsTimer->stop();
+        m_treeCpu.clear();
+        m_processorPrev.clear();
+    }
 }
 
 bool TerminalManager::syncStatsPoll()
 {
     bool open = false;
-    for (const auto &d : m_docks) {
-        if (d && d->cpuLabelUnderMouse()) {
+    for (const auto &tb : m_toolbars) {
+        if (tb && tb->cpuLabelUnderMouse()) {
             open = true;
             break;
         }

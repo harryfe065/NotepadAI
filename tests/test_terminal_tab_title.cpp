@@ -31,7 +31,55 @@ private slots:
     void emptyCwd_fallsBackToTerminal();
     void driveRoot_keepsNativeRoot();
     void nestedPath_isFullNativeCwd();
+
+    void cwdLabel_isFolderName();
+    void shellImageTitles_areIgnored();
+    void programTitle_isShown();
+    void customName_winsAndIsElided();
 };
+
+void TestTerminalTabTitle::cwdLabel_isFolderName()
+{
+    QCOMPARE(terminalCwdLabel(QStringLiteral("/home/foo/proj")), QStringLiteral("proj"));
+    QCOMPARE(terminalCwdLabel(QString()), QStringLiteral("Terminal"));
+#ifdef Q_OS_WIN
+    QCOMPARE(terminalCwdLabel(QStringLiteral("D:/")), QStringLiteral("D:\\"));
+#else
+    QCOMPARE(terminalCwdLabel(QStringLiteral("/")), QStringLiteral("/"));
+#endif
+}
+
+void TestTerminalTabTitle::shellImageTitles_areIgnored()
+{
+    const QString pwsh = QStringLiteral("C:/Program Files/PowerShell/7/pwsh.exe");
+    QVERIFY(isShellImageTitle(QStringLiteral("C:\\Program Files\\PowerShell\\7\\pwsh.exe"), pwsh));
+    QVERIFY(isShellImageTitle(QStringLiteral("Administrator: C:\\WINDOWS\\system32\\cmd.exe"), pwsh));
+    QVERIFY(isShellImageTitle(QStringLiteral("pwsh"), pwsh));
+    QVERIFY(isShellImageTitle(QStringLiteral("  "), pwsh));
+    QVERIFY(isShellImageTitle(QStringLiteral("bash"), QStringLiteral("/bin/bash")));
+    QVERIFY(!isShellImageTitle(QStringLiteral("vim main.cpp"), pwsh));
+    QVERIFY(!isShellImageTitle(QStringLiteral("htop"), QStringLiteral("/bin/bash")));
+}
+
+void TestTerminalTabTitle::programTitle_isShown()
+{
+    const QString shell = QStringLiteral("/bin/zsh");
+    QCOMPARE(terminalDisplayTitle(QString(), QStringLiteral("vim notes.md"), shell, QStringLiteral("/home/a/proj")),
+             QStringLiteral("vim notes.md"));
+    QCOMPARE(terminalDisplayTitle(QString(), QStringLiteral("zsh"), shell, QStringLiteral("/home/a/proj")),
+             QStringLiteral("proj"));
+}
+
+void TestTerminalTabTitle::customName_winsAndIsElided()
+{
+    const QString shell = QStringLiteral("/bin/zsh");
+    QCOMPARE(terminalDisplayTitle(QStringLiteral(" build "), QStringLiteral("vim"), shell, QStringLiteral("/x")),
+             QStringLiteral("build"));
+    const QString title = terminalDisplayTitle(QString(), QStringLiteral("a very long program title that keeps going"),
+                                               shell, QStringLiteral("/x"));
+    QCOMPARE(title.size(), 25);
+    QVERIFY(title.endsWith(QChar(0x2026)));
+}
 
 void TestTerminalTabTitle::emptyCwd_fallsBackToTerminal()
 {

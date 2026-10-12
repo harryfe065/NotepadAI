@@ -20,6 +20,7 @@
 
 #include "TerminalBoxDrawing.h"
 #include "TerminalScrollBar.h"
+#include "TerminalTaskLauncher.h"
 #include "TerminalCellSource.h"
 #include "ProfileScope.h"
 
@@ -48,6 +49,7 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QUrl>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -290,6 +292,52 @@ void TerminalWidget::vtermOutput(const char *s, size_t len, void *user)
     auto *w = static_cast<TerminalWidget *>(user);
     if (w->m_pty) {
         w->m_pty->write(QByteArray(s, static_cast<int>(len)));
+    }
+}
+
+int TerminalWidget::vtermOsc(int command, VTermStringFragment frag, void *user)
+{
+    auto *w = static_cast<TerminalWidget *>(user);
+    if (command != 7 && command != 8 && command != kTerminalTaskExitOsc) {
+        return 0;
+    }
+    if (frag.initial) {
+        w->m_oscBuffer.clear();
+    }
+    // Bound a hostile or broken stream; real payloads are a path or a URL.
+    if (w->m_oscBuffer.size() + static_cast<qsizetype>(frag.len) <= 8192) {
+        w->m_oscBuffer.append(frag.str, static_cast<qsizetype>(frag.len));
+    }
+    if (frag.final) {
+        w->handleOsc(command, w->m_oscBuffer);
+        w->m_oscBuffer.clear();
+    }
+    return 1;
+}
+
+void TerminalWidget::handleOsc(int command, const QByteArray &payload)
+{
+    if (command == kTerminalTaskExitOsc) {
+        bool ok = false;
+        const int code = payload.trimmed().toInt(&ok);
+        emit taskExited(ok ? code : 1);
+        return;
+    }
+    if (command == 7) {
+        // file://host/path, percent-encoded. The host is ignored (it names
+        // the machine the shell runs on, which is ours or the SSH host).
+        const QUrl url(QString::fromUtf8(payload));
+        QString path = url.isLocalFile() ? url.toLocalFile() : url.path();
+#ifdef Q_OS_WIN
+        // file:///C:/x arrives as /C:/x through path().
+        if (path.size() > 2 && path.at(0) == QLatin1Char('/') && path.at(2) == QLatin1Char(':')) {
+            path.remove(0, 1);
+        }
+#endif
+        if (!path.isEmpty() && path != m_reportedCwd) {
+            m_reportedCwd = path;
+            emit cwdChanged(path);
+        }
     }
 }
 
@@ -567,6 +615,12 @@ bool TerminalWidget::start(const QString &shell, const QString &cwd, const QStri
         &TerminalWidget::vtermSbClear,
     };
     vterm_screen_set_callbacks(m_screen, &callbacks, this);
+    // OSC 7 (cwd), 8 (hyperlinks) and the task exit report are not handled by
+    // libvterm itself; it hands them to these fallbacks.
+    static const VTermStateFallbacks fallbacks = {
+        nullptr, nullptr, &TerminalWidget::vtermOsc, nullptr, nullptr, nullptr, nullptr,
+    };
+    vterm_screen_set_unrecognised_fallbacks(m_screen, &fallbacks, this);
     vterm_screen_enable_altscreen(m_screen, 1);
     vterm_screen_enable_reflow(m_screen, true);
     // Merge damage down to one scroll + rects per flush; we flush once per batch.
@@ -617,6 +671,9 @@ bool TerminalWidget::start(const QString &shell, const QString &cwd, const QStri
         });
     }
 
+    if (!m_launchArguments.isEmpty()) {
+        m_pty->setArguments(m_launchArguments);
+    }
     if (!m_pty->startProcess(shell, cwd, env, static_cast<qint16>(m_cols), static_cast<qint16>(m_rows))) {
         m_errorMessage = tr("Terminal: failed to launch shell '%1'.\n%2").arg(shell, m_pty->lastError());
         emit spawnFailed(m_errorMessage);
@@ -669,6 +726,20 @@ void TerminalWidget::setAppearance(const TerminalAppearance &appearance)
     }
     markAllDirty();
     scheduleFrame();
+}
+
+void TerminalWidget::clearScrollback()
+{
+    m_scrollback.clear();
+    m_scrollOffset = 0;
+    m_hasSelection = false;
+    m_scrollbarDirty = true;
+    markAllDirty();
+    scheduleFrame();
+}
+
+void TerminalWidget::openSearch()
+{
 }
 
 void TerminalWidget::setScrollbackLines(int lines)

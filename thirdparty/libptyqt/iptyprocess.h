@@ -53,6 +53,12 @@ public:
     void setChildCommitLimit(quint64 bytes) { m_childCommitLimit = bytes; }
     quint64 childCommitLimit() const { return m_childCommitLimit; }
 
+    // Arguments after the shell path, applied by startProcess(). Windows: each
+    // entry is appended verbatim after a space (callers quote for the target
+    // program, e.g. cmd /s /k "..."). POSIX: passed as argv. Empty keeps the
+    // default interactive launch. Ignored by the SSH backend.
+    void setArguments(const QStringList &arguments) { m_arguments = arguments; }
+
 signals:
     void finished(int exitCode);
     // A process in this terminal's tree was stopped for exceeding the commit cap.
@@ -64,6 +70,7 @@ protected:
     qint64 m_pid;
     QPair<qint16, qint16> m_size;
     quint64 m_childCommitLimit = 0;
+    QStringList m_arguments;
 };
 
 #endif

@@ -45,6 +45,14 @@
         <file>icons/wrapindicator.png</file>
         <file>icons/cross.svg</file>
         <file>icons/plus.svg</file>
+        <file>icons/search.svg</file>
+        <file>icons/maximize-2.svg</file>
+        <file>icons/minimize-2.svg</file>
+        <file>icons/square-terminal.svg</file>
+        <file>icons/play.svg</file>
+        <file>icons/check.svg</file>
+        <file>icons/circle-x.svg</file>
+        <file>icons/eraser.svg</file>
         <file>icons/list_with_icons.svg</file>
         <file>icons/paperclip.svg</file>
         <file>icons/markdown-preview.svg</file>

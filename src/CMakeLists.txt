@@ -533,6 +533,8 @@ qt_add_executable(NotepadAI
 	TerminalAiHelper.cpp
 	TerminalCwdResolver.h
 	TerminalTabTitle.h
+	TerminalTaskLauncher.h
+	TerminalTaskLauncher.cpp
 	AiDockGroup.h
 	TerminalCwdResolver.cpp
 	TerminalProcessStats.h
@@ -582,6 +584,8 @@ qt_add_executable(NotepadAI
 	widgets/TerminalWidget.cpp
 	docks/TerminalDock.h
 	docks/TerminalDock.cpp
+	docks/TerminalAreaToolbar.h
+	docks/TerminalAreaToolbar.cpp
 
 	ai/DiffCompressor.h
 	ai/DiffCompressor.cpp

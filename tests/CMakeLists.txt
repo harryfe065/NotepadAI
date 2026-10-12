@@ -133,6 +133,16 @@ target_include_directories(test_terminal_tab_title PRIVATE ${CMAKE_SOURCE_DIR}/s
 target_link_libraries(test_terminal_tab_title PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME TerminalTabTitle COMMAND test_terminal_tab_title)
 
+# --- TerminalTaskLauncher: per-shell task wrapping that reports the exit code ---
+qt_add_executable(test_terminal_task_launcher test_terminal_task_launcher.cpp)
+target_include_directories(test_terminal_task_launcher PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_terminal_task_launcher PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_terminal_task_launcher PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.cpp
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.h
+)
+add_test(NAME TerminalTaskLauncher COMMAND test_terminal_task_launcher)
+
 # --- AiDockGroup: project-group key / title / objectName / compact-after-close ---
 qt_add_executable(test_ai_dock_group test_ai_dock_group.cpp)
 target_include_directories(test_ai_dock_group PRIVATE ${CMAKE_SOURCE_DIR}/src)

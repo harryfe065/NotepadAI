@@ -9,6 +9,8 @@
 #include <QFileInfo>
 #include <QThread>
 
+#include <vector>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -95,6 +97,20 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, const QString &worki
         }
 
         const QByteArray shellPath = m_shellPath.toLocal8Bit();
+        if (!m_arguments.isEmpty()) {
+            QList<QByteArray> storage;
+            storage.reserve(m_arguments.size());
+            std::vector<char *> argv;
+            argv.reserve(static_cast<size_t>(m_arguments.size()) + 2);
+            argv.push_back(const_cast<char *>(shellPath.constData()));
+            for (const QString &arg : m_arguments) {
+                storage.append(arg.toLocal8Bit());
+                argv.push_back(storage.last().data());
+            }
+            argv.push_back(nullptr);
+            execv(shellPath.constData(), argv.data());
+            _exit(127);
+        }
         const QString base = QFileInfo(m_shellPath).fileName();
         const bool wantsInteractive =
             base == QLatin1String("bash") ||

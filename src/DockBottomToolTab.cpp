@@ -129,6 +129,54 @@ ads::CDockAreaWidget *findToolDockArea(ads::CDockManager *manager)
     return nullptr;
 }
 
+bool isToolAreaMaximized(ads::CDockAreaWidget *area)
+{
+    ads::CDockSplitter *splitter = area ? area->parentSplitter() : nullptr;
+    if (!splitter || splitter->count() < 2)
+        return false;
+    const int index = splitter->indexOf(area);
+    const QList<int> sizes = splitter->sizes();
+    if (index < 0 || index >= sizes.size())
+        return false;
+    int total = 0;
+    for (int s : sizes)
+        total += s;
+    return total > 0 && sizes.at(index) * 10 >= total * 9;
+}
+
+bool toggleToolAreaMaximized(ads::CDockAreaWidget *area)
+{
+    ads::CDockSplitter *splitter = area ? area->parentSplitter() : nullptr;
+    if (!splitter || splitter->count() < 2)
+        return false;
+    const int index = splitter->indexOf(area);
+    if (index < 0)
+        return false;
+
+    if (isToolAreaMaximized(area)) {
+        const QList<int> saved = splitter->property("nn_toolRestoreSizes").value<QList<int>>();
+        splitter->setProperty("nn_toolRestoreSizes", QVariant());
+        if (saved.size() == splitter->count()) {
+            splitter->setSizes(saved);
+        } else {
+            pinToolPaneQuarter(splitter);
+        }
+        return false;
+    }
+
+    QList<int> sizes = splitter->sizes();
+    splitter->setProperty("nn_toolRestoreSizes", QVariant::fromValue(sizes));
+    int total = 0;
+    for (int &s : sizes) {
+        total += s;
+        s = 0;
+    }
+    sizes[index] = total;
+    // Non-collapsible neighbours keep their minimum; the area takes the rest.
+    splitter->setSizes(sizes);
+    return true;
+}
+
 ads::CDockAreaWidget *addDockWidgetAsContent(
     ads::CDockManager *manager,
     ads::CDockWidget *widget,

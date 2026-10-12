@@ -24,6 +24,7 @@
 #include <QTimer>
 #include <QVector>
 
+#include <QIcon>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -37,6 +38,8 @@
 class NotepadNextApplication;
 class MainWindow;
 class TerminalDock;
+class TerminalAreaToolbar;
+namespace ads { class CDockAreaWidget; }
 namespace remote { class ExecutionContext; }
 
 class TerminalManager : public QObject
@@ -74,6 +77,10 @@ public slots:
     void applyAppearance();
     // Ctrl+wheel / Ctrl+=/-/0 in any terminal: persisted font size step.
     void zoomTerminals(int steps);
+    // New terminal in `like`'s current directory and execution context
+    // (workspace root when null).
+    void openTerminalLike(TerminalDock *like);
+    void renameTerminal(TerminalDock *dock);
     void shutdown();
 
     TerminalDock *findTaskDock(const QString &command, const QString &cwd) const;
@@ -91,6 +98,11 @@ private:
     void configureDock(TerminalDock *dock);
     void wireWidget(TerminalDock *dock);
     void wireContextMenu(TerminalDock *dock);
+    void installToolbar(ads::CDockAreaWidget *area);
+    QIcon tabIcon(const TerminalDock *dock) const;
+    void updateTab(TerminalDock *dock);
+    // Runs the stats poll only while a local terminal is on screen.
+    void updateStatsTimer();
     void placeInEditor(TerminalDock *dock);
     void rememberDock(TerminalDock *dock);
     bool forgetDock(QObject *obj);
@@ -101,6 +113,7 @@ private:
     NotepadNextApplication *m_app;
     MainWindow *m_mainWindow;
     QList<QPointer<TerminalDock>> m_docks;
+    QList<QPointer<TerminalAreaToolbar>> m_toolbars;
     QString m_filterActiveRoot;
     QStringList m_filterOpenRoots;
     bool m_shuttingDown = false;
