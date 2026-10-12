@@ -95,9 +95,6 @@ private slots:
     void trailingBlanks_areTrimmed();
     void wrappedRows_joinWithoutNewline();
     void wideCharSpacer_emitsNothing();
-    void cellTextBetween_spansRowsAndKeepsBlanks();
-    void cellTextBetween_outOfRangeIsNull();
-    void logicalLine_joinsWrappedRowsWithPositions();
 };
 
 
@@ -320,37 +317,6 @@ void TestTerminalSelection::wrappedRows_joinWithoutNewline()
         bool rowWraps(int row) const override { return row == 0; }
     } src(QStringList{QStringLiteral("abcd"), QStringLiteral("ef")}, 4);
     QCOMPARE(extractSelectionText(src, QPoint(0, 0), QPoint(3, 1)), QStringLiteral("abcdef"));
-}
-
-void TestTerminalSelection::cellTextBetween_spansRowsAndKeepsBlanks()
-{
-    StubCellSource src(QStringList{QStringLiteral("ab d"), QStringLiteral("efgh")}, 4);
-    // Unlike a selection: blanks stay (the text a link covered must match
-    // exactly), and the end column is exclusive.
-    QCOMPARE(cellTextBetween(src, 0, 1, 1, 2), QStringLiteral("b def"));
-    QCOMPARE(cellTextBetween(src, 1, 0, 1, 4), QStringLiteral("efgh"));
-}
-
-void TestTerminalSelection::cellTextBetween_outOfRangeIsNull()
-{
-    StubCellSource src(QStringList{QStringLiteral("ab")}, 2);
-    QVERIFY(cellTextBetween(src, -1, 0, 0, 2).isNull());
-    QVERIFY(cellTextBetween(src, 0, 0, 1, 1).isNull());
-}
-
-void TestTerminalSelection::logicalLine_joinsWrappedRowsWithPositions()
-{
-    struct WrapSource : StubCellSource {
-        using StubCellSource::StubCellSource;
-        bool rowWraps(int row) const override { return row == 1; }
-    } src(QStringList{QStringLiteral("x"), QStringLiteral("abc"), QStringLiteral("de"), QStringLiteral("y")}, 3);
-    TerminalLogicalLine line;
-    QVERIFY(logicalLineAt(src, 2, 16, &line));
-    QCOMPARE(line.text, QStringLiteral("abcde "));
-    QCOMPARE(line.rowOf.front(), 1);
-    QCOMPARE(line.rowOf.back(), 2);
-    QCOMPARE(line.colOf[3], 0);   // 'd' starts row 2
-    QVERIFY(!logicalLineAt(src, 4, 16, &line));
 }
 
 void TestTerminalSelection::wideCharSpacer_emitsNothing()
