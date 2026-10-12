@@ -297,6 +297,28 @@ target_sources(test_terminal_contrast PRIVATE
 )
 add_test(NAME TerminalContrast COMMAND test_terminal_contrast)
 
+# --- TerminalLinkDetector: URLs and path:line:col under the pointer ---
+qt_add_executable(test_terminal_links test_terminal_links.cpp)
+target_include_directories(test_terminal_links PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
+target_link_libraries(test_terminal_links PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_terminal_links PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalLinkDetector.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalLinkDetector.h
+)
+add_test(NAME TerminalLinks COMMAND test_terminal_links)
+
+# --- TerminalSearch: query compilation, row matching, scrollback line ids ---
+qt_add_executable(test_terminal_search test_terminal_search.cpp)
+target_include_directories(test_terminal_search PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
+target_link_libraries(test_terminal_search PRIVATE Qt6::Core Qt6::Test libvterm)
+target_sources(test_terminal_search PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.h
+)
+add_test(NAME TerminalSearch COMMAND test_terminal_search)
+
 # --- TerminalBoxDrawing: procedural box/block/Powerline glyphs tile without seams ---
 qt_add_executable(test_terminal_box_drawing test_terminal_box_drawing.cpp)
 target_include_directories(test_terminal_box_drawing PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
@@ -327,7 +349,7 @@ target_include_directories(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets
 )
 target_link_libraries(test_terminal_key_routing PRIVATE
-    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test Qt6::Concurrent
     libvterm
     libptyqt
 )
@@ -350,6 +372,14 @@ target_sources(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalScrollBar.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalScrollBar.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalLinkDetector.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalLinkDetector.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchBar.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchBar.h
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.cpp
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.h
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
 )

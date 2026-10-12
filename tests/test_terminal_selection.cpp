@@ -92,6 +92,9 @@ private slots:
     void selectionAcrossMultipleHistoryRows();
     void selectionExactlyAtBoundary();
     void selectionMultiCodepointGlyph();
+    void trailingBlanks_areTrimmed();
+    void wrappedRows_joinWithoutNewline();
+    void wideCharSpacer_emitsNothing();
 };
 
 
@@ -208,7 +211,8 @@ void TestTerminalSelection::selectionAcrossBlankCells_emitsSpaces()
 void TestTerminalSelection::selectionEmptyRowSpans_emitsBlankLine()
 {
     // Row 0 has text, row 1 is fully blank, row 2 has text.
-    // A multi-row selection across row 1 must produce a line of spaces for it.
+    // A multi-row selection across row 1 keeps it as an empty line: padding
+    // blanks are not text.
     QStringList rows;
     rows.append(QStringLiteral("AAAAA"));
     rows.append(QStringLiteral("     ")); // 5 blanks
@@ -216,7 +220,7 @@ void TestTerminalSelection::selectionEmptyRowSpans_emitsBlankLine()
     StubCellSource src(rows, 5);
 
     const QString out = extractSelectionText(src, QPoint(0, 0), QPoint(4, 2));
-    QCOMPARE(out, QStringLiteral("AAAAA\n     \nCCCCC"));
+    QCOMPARE(out, QStringLiteral("AAAAA\n\nCCCCC"));
 }
 
 void TestTerminalSelection::selectionOutOfBoundsClamps()
@@ -299,6 +303,40 @@ void TestTerminalSelection::selectionMultiCodepointGlyph()
     QCOMPARE(out, expected);
 }
 
+
+void TestTerminalSelection::trailingBlanks_areTrimmed()
+{
+    StubCellSource src(QStringList{QStringLiteral("ls  "), QStringLiteral("ok")}, 8);
+    QCOMPARE(extractSelectionText(src, QPoint(0, 0), QPoint(7, 1)), QStringLiteral("ls\nok"));
+}
+
+void TestTerminalSelection::wrappedRows_joinWithoutNewline()
+{
+    struct WrapSource : StubCellSource {
+        using StubCellSource::StubCellSource;
+        bool rowWraps(int row) const override { return row == 0; }
+    } src(QStringList{QStringLiteral("abcd"), QStringLiteral("ef")}, 4);
+    QCOMPARE(extractSelectionText(src, QPoint(0, 0), QPoint(3, 1)), QStringLiteral("abcdef"));
+}
+
+void TestTerminalSelection::wideCharSpacer_emitsNothing()
+{
+    struct WideSource : TerminalCellSource {
+        int rowCount() const override { return 1; }
+        int cols() const override { return 3; }
+        VTermScreenCell cellAt(int, int col) const override
+        {
+            VTermScreenCell c;
+            std::memset(&c, 0, sizeof(c));
+            c.width = col == 0 ? 2 : 1;
+            c.chars[0] = col == 0 ? 0x4E2Du : (col == 1 ? 0xFFFFFFFFu : 0x41u);
+            return c;
+        }
+    } src;
+    const char32_t han = 0x4E2D;
+    QCOMPARE(extractSelectionText(src, QPoint(0, 0), QPoint(2, 0)),
+             QString::fromUcs4(&han, 1) + QLatin1Char('A'));
+}
 
 QTEST_APPLESS_MAIN(TestTerminalSelection)
 

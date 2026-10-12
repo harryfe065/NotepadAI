@@ -53,6 +53,8 @@
         <file>icons/check.svg</file>
         <file>icons/circle-x.svg</file>
         <file>icons/eraser.svg</file>
+        <file>icons/chevron-up.svg</file>
+        <file>icons/chevron-down.svg</file>
         <file>icons/list_with_icons.svg</file>
         <file>icons/paperclip.svg</file>
         <file>icons/markdown-preview.svg</file>

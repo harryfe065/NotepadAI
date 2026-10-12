@@ -69,6 +69,8 @@ struct TerminalRowLayout
     struct Special { int col; int width; char32_t cp; QRgb fg; };
     enum DecorationKind : uint8_t { Underline = 1, DoubleUnderline, CurlyUnderline, Strike };
     struct Decoration { int col; int span; QRgb color; uint8_t kind; };
+    // Search hits: cells [from, to) get `color` as background.
+    struct Highlight { int from; int to; QRgb color; };
 
     std::vector<Background> backgrounds;
     std::vector<Glyph> glyphs;
@@ -88,6 +90,8 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                        const TerminalPalette &palette,
                        int selFrom, int selTo,
                        TerminalRowLayout &out,
-                       TerminalContrastCache *contrast = nullptr);
+                       TerminalContrastCache *contrast = nullptr,
+                       const TerminalRowLayout::Highlight *highlights = nullptr,
+                       int highlightCount = 0);
 
 #endif

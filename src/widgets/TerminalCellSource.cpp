@@ -20,6 +20,10 @@
 
 #include <algorithm>
 
+namespace {
+constexpr uint32_t kWideSpacer = 0xFFFFFFFFu;
+} // namespace
+
 QString extractSelectionText(const TerminalCellSource &src,
                              QPoint start, QPoint end)
 {
@@ -50,8 +54,13 @@ QString extractSelectionText(const TerminalCellSource &src,
     for (int row = lo.y(); row <= hi.y(); ++row) {
         const int startCol = (row == lo.y()) ? lo.x() : 0;
         const int endCol   = (row == hi.y()) ? hi.x() : (cols - 1);
+        const bool wraps = row != hi.y() && src.rowWraps(row);
+        const qsizetype lineStart = out.size();
         for (int col = startCol; col <= endCol; ++col) {
             const VTermScreenCell cell = src.cellAt(row, col);
+            if (cell.chars[0] == kWideSpacer) {
+                continue;
+            }
             if (cell.chars[0] == 0) {
                 out.append(QLatin1Char(' '));
                 continue;
@@ -61,8 +70,16 @@ QString extractSelectionText(const TerminalCellSource &src,
                 out.append(QString::fromUcs4(&cp, 1));
             }
         }
-        if (row != hi.y()) {
-            out.append(QLatin1Char('\n'));
+        if (!wraps) {
+            // The screen pads every row with blanks; they are not text.
+            qsizetype trimmed = out.size();
+            while (trimmed > lineStart && out.at(trimmed - 1) == QLatin1Char(' ')) {
+                --trimmed;
+            }
+            out.truncate(trimmed);
+            if (row != hi.y()) {
+                out.append(QLatin1Char('\n'));
+            }
         }
     }
     return out;

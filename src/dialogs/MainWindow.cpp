@@ -5654,6 +5654,25 @@ void MainWindow::openAiAgentAt(const QString &agentId, const QString &cwd, remot
         attachAiAgentDock(dock);
 }
 
+AiAgentDock *MainWindow::openAiAgentInFolder(const QString &cwd, remote::ExecutionContext *ctx)
+{
+    AcpAgentManager *manager = app ? app->getAiAgentManager() : nullptr;
+    if (!manager || cwd.isEmpty())
+        return nullptr;
+    AcpAgentRegistry *registry = manager->registry();
+    if (!registry)
+        return nullptr;
+    QString agentId = app->getSettings()->lastUsedAiAgentId();
+    if (agentId.isEmpty() || !registry->contains(agentId))
+        agentId = registry->defaultAgentId();
+    if (agentId.isEmpty())
+        return nullptr;
+    AiAgentDock *dock = manager->openAgent(agentId, cwd, /*recordAsLastUsed=*/true, ctx);
+    if (dock)
+        attachAiAgentDock(dock);
+    return dock;
+}
+
 void MainWindow::attachAiAgentDock(AiAgentDock *dock, bool raise)
 {
     if (!dock)

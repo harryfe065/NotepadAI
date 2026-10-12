@@ -130,6 +130,41 @@ QString quoteWindowsArgument(const QString &arg)
     return out;
 }
 
+QString quotePathForShell(const QString &path, TerminalShellKind kind)
+{
+    static const QString kPlain = QStringLiteral(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/\\:._-+@");
+    bool plain = !path.isEmpty();
+    for (const QChar c : path) {
+        if (!kPlain.contains(c)) {
+            plain = false;
+            break;
+        }
+    }
+    // A bare backslash is an escape for POSIX shells, so only Windows shells
+    // may leave it unquoted.
+    if (plain && (kind == TerminalShellKind::PowerShell || kind == TerminalShellKind::Cmd
+                  || !path.contains(QLatin1Char('\\')))) {
+        return path;
+    }
+    switch (kind) {
+    case TerminalShellKind::PowerShell: {
+        QString s = path;
+        s.replace(QLatin1Char('\''), QStringLiteral("''"));
+        return QLatin1Char('\'') + s + QLatin1Char('\'');
+    }
+    case TerminalShellKind::Cmd:
+        // cmd has no escape inside quotes; a double quote cannot occur in a
+        // Windows file name anyway.
+        return QLatin1Char('"') + path + QLatin1Char('"');
+    case TerminalShellKind::Posix:
+    case TerminalShellKind::Fish:
+    case TerminalShellKind::Other:
+        break;
+    }
+    return singleQuote(path);
+}
+
 TerminalTaskLaunch terminalTaskLaunch(const QString &shellPath, const QString &command,
                                       const QString &finishedText, bool windowsCommandLine)
 {

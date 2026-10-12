@@ -90,7 +90,9 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                        const TerminalPalette &palette,
                        int selFrom, int selTo,
                        TerminalRowLayout &out,
-                       TerminalContrastCache *contrast)
+                       TerminalContrastCache *contrast,
+                       const TerminalRowLayout::Highlight *highlights,
+                       int highlightCount)
 {
     const bool contrastOn = contrast && contrast->enabled();
     // Runs of one colour pair skip even the cache probe.
@@ -114,9 +116,17 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
         const TerminalCellColors colors = resolveTerminalCellColors(cell, palette);
 
         const bool selected = hasSelection && col < selTo && col + width > selFrom;
-        const QRgb bg = selected ? palette.selection : colors.bg;
+        // Selection wins over a search hit, which wins over the cell colour.
+        const TerminalRowLayout::Highlight *hit = nullptr;
+        for (int h = 0; h < highlightCount; ++h) {
+            if (col < highlights[h].to && col + width > highlights[h].from) {
+                hit = &highlights[h];
+                break;
+            }
+        }
+        const QRgb bg = selected ? palette.selection : (hit ? hit->color : colors.bg);
         QRgb textFg = colors.fg;
-        if (contrastOn && (selected || !colors.exactFg)) {
+        if (contrastOn && (selected || hit || !colors.exactFg)) {
             if (!haveLast || lastFg != colors.fg || lastBg != bg) {
                 lastFg = colors.fg;
                 lastBg = bg;
@@ -125,7 +135,7 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
             }
             textFg = lastAdjusted;
         }
-        if (selected || !colors.defaultBg) {
+        if (selected || hit || !colors.defaultBg) {
             TerminalRowLayout::Background *last = out.backgrounds.empty() ? nullptr : &out.backgrounds.back();
             if (last && last->col + last->span == col && last->color == bg) {
                 last->span += width;

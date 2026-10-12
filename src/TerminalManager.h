@@ -32,13 +32,16 @@
 
 #include "TerminalTaskRegistry.h"
 #include "TerminalProcessStats.h"
-#include "TerminalWidget.h"
 
 
 class NotepadNextApplication;
 class MainWindow;
 class TerminalDock;
 class TerminalAreaToolbar;
+class AiAgentDock;
+// Not included: TerminalWidget.h pulls in vterm.h, whose `small` bit-field
+// collides with the Windows `small` macro in files that include windows.h.
+struct TerminalAppearance;
 namespace ads { class CDockAreaWidget; }
 namespace remote { class ExecutionContext; }
 
@@ -81,6 +84,11 @@ public slots:
     // (workspace root when null).
     void openTerminalLike(TerminalDock *like);
     void renameTerminal(TerminalDock *dock);
+    // Ctrl+click on a path in a terminal: open it at line/column.
+    void openFileAt(const QString &path, int line, int column);
+    // Selection → the terminal's project AI tab (or the active one, or a new
+    // one in the terminal's directory).
+    void sendSelectionToAi(TerminalDock *dock);
     void shutdown();
 
     TerminalDock *findTaskDock(const QString &command, const QString &cwd) const;
@@ -98,6 +106,7 @@ private:
     void configureDock(TerminalDock *dock);
     void wireWidget(TerminalDock *dock);
     void wireContextMenu(TerminalDock *dock);
+    AiAgentDock *aiDockFor(TerminalDock *dock) const;
     void installToolbar(ads::CDockAreaWidget *area);
     QIcon tabIcon(const TerminalDock *dock) const;
     void updateTab(TerminalDock *dock);

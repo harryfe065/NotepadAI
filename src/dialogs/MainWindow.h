@@ -86,6 +86,9 @@ public:
     int editorCount() const;
     QVector<ScintillaNext *> editors() const;
     DockedEditor *getDockedEditor() const { return dockedEditor; }
+    // Opens (and docks) an AI tab in `cwd` with the last-used agent, falling
+    // back to the default one. Null when no agent can start there.
+    AiAgentDock *openAiAgentInFolder(const QString &cwd, remote::ExecutionContext *ctx);
 
 public slots:
     // replaceInitialEditor: when true, an unedited pristine "New X" buffer that

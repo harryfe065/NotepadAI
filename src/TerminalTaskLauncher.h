@@ -51,4 +51,9 @@ TerminalTaskLaunch terminalTaskLaunch(const QString &shellPath, const QString &c
 // CommandLineToArgvW-compatible quoting of one argument.
 QString quoteWindowsArgument(const QString &arg);
 
+// A path typed into an interactive shell of `kind` as one word: PowerShell
+// single quotes, cmd double quotes, POSIX/fish single quotes. Plain paths
+// (no spaces or shell metacharacters) stay bare.
+QString quotePathForShell(const QString &path, TerminalShellKind kind);
+
 #endif

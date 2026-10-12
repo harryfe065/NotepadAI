@@ -25,6 +25,8 @@
 #include "TerminalContrast.h"
 #include "TerminalGlyphCache.h"
 #include "TerminalRowLayout.h"
+#include "TerminalSearch.h"
+#include "TerminalTaskLauncher.h"
 
 #include <vterm.h>
 
@@ -35,14 +37,19 @@
 #include <QRectF>
 #include <QString>
 #include <QStringList>
+#include <QFutureWatcher>
 #include <QTimer>
 
+#include <atomic>
 #include <cstdint>
+#include <deque>
+#include <memory>
 #include <vector>
 
 class QMenu;
 class QPainter;
 class TerminalScrollBar;
+class TerminalSearchBar;
 
 class  IPtyProcess;
 namespace remote { class ExecutionContext; }
@@ -99,6 +106,13 @@ public:
     void openSearch();
     void setScrollbackLines(int lines);
     const QFont &terminalFont() const { return m_font; }
+    // How dropped paths are quoted (the shell this terminal runs).
+    void setShellKind(TerminalShellKind kind) { m_shellKind = kind; }
+    // Directories relative paths in the output resolve against, after the
+    // shell's own OSC 7 cwd. Local path links are off for remote shells.
+    void setLinkBaseDirs(const QStringList &dirs) { m_linkBaseDirs = dirs; }
+    void setLocalPathLinks(bool enabled) { m_localPathLinks = enabled; }
+    void selectAll();
 
     bool isProcessRunning() const;
     qint64 ptyPid() const;
@@ -126,6 +140,12 @@ signals:
     void taskExited(int exitCode);
     // The shell reported a new working directory (OSC 7).
     void cwdChanged(const QString &cwd);
+    // Ctrl+click on a file path (line/column 0 when absent).
+    void openFileRequested(const QString &path, int line, int column);
+    // Ctrl+Shift+L or the context menu's Clear.
+    void clearRequested();
+    // Ctrl+Shift+A or the context menu's Send to AI.
+    void sendToAiRequested();
 
 protected:
     bool event(QEvent *event) override;
@@ -142,6 +162,11 @@ protected:
     void inputMethodEvent(QInputMethodEvent *event) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void contextMenuEvent(QContextMenuEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private slots:
     void onPtyReadyRead();
@@ -150,6 +175,8 @@ private slots:
     void flushFrame();
     void applyPendingResize();
     void toggleCursorBlink();
+    void runSearch();
+    void onSearchFinished();
 
 private:
     // Geometry. Cell sizes are whole device pixels so every row and column
@@ -172,6 +199,52 @@ private:
     bool isMouseReportingActive(Qt::KeyboardModifiers mods) const;
     VTermModifier qtModsToVterm(Qt::KeyboardModifiers mods) const;
     void selectWord(const QPoint &cellPos);
+    void selectLine(int absoluteRow);
+    void clearSelection();
+    bool terminalCtrl(Qt::KeyboardModifiers mods) const;
+    bool appCommand(Qt::KeyboardModifiers mods) const;
+    bool handleTerminalShortcut(QKeyEvent *event);
+    void pasteText(const QString &text);
+    qint64 lineIdForAbsoluteRow(int absoluteRow) const { return m_linesDropped + absoluteRow; }
+    int absoluteRowForLineId(qint64 id) const { return static_cast<int>(id - m_linesDropped); }
+    void noteLinesDropped(int count);
+
+    // Links (Ctrl+hover / Ctrl+click).
+    struct HoverLink {
+        bool valid = false;
+        bool url = false;
+        qint64 startLine = 0;   // absolute line ids, inclusive
+        int startCol = 0;
+        qint64 endLine = 0;
+        int endCol = 0;         // exclusive on endLine
+        QString target;         // URL or resolved path
+        int line = 0;
+        int column = 0;
+    };
+    struct Osc8Span {
+        qint64 startLine;
+        int startCol;
+        qint64 endLine;
+        int endCol;
+        QString uri;
+    };
+    void updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers mods);
+    void setHoverLink(const HoverLink &link);
+    void clearHoverLink();
+    bool openHoverLink();
+    bool logicalLineAt(int absoluteRow, QString *text, std::vector<qint64> *lineOf,
+                       std::vector<int> *colOf) const;
+    void markLineIdsDirty(qint64 from, qint64 to);
+
+    // Search.
+    void ensureSearchBar();
+    void positionSearchBar();
+    void closeSearch();
+    void stepSearch(int delta);
+    void revealMatch(const TerminalSearchMatch &match);
+    void searchNewOutput();
+    void syncSearchMarks();
+    int collectHighlights(qint64 lineId);
     void scrollToBottom();
     void setScrollOffset(int offset);
     void applyCursorStyleToState();
@@ -228,6 +301,12 @@ private:
     int m_childMemoryLimitGb = 0;
     QStringList m_launchArguments;
     QString m_reportedCwd;
+    TerminalShellKind m_shellKind = TerminalShellKind::Other;
+    QStringList m_linkBaseDirs;
+    bool m_localPathLinks = true;
+    // Every line that ever left the scrollback; absolute line ids
+    // (m_linesDropped + history/live index) stay stable across eviction.
+    qint64 m_linesDropped = 0;
     // OSC payloads arrive in fragments; collected until the final one.
     QByteArray m_oscBuffer;
 
@@ -260,6 +339,40 @@ private:
     QPoint m_selStart;
     QPoint m_selEnd;
     bool m_hasSelection = false;
+    // A drag only becomes a selection past a 2px move.
+    QPoint m_pressPixel;
+    bool m_pressArmed = false;
+    QElapsedTimer m_lastDoubleClick;
+    QPoint m_lastDoubleClickPixel;
+
+    HoverLink m_hover;
+    QPoint m_hoverPixel;
+    QPoint m_hoverProbePixel;
+    HoverLink m_hoverPendingLink;
+    QElapsedTimer m_hoverThrottle;
+    QString m_hoverPendingKey;
+    QFutureWatcher<QString> *m_pathWatcher = nullptr;
+    QHash<QString, QString> m_pathCache;   // candidate -> resolved ("" = none)
+    std::deque<Osc8Span> m_osc8Spans;
+    bool m_osc8Open = false;
+    qint64 m_osc8StartLine = 0;
+    int m_osc8StartCol = 0;
+    QString m_osc8Uri;
+
+    TerminalSearchBar *m_searchBar = nullptr;
+    TerminalSearchOptions m_searchOptions;
+    QRegularExpression m_searchRe;
+    std::vector<TerminalSearchMatch> m_matches;
+    int m_activeMatch = -1;
+    // History ids below this were searched; ids at/after it are re-searched
+    // (they were live rows, which change).
+    qint64 m_searchedHistoryEnd = 0;
+    QTimer *m_searchDebounce = nullptr;
+    QTimer *m_searchFollow = nullptr;
+    QFutureWatcher<std::vector<TerminalSearchMatch>> *m_searchWatcher = nullptr;
+    std::shared_ptr<std::atomic<bool>> m_searchCancel;
+    qint64 m_searchSnapshotEnd = 0;
+    std::vector<TerminalRowLayout::Highlight> m_rowHighlights;
 
     ScrollbackBuffer m_scrollback{10000};
     int m_scrollOffset = 0;   // lines scrolled up from the live bottom

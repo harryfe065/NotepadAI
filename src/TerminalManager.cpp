@@ -34,6 +34,8 @@
 #include "DockBottomToolTab.h"
 
 #include "DockAreaWidget.h"
+#include "EditorManager.h"
+#include "ScintillaNext.h"
 #include "DockWidgetTab.h"
 
 #include "iptyprocess.h"
@@ -55,6 +57,7 @@
 #include <QTimer>
 #include <QHash>
 #include <QInputDialog>
+#include <QStatusBar>
 #include <QMouseEvent>
 
 #include <algorithm>
@@ -749,19 +752,37 @@ void TerminalManager::wireContextMenu(TerminalDock *dock)
 {
     TerminalWidget *tw = dock->terminalWidget();
     connect(tw, &TerminalWidget::contextMenuAboutToShow,
-            this, [this, tw](QMenu *menu) {
-        if (!tw->hasSelection()) return;
-        AiAgentDock *aiDock = m_mainWindow->activeAiDock();
-        if (!aiDock) return;
+            this, [this, dock = QPointer<TerminalDock>(dock)](QMenu *menu) {
+        if (!dock)
+            return;
+        TerminalWidget *w = dock->terminalWidget();
+        // Always offered with a selection; the target AI tab is found (or
+        // started) when it is used.
+        if (w && w->hasSelection()) {
+            menu->addSeparator();
+            QAction *sendAi = menu->addAction(tr("Send to AI"));
+            sendAi->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
+            connect(sendAi, &QAction::triggered, this, [this, dock]() {
+                if (dock)
+                    sendSelectionToAi(dock.data());
+            });
+        }
         menu->addSeparator();
-        QAction *sendAi = menu->addAction(tr("Send to AI"));
-        connect(sendAi, &QAction::triggered, this, [this, tw]() {
-            AiAgentDock *aiDock = m_mainWindow->activeAiDock();
-            if (!aiDock) return;
-            QString wrapped = wrapInCodeblock(tw->selectedText());
-            aiDock->insertTextToInput(wrapped);
-            aiDock->setVisible(true);
-            aiDock->raise();
+        if (!dock->isTask()) {
+            connect(menu->addAction(tr("Rename...")), &QAction::triggered, this, [this, dock]() {
+                if (dock)
+                    renameTerminal(dock.data());
+            });
+        }
+        connect(menu->addAction(tr("New Terminal")), &QAction::triggered, this, [this, dock]() {
+            openTerminalLike(dock.data());
+        });
+        connect(menu->addAction(tr("Close")), &QAction::triggered, this, [dock]() {
+            if (!dock)
+                return;
+            // Same path as the tab's close button (confirmation included).
+            if (ads::CDockWidget *dw = dock->hostDockWidget())
+                dw->requestCloseDockWidget();
         });
     });
 }
@@ -772,6 +793,78 @@ void TerminalManager::wireWidget(TerminalDock *dock)
     if (!tw) return;
     wireContextMenu(dock);
     connect(tw, &TerminalWidget::zoomRequested, this, &TerminalManager::zoomTerminals);
+    connect(tw, &TerminalWidget::openFileRequested, this, &TerminalManager::openFileAt);
+    connect(tw, &TerminalWidget::sendToAiRequested, this, [this, dock = QPointer<TerminalDock>(dock)]() {
+        if (dock)
+            sendSelectionToAi(dock.data());
+    });
+}
+
+void TerminalManager::openFileAt(const QString &path, int line, int column)
+{
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    m_mainWindow->openFile(absolute);
+    ScintillaNext *editor = (m_app && m_app->getEditorManager())
+        ? m_app->getEditorManager()->getEditorByFilePath(absolute) : nullptr;
+    if (!editor)
+        return;
+    if (line > 0) {
+        const sptr_t lineIndex = line - 1;
+        const sptr_t pos = column > 0 ? editor->findColumn(lineIndex, column - 1)
+                                      : editor->positionFromLine(lineIndex);
+        editor->ensureVisible(lineIndex);
+        editor->gotoPos(pos);
+        editor->verticalCentreCaret();
+    }
+    m_mainWindow->getDockedEditor()->switchToEditor(editor);
+    static_cast<QWidget *>(editor)->setFocus(Qt::OtherFocusReason);
+}
+
+// The AI tab of the terminal's own project (deepest working directory that
+// contains its cwd), else the active one.
+AiAgentDock *TerminalManager::aiDockFor(TerminalDock *dock) const
+{
+#ifdef Q_OS_WIN
+    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+    const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+    const QString cwd = QDir::cleanPath(dock->currentCwd());
+    AiAgentDock *best = nullptr;
+    qsizetype bestLength = -1;
+    const auto docks = m_mainWindow->findChildren<AiAgentDock *>();
+    for (AiAgentDock *candidate : docks) {
+        const QString wd = QDir::cleanPath(candidate->workingDirectory());
+        if (wd.isEmpty() || cwd.isEmpty())
+            continue;
+        const bool contains = cwd.compare(wd, cs) == 0
+            || cwd.startsWith(wd.endsWith(QLatin1Char('/')) ? wd : wd + QLatin1Char('/'), cs);
+        if (contains && wd.size() > bestLength) {
+            best = candidate;
+            bestLength = wd.size();
+        }
+    }
+    return best ? best : m_mainWindow->activeAiDock();
+}
+
+void TerminalManager::sendSelectionToAi(TerminalDock *dock)
+{
+    TerminalWidget *tw = dock ? dock->terminalWidget() : nullptr;
+    if (!tw || !tw->hasSelection())
+        return;
+    const QString wrapped = wrapInCodeblock(tw->selectedText());
+    AiAgentDock *target = aiDockFor(dock);
+    if (!target) {
+        // No AI tab yet: start one in the terminal's directory.
+        target = m_mainWindow->openAiAgentInFolder(dock->currentCwd(), dock->executionContext());
+    }
+    if (!target) {
+        m_mainWindow->statusBar()->showMessage(tr("No AI agent could be started for this folder"), 4000);
+        return;
+    }
+    target->insertTextToInput(wrapped);
+    target->setVisible(true);
+    target->raise();
 }
 
 void TerminalManager::rememberDock(TerminalDock *dock)

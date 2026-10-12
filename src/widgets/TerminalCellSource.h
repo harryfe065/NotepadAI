@@ -33,9 +33,18 @@ public:
     virtual int rowCount() const = 0;
     virtual int cols() const = 0;
     virtual VTermScreenCell cellAt(int row, int col) const = 0;
+    // True when `row` soft-wraps into the next row (both are one logical line).
+    virtual bool rowWraps(int row) const
+    {
+        Q_UNUSED(row);
+        return false;
+    }
 };
 
-// Normalises ordering, clamps OOB, joins rows with '\n'; blank cells emit one space.
+// Normalises ordering and clamps OOB. Rows join with '\n' except after a row
+// that soft-wraps (it continues the same line); trailing blanks of each line
+// are dropped, inner blank cells emit one space, and the right half of a wide
+// character emits nothing.
 QString extractSelectionText(const TerminalCellSource &src,
                              QPoint start, QPoint end);
 

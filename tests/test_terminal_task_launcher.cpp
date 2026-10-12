@@ -32,6 +32,7 @@ private slots:
     void posix_quotesForWindowsCommandLine();
     void unknownShell_fallsBackToTyping();
     void windowsQuoting();
+    void dropQuoting();
 };
 
 void TestTerminalTaskLauncher::shellKinds()
@@ -118,6 +119,17 @@ void TestTerminalTaskLauncher::windowsQuoting()
     QCOMPARE(quoteWindowsArgument(QStringLiteral("say \"x\"")), QStringLiteral("\"say \\\"x\\\"\""));
     // Trailing backslashes double before the closing quote.
     QCOMPARE(quoteWindowsArgument(QStringLiteral("C:\\a b\\")), QStringLiteral("\"C:\\a b\\\\\""));
+}
+
+void TestTerminalTaskLauncher::dropQuoting()
+{
+    QCOMPARE(quotePathForShell(QStringLiteral("/tmp/a.txt"), TerminalShellKind::Posix), QStringLiteral("/tmp/a.txt"));
+    QCOMPARE(quotePathForShell(QStringLiteral("/tmp/my file"), TerminalShellKind::Posix), QStringLiteral("'/tmp/my file'"));
+    QCOMPARE(quotePathForShell(QStringLiteral("/tmp/it's"), TerminalShellKind::Fish), QStringLiteral("'/tmp/it'\\''s'"));
+    QCOMPARE(quotePathForShell(QStringLiteral("C:/a b/c.txt"), TerminalShellKind::PowerShell), QStringLiteral("'C:/a b/c.txt'"));
+    QCOMPARE(quotePathForShell(QStringLiteral("C:/o'k"), TerminalShellKind::PowerShell), QStringLiteral("'C:/o''k'"));
+    QCOMPARE(quotePathForShell(QStringLiteral("C:/a b"), TerminalShellKind::Cmd), QStringLiteral("\"C:/a b\""));
+    QCOMPARE(quotePathForShell(QStringLiteral("C:/plain"), TerminalShellKind::Cmd), QStringLiteral("C:/plain"));
 }
 
 QTEST_APPLESS_MAIN(TestTerminalTaskLauncher)

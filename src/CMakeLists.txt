@@ -580,6 +580,12 @@ qt_add_executable(NotepadAI
 	widgets/TerminalContrast.cpp
 	widgets/TerminalScrollBar.h
 	widgets/TerminalScrollBar.cpp
+	widgets/TerminalLinkDetector.h
+	widgets/TerminalLinkDetector.cpp
+	widgets/TerminalSearch.h
+	widgets/TerminalSearch.cpp
+	widgets/TerminalSearchBar.h
+	widgets/TerminalSearchBar.cpp
 	widgets/TerminalWidget.h
 	widgets/TerminalWidget.cpp
 	docks/TerminalDock.h

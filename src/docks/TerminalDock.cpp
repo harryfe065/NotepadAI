@@ -145,6 +145,7 @@ void TerminalDock::connectTerminal()
         refreshTitle();
     });
     connect(m_terminal, &TerminalWidget::cwdChanged, this, &TerminalDock::refreshTitle);
+    connect(m_terminal, &TerminalWidget::clearRequested, this, &TerminalDock::clearTerminal);
     connect(m_terminal, &TerminalWidget::taskExited, this, [this](int code) {
         if (isTask() && m_taskReportsExit) {
             setTaskState(code == 0 ? TaskState::Succeeded : TaskState::Failed);
@@ -168,6 +169,12 @@ void TerminalDock::connectTerminal()
 void TerminalDock::startTerminal(const QString &shell, const QString &cwd)
 {
     m_terminal->setChildMemoryLimitGb(childMemoryLimitGb());
+    // Dropped paths are quoted for this shell; relative paths in the output
+    // resolve against the spawn directory once the shell's own cwd is unknown.
+    // A remote shell's paths are not on this machine, so only URLs link there.
+    m_terminal->setShellKind(m_remoteSession ? TerminalShellKind::Posix : terminalShellKind(shell));
+    m_terminal->setLinkBaseDirs(m_remoteSession ? QStringList() : QStringList{cwd});
+    m_terminal->setLocalPathLinks(!m_remoteSession);
 
     // Local tasks run as a shell argument so their exit code comes back; an
     // unknown shell (or a remote one) gets the command typed in instead.
