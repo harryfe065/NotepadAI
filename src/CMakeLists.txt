@@ -1,7 +1,9 @@
 qt_add_executable(NotepadAI
 	WIN32
 	MACOSX_BUNDLE
+	AcpAgentBrand.h
 	AcpAgentDefinition.h
+	AcpAgentIcons.h
 	AcpAgentManager.h
 	AcpAgentPicker.h
 	AcpAgentRegistry.h
@@ -125,6 +127,7 @@ qt_add_executable(NotepadAI
 	prompts/prompts.qrc
 	ApplicationSettings.cpp
 	AcpAgentManager.cpp
+	AcpAgentIcons.cpp
 	AcpAgentRegistry.cpp
 	AcpConnection.cpp
 	AcpConversationCopy.cpp

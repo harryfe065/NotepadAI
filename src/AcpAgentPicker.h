@@ -20,6 +20,7 @@
 #define ACP_AGENT_PICKER_H
 
 #include "AcpAgentDefinition.h"
+#include "AcpAgentIcons.h"
 #include "AcpAgentRegistry.h"
 
 #include <QAction>
@@ -58,7 +59,7 @@ inline void fillAcpAgentPickerMenu(QMenu *menu,
     if (!enabled || !hasAgents || !onPicked)
         return;
     for (const AcpAgentDefinition &agent : agents) {
-        QAction *action = menu->addAction(agent.name);
+        QAction *action = menu->addAction(acpAgentIcon(agent, menu->palette()), agent.name);
         if (agent.id == defaultId) {
             QFont f = action->font();
             f.setBold(true);

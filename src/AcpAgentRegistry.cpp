@@ -21,6 +21,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QSet>
+#include <QUuid>
 
 #include "ApplicationSettings.h"
 
@@ -250,6 +253,64 @@ bool AcpAgentRegistry::removeAgent(const QString &id)
         return true;
     }
     return false;
+}
+
+bool AcpAgentRegistry::moveAgent(const QString &id, int toIndex)
+{
+    const int from = indexOf(id);
+    if (from < 0 || toIndex < 0 || toIndex >= m_agents.size() || from == toIndex) {
+        return false;
+    }
+    m_agents.move(from, toIndex);
+    persistUserAgents();
+    emit changed();
+    return true;
+}
+
+QString AcpAgentRegistry::cloneAgent(const QString &id)
+{
+    const int from = indexOf(id);
+    if (from < 0) {
+        return QString();
+    }
+    AcpAgentDefinition copy = m_agents.at(from);
+    copy.id = QStringLiteral("user:") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    copy.name = uniqueCopyName(copy.name);
+    copy.builtin = false;
+    m_agents.insert(from + 1, copy);
+    persistUserAgents();
+    emit changed();
+    return copy.id;
+}
+
+int AcpAgentRegistry::indexOf(const QString &id) const
+{
+    for (int i = 0; i < m_agents.size(); ++i) {
+        if (m_agents.at(i).id == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+QString AcpAgentRegistry::uniqueCopyName(const QString &name) const
+{
+    // Cloning "X (copy 2)" yields "X (copy 3)", not "X (copy 2) (copy)".
+    static const QRegularExpression kCopySuffix(QStringLiteral(R"( \(copy(?: \d+)?\)$)"));
+    QString base = name;
+    base.remove(kCopySuffix);
+
+    QSet<QString> taken;
+    taken.reserve(m_agents.size());
+    for (const AcpAgentDefinition &def : m_agents) {
+        taken.insert(def.name);
+    }
+
+    QString candidate = base + QStringLiteral(" (copy)");
+    for (int n = 2; taken.contains(candidate); ++n) {
+        candidate = base + QStringLiteral(" (copy %1)").arg(n);
+    }
+    return candidate;
 }
 
 QString AcpAgentRegistry::defaultAgentId() const

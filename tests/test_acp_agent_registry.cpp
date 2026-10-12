@@ -45,6 +45,11 @@ private slots:
     void defaultAgentId_usesFirstRemainingAfterDefaultRemoved();
     void autoApprovePolicy_defaultsToManual();
     void setAutoApprovePolicy_persistsAndEmits();
+    void moveAgent_reordersPersistsAndEmits();
+    void moveAgent_rejectsNoOpAndInvalid();
+    void cloneAgent_insertsUserCopyAfterSource();
+    void cloneAgent_namesStayUnique();
+    void cloneAgent_unknownId_returnsEmpty();
 
 private:
     QTemporaryDir tempDir;
@@ -233,6 +238,119 @@ void TestAcpAgentRegistry::setAutoApprovePolicy_persistsAndEmits()
     s.sync();
     AcpAgentRegistry reloaded(&s);
     QCOMPARE(reloaded.autoApprovePolicy(), QStringLiteral("allowAll"));
+}
+
+void TestAcpAgentRegistry::moveAgent_reordersPersistsAndEmits()
+{
+    ApplicationSettings s;
+    {
+        AcpAgentRegistry registry(&s);
+        AcpAgentDefinition def;
+        def.id = QStringLiteral("user:foo");
+        def.name = QStringLiteral("Foo");
+        def.command = QStringLiteral("foo");
+        QVERIFY(registry.addAgent(def));
+
+        QSignalSpy spy(&registry, &AcpAgentRegistry::changed);
+        QVERIFY(registry.moveAgent(QStringLiteral("user:foo"), 0));
+        QCOMPARE(spy.count(), 1);
+
+        const auto agents = registry.agents();
+        QCOMPARE(agents.size(), 3);
+        QCOMPARE(agents.at(0).id, QStringLiteral("user:foo"));
+        QCOMPARE(agents.at(1).id, AcpAgentRegistry::builtinClaudeCodeId());
+        QCOMPARE(agents.at(2).id, AcpAgentRegistry::builtinCodexId());
+
+        QVERIFY(registry.moveAgent(AcpAgentRegistry::builtinClaudeCodeId(), 2));
+        QCOMPARE(registry.agents().at(2).id, AcpAgentRegistry::builtinClaudeCodeId());
+        QCOMPARE(registry.agents().at(1).id, AcpAgentRegistry::builtinCodexId());
+    }
+    s.sync();
+
+    AcpAgentRegistry reloaded(&s);
+    const auto agents = reloaded.agents();
+    QCOMPARE(agents.size(), 3);
+    QCOMPARE(agents.at(0).id, QStringLiteral("user:foo"));
+    QCOMPARE(agents.at(1).id, AcpAgentRegistry::builtinCodexId());
+    QCOMPARE(agents.at(2).id, AcpAgentRegistry::builtinClaudeCodeId());
+}
+
+void TestAcpAgentRegistry::moveAgent_rejectsNoOpAndInvalid()
+{
+    ApplicationSettings s;
+    AcpAgentRegistry registry(&s);
+    QSignalSpy spy(&registry, &AcpAgentRegistry::changed);
+
+    QVERIFY(!registry.moveAgent(AcpAgentRegistry::builtinClaudeCodeId(), 0));
+    QVERIFY(!registry.moveAgent(QStringLiteral("user:missing"), 0));
+    QVERIFY(!registry.moveAgent(AcpAgentRegistry::builtinClaudeCodeId(), -1));
+    QVERIFY(!registry.moveAgent(AcpAgentRegistry::builtinClaudeCodeId(), 2));
+    QCOMPARE(spy.count(), 0);
+    QCOMPARE(registry.agents().at(0).id, AcpAgentRegistry::builtinClaudeCodeId());
+}
+
+void TestAcpAgentRegistry::cloneAgent_insertsUserCopyAfterSource()
+{
+    ApplicationSettings s;
+    QString cloneId;
+    {
+        AcpAgentRegistry registry(&s);
+        AcpAgentDefinition src = registry.agent(AcpAgentRegistry::builtinClaudeCodeId());
+        src.env.insert(QStringLiteral("KEY"), QStringLiteral("value"));
+        src.icon = QStringLiteral("claude-code");
+        QVERIFY(registry.updateAgent(src));
+
+        QSignalSpy spy(&registry, &AcpAgentRegistry::changed);
+        cloneId = registry.cloneAgent(AcpAgentRegistry::builtinClaudeCodeId());
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(cloneId.startsWith(QStringLiteral("user:")));
+        QVERIFY(cloneId != AcpAgentRegistry::builtinClaudeCodeId());
+
+        const auto agents = registry.agents();
+        QCOMPARE(agents.size(), 3);
+        QCOMPARE(agents.at(0).id, AcpAgentRegistry::builtinClaudeCodeId());
+        QCOMPARE(agents.at(1).id, cloneId);
+        QCOMPARE(agents.at(2).id, AcpAgentRegistry::builtinCodexId());
+
+        const AcpAgentDefinition copy = agents.at(1);
+        QCOMPARE(copy.name, QStringLiteral("Claude Code (copy)"));
+        QCOMPARE(copy.command, src.command);
+        QCOMPARE(copy.args, src.args);
+        QCOMPARE(copy.env, src.env);
+        QCOMPARE(copy.icon, src.icon);
+        QVERIFY(!copy.builtin);
+    }
+    s.sync();
+
+    AcpAgentRegistry reloaded(&s);
+    QCOMPARE(reloaded.agents().at(1).id, cloneId);
+    QCOMPARE(reloaded.agent(cloneId).name, QStringLiteral("Claude Code (copy)"));
+}
+
+void TestAcpAgentRegistry::cloneAgent_namesStayUnique()
+{
+    ApplicationSettings s;
+    AcpAgentRegistry registry(&s);
+
+    const QString first = registry.cloneAgent(AcpAgentRegistry::builtinCodexId());
+    const QString second = registry.cloneAgent(AcpAgentRegistry::builtinCodexId());
+    // Cloning a copy strips its "(copy N)" suffix instead of stacking another.
+    const QString third = registry.cloneAgent(first);
+
+    QCOMPARE(registry.agent(first).name, QStringLiteral("Codex (copy)"));
+    QCOMPARE(registry.agent(second).name, QStringLiteral("Codex (copy 2)"));
+    QCOMPARE(registry.agent(third).name, QStringLiteral("Codex (copy 3)"));
+}
+
+void TestAcpAgentRegistry::cloneAgent_unknownId_returnsEmpty()
+{
+    ApplicationSettings s;
+    AcpAgentRegistry registry(&s);
+    QSignalSpy spy(&registry, &AcpAgentRegistry::changed);
+
+    QVERIFY(registry.cloneAgent(QStringLiteral("user:missing")).isEmpty());
+    QCOMPARE(spy.count(), 0);
+    QCOMPARE(registry.agents().size(), 2);
 }
 
 QTEST_MAIN(TestAcpAgentRegistry)

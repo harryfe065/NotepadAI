@@ -56,6 +56,12 @@
         <file>icons/arrow-right.svg</file>
         <file>icons/refresh-cw.svg</file>
         <file>icons/claude.svg</file>
+        <file>icons/agents/agent.svg</file>
+        <file>icons/agents/codex.svg</file>
+        <file>icons/agents/oh-my-pi.svg</file>
+        <file>icons/agents/opencode-dark.svg</file>
+        <file>icons/agents/opencode-light.svg</file>
+        <file>icons/agents/pi.svg</file>
         <file>icons/send.svg</file>
         <file>icons/circle-stop.svg</file>
         <file>icons/copy.svg</file>

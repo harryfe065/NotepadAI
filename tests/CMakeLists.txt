@@ -307,6 +307,16 @@ target_sources(test_acp_agent_registry PRIVATE
 )
 add_test(NAME AcpAgentRegistry COMMAND test_acp_agent_registry)
 
+# --- AcpAgentBrand: bundled icon key from explicit icon or id/name/command/args ---
+qt_add_executable(test_acp_agent_brand test_acp_agent_brand.cpp)
+target_include_directories(test_acp_agent_brand PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_agent_brand PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_agent_brand PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpAgentBrand.h
+    ${CMAKE_SOURCE_DIR}/src/AcpAgentDefinition.h
+)
+add_test(NAME AcpAgentBrand COMMAND test_acp_agent_brand)
+
 # --- AcpProtocol::acpExtractFrames: stdio newline-delimited JSON framing ---
 qt_add_executable(test_acp_jsonrpc_framing test_acp_jsonrpc_framing.cpp)
 target_include_directories(test_acp_jsonrpc_framing PRIVATE ${CMAKE_SOURCE_DIR}/src)

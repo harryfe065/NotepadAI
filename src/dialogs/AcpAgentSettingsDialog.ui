@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>640</width>
-    <height>480</height>
+    <width>720</width>
+    <height>540</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -15,99 +15,200 @@
   </property>
   <layout class="QVBoxLayout" name="rootLayout">
    <item>
-    <widget class="QLabel" name="agentsLabel">
-     <property name="text">
-      <string>Configured agents:</string>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
      </property>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="tableRowLayout">
-     <item>
-      <widget class="QTableWidget" name="agentTable">
-       <property name="selectionBehavior">
-        <enum>QAbstractItemView::SelectRows</enum>
+     <widget class="QWidget" name="agentsTab">
+      <attribute name="title">
+       <string>Agents</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="agentsTabLayout">
+       <property name="spacing">
+        <number>8</number>
        </property>
-       <property name="selectionMode">
-        <enum>QAbstractItemView::SingleSelection</enum>
-       </property>
-       <property name="editTriggers">
-        <set>QAbstractItemView::NoEditTriggers</set>
-       </property>
-       <property name="horizontalScrollMode">
-        <enum>QAbstractItemView::ScrollPerPixel</enum>
-       </property>
-       <attribute name="horizontalHeaderStretchLastSection">
-        <bool>true</bool>
-       </attribute>
-       <attribute name="verticalHeaderVisible">
-        <bool>false</bool>
-       </attribute>
-      </widget>
-     </item>
-     <item>
-      <layout class="QVBoxLayout" name="buttonColumnLayout">
        <item>
-        <widget class="QPushButton" name="addButton">
+        <widget class="QLabel" name="agentsHintLabel">
          <property name="text">
-          <string>Add…</string>
+          <string>Agents appear in this order in the AI menus. Drag a row or use Move up and Move down to reorder.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
          </property>
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="editButton">
-         <property name="text">
-          <string>Edit…</string>
+        <layout class="QHBoxLayout" name="listRowLayout">
+         <property name="spacing">
+          <number>8</number>
          </property>
-        </widget>
+         <item>
+          <widget class="QListWidget" name="agentList">
+           <property name="contextMenuPolicy">
+            <enum>Qt::CustomContextMenu</enum>
+           </property>
+           <property name="editTriggers">
+            <set>QAbstractItemView::NoEditTriggers</set>
+           </property>
+           <property name="dragEnabled">
+            <bool>true</bool>
+           </property>
+           <property name="dragDropMode">
+            <enum>QAbstractItemView::InternalMove</enum>
+           </property>
+           <property name="defaultDropAction">
+            <enum>Qt::MoveAction</enum>
+           </property>
+           <property name="selectionMode">
+            <enum>QAbstractItemView::SingleSelection</enum>
+           </property>
+           <property name="verticalScrollMode">
+            <enum>QAbstractItemView::ScrollPerPixel</enum>
+           </property>
+           <property name="uniformItemSizes">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QVBoxLayout" name="buttonColumnLayout">
+           <property name="spacing">
+            <number>6</number>
+           </property>
+           <item>
+            <widget class="QPushButton" name="addButton">
+             <property name="text">
+              <string>Add…</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="editButton">
+             <property name="text">
+              <string>Edit…</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="cloneButton">
+             <property name="text">
+              <string>Clone</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="removeButton">
+             <property name="text">
+              <string>Remove</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="buttonGroupSpacer">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeType">
+              <enum>QSizePolicy::Fixed</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>12</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QPushButton" name="moveUpButton">
+             <property name="text">
+              <string>Move up</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="moveDownButton">
+             <property name="text">
+              <string>Move down</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="buttonColumnSpacer">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>40</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+        </layout>
        </item>
        <item>
-        <widget class="QPushButton" name="removeButton">
-         <property name="text">
-          <string>Remove</string>
+        <layout class="QFormLayout" name="optionsLayout">
+         <property name="horizontalSpacing">
+          <number>8</number>
          </property>
-        </widget>
-       </item>
-       <item>
-        <spacer name="buttonColumnSpacer">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
+         <property name="verticalSpacing">
+          <number>6</number>
          </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>40</height>
-          </size>
-         </property>
-        </spacer>
+         <item row="0" column="0">
+          <widget class="QLabel" name="defaultAgentLabel">
+           <property name="text">
+            <string>Default agent:</string>
+           </property>
+           <property name="buddy">
+            <cstring>defaultAgentCombo</cstring>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="defaultAgentCombo"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="autoApproveLabel">
+           <property name="text">
+            <string>Auto-approve permissions:</string>
+           </property>
+           <property name="buddy">
+            <cstring>autoApproveCombo</cstring>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QComboBox" name="autoApproveCombo"/>
+         </item>
+        </layout>
        </item>
       </layout>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <layout class="QFormLayout" name="optionsLayout">
-     <item row="0" column="0">
-      <widget class="QLabel" name="defaultAgentLabel">
-       <property name="text">
-        <string>Default agent:</string>
+     </widget>
+     <widget class="QWidget" name="goalTab">
+      <attribute name="title">
+       <string>Goal agent</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="goalTabLayout">
+       <property name="spacing">
+        <number>8</number>
        </property>
-      </widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QComboBox" name="defaultAgentCombo"/>
-     </item>
-     <item row="1" column="0">
-      <widget class="QLabel" name="autoApproveLabel">
-       <property name="text">
-        <string>Auto-approve permissions:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="1">
-      <widget class="QComboBox" name="autoApproveCombo"/>
-     </item>
-    </layout>
+       <item>
+        <widget class="QLabel" name="goalHintLabel">
+         <property name="text">
+          <string>The goal agent judges whether each success criterion is met and decides when the working agent should continue.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
    </item>
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
@@ -118,6 +219,18 @@
    </item>
   </layout>
  </widget>
+ <tabstops>
+  <tabstop>tabWidget</tabstop>
+  <tabstop>agentList</tabstop>
+  <tabstop>addButton</tabstop>
+  <tabstop>editButton</tabstop>
+  <tabstop>cloneButton</tabstop>
+  <tabstop>removeButton</tabstop>
+  <tabstop>moveUpButton</tabstop>
+  <tabstop>moveDownButton</tabstop>
+  <tabstop>defaultAgentCombo</tabstop>
+  <tabstop>autoApproveCombo</tabstop>
+ </tabstops>
  <resources/>
  <connections>
   <connection>

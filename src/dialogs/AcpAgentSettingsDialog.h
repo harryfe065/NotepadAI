@@ -20,13 +20,13 @@
 #define ACP_AGENT_SETTINGS_DIALOG_H
 
 #include <QDialog>
+#include <QPoint>
 
 #include "AcpAgentDefinition.h"
 
 class AcpAgentRegistry;
 class ApplicationSettings;
 class QComboBox;
-class QGroupBox;
 class QPlainTextEdit;
 class QSpinBox;
 
@@ -44,10 +44,18 @@ public:
                                    QWidget *parent = nullptr);
     ~AcpAgentSettingsDialog() override;
 
+protected:
+    void changeEvent(QEvent *event) override;
+
 private slots:
     void onAdd();
     void onEdit();
+    void onClone();
     void onRemove();
+    void onMoveUp();
+    void onMoveDown();
+    void onAgentRowsMoved(int start, int destinationRow);
+    void onAgentContextMenu(const QPoint &pos);
     void onSelectionChanged();
     void onDefaultAgentIndexChanged(int index);
     void onAutoApproveIndexChanged(int index);
@@ -59,7 +67,7 @@ private slots:
     void onGoalTemplateDelete();
 
 private:
-    void refreshAgentTable();
+    void refreshAgentList();
     void refreshDefaultAgentCombo();
     void refreshAutoApproveCombo();
     void buildGoalSection();
@@ -68,13 +76,19 @@ private:
     void refreshGoalTemplateCombo();
     void refreshGoalAgentCombo();
     QString selectedAgentId() const;
+    int selectedRow() const;
+    void selectAgent(const QString &id);
+    void moveSelectedBy(int delta);
+    void applyMutedPalette();
 
     Ui::AcpAgentSettingsDialog *ui;
     AcpAgentRegistry *m_registry;
     ApplicationSettings *m_appSettings = nullptr;
 
+    bool m_ready = false;
+
     // Goal section widgets
-    QGroupBox *m_goalGroup = nullptr;
+    QWidget *m_goalPage = nullptr;
     QComboBox *m_goalAgentCombo = nullptr;
     QSpinBox *m_goalMaxIterSpin = nullptr;
     QComboBox *m_goalTemplateCombo = nullptr;

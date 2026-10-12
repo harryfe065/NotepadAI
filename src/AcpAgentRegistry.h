@@ -47,6 +47,16 @@ public:
     bool updateAgent(const AcpAgentDefinition &def);
     bool removeAgent(const QString &id);
 
+    // Moves `id` to `toIndex` (index in the list after the move). False, and
+    // no `changed()`, when the id is unknown, the index is out of range, or
+    // the agent is already there.
+    bool moveAgent(const QString &id, int toIndex);
+
+    // Inserts a user-defined copy right after `id` with a fresh id and a
+    // unique "<name> (copy N)" name. Returns the new id, or empty if `id` is
+    // unknown.
+    QString cloneAgent(const QString &id);
+
     QString defaultAgentId() const;
     void setDefaultAgentId(const QString &id);
 
@@ -68,6 +78,8 @@ signals:
 
 private:
     void load();
+    int indexOf(const QString &id) const;
+    QString uniqueCopyName(const QString &name) const;
     void persistUserAgents();
 
     ApplicationSettings *m_settings;
