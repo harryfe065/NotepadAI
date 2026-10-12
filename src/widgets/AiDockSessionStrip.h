@@ -70,6 +70,7 @@ private:
     void restyleButtons();
     void syncIntrinsicSize();
     void notifyHostTabBar();
+    void detachFromHostTabBar();
     QString tooltipFor(int index) const;
     int indexOfButton(const QObject *obj) const;
 

@@ -84,6 +84,11 @@ void AiDockSessionStrip::changeEvent(QEvent *event)
 
 bool AiDockSessionStrip::event(QEvent *event)
 {
+    // QTabBar::removeTab() deleteLater()s its tab buttons, but the owner may
+    // have moved the strip onto another bar before the event lands. That bar
+    // keeps a raw pointer and calls hide() on it in its own removeTab.
+    if (event && event->type() == QEvent::DeferredDelete)
+        detachFromHostTabBar();
     const bool handled = QWidget::event(event);
     // setTabButton reparents then layoutTabs; size() must already be
     // intrinsic or the tab will not grow and the digits clip.
@@ -203,6 +208,19 @@ void AiDockSessionStrip::notifyHostTabBar()
     const QSize barSize = bar->size();
     QResizeEvent ev(barSize, barSize);
     QCoreApplication::sendEvent(bar, &ev);
+}
+
+void AiDockSessionStrip::detachFromHostTabBar()
+{
+    auto *bar = qobject_cast<QTabBar *>(parentWidget());
+    if (!bar)
+        return;
+    for (int i = 0; i < bar->count(); ++i) {
+        if (bar->tabButton(i, QTabBar::RightSide) == this)
+            bar->setTabButton(i, QTabBar::RightSide, nullptr);
+        if (bar->tabButton(i, QTabBar::LeftSide) == this)
+            bar->setTabButton(i, QTabBar::LeftSide, nullptr);
+    }
 }
 
 QString AiDockSessionStrip::tooltipFor(int index) const

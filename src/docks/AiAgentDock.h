@@ -219,7 +219,6 @@ private:
     QTabBar *m_localTabBar = nullptr;
     QPointer<AiDockSessionStrip> m_strip;
     QPointer<QTabBar> m_tabBarForStrip;
-    int m_stripTabIndex = -1;
     bool m_stripReinstallQueued = false;
 
     bool m_restartDialogShowing = false;

@@ -467,6 +467,11 @@ void AiAgentDock::rebind(const QString &oldSessionId,
 
 AiAgentDock::~AiAgentDock()
 {
+    // ~QWidget deletes the strip with our children after our members are
+    // gone; its destroyed handler must not write them.
+    if (m_strip)
+        disconnect(m_strip, nullptr, this, nullptr);
+
     for (Slot &slot : m_slots)
         destroySlotGoal(slot);
 
@@ -883,7 +888,6 @@ void AiAgentDock::ensureStrip()
     connect(m_strip, &QObject::destroyed, this, [this]() {
         m_strip = nullptr;
         m_tabBarForStrip = nullptr;
-        m_stripTabIndex = -1;
         scheduleStripReinstall();
     });
     m_headerLayout->addWidget(m_strip);
@@ -894,12 +898,17 @@ void AiAgentDock::salvageStrip()
     if (!m_strip)
         return;
     if (m_tabBarForStrip) {
-        if (m_stripTabIndex >= 0 && m_stripTabIndex < m_tabBarForStrip->count()
-            && m_tabBarForStrip->tabButton(m_stripTabIndex, QTabBar::RightSide) == m_strip) {
-            m_tabBarForStrip->setTabButton(m_stripTabIndex, QTabBar::RightSide, nullptr);
+        // Scan, never a cached index: QDockAreaLayoutInfo::updateTabBar
+        // inserts/removes tabs on the host bar, so the strip's tab moves. A
+        // missed detach leaves the bar to hide() + deleteLater() the strip in
+        // a later removeTab, after it has moved to another bar.
+        for (int i = 0; i < m_tabBarForStrip->count(); ++i) {
+            if (m_tabBarForStrip->tabButton(i, QTabBar::RightSide) == m_strip) {
+                m_tabBarForStrip->setTabButton(i, QTabBar::RightSide, nullptr);
+                break;
+            }
         }
         m_tabBarForStrip = nullptr;
-        m_stripTabIndex = -1;
     }
     m_strip->setParent(m_header);
     if (m_headerLayout->indexOf(m_strip) < 0)
@@ -992,7 +1001,6 @@ void AiAgentDock::reinstallStrip()
         m_headerLayout->removeWidget(m_strip);
         bar->setTabButton(tabIndex, QTabBar::RightSide, m_strip);
         m_tabBarForStrip = bar;
-        m_stripTabIndex = tabIndex;
         m_strip->show();
         refreshProjectTooltip();
         return;
@@ -1003,7 +1011,6 @@ void AiAgentDock::reinstallStrip()
     m_headerLayout->removeWidget(m_strip);
     m_localTabBar->setTabButton(0, QTabBar::RightSide, m_strip);
     m_tabBarForStrip = m_localTabBar;
-    m_stripTabIndex = 0;
     m_strip->show();
     refreshProjectTooltip();
 }

@@ -9,6 +9,7 @@
  */
 
 #include <QtTest>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QSizePolicy>
 #include <QTabBar>
@@ -31,6 +32,7 @@ private slots:
     void tooltip_numberShowsLastUserPreview();
     void size_matchesHint_buttonsDoNotShrink();
     void tabBar_tabSizeHint_includesFullStripWidth();
+    void deferredDelete_afterMove_detachesFromNewBar();
 };
 
 static QVector<AiDockSessionStrip::SlotSnapshot> threeSnapshots(bool secondBusy)
@@ -184,6 +186,32 @@ void TestAiDockSessionStrip::tabBar_tabSizeHint_includesFullStripWidth()
     bar.setTabButton(0, QTabBar::RightSide, strip);
     QCOMPARE(strip->size().width(), stripW);
     QVERIFY(bar.tabSizeHint(0).width() >= textOnly + stripW);
+}
+
+// Crash 2026-10-12: the QMainWindow dock bar removeTab()s the strip's tab
+// (deleteLater), AiAgentDock moves the strip onto its local bar before the
+// event lands, and the local bar's next removeTab() hide()s freed memory.
+void TestAiDockSessionStrip::deferredDelete_afterMove_detachesFromNewBar()
+{
+    QTabBar host;
+    host.addTab(QStringLiteral("a"));
+    host.addTab(QStringLiteral("b"));
+    QTabBar local;
+    local.addTab(QStringLiteral("notepad-ade"));
+
+    auto *strip = new AiDockSessionStrip;
+    QPointer<AiDockSessionStrip> guard(strip);
+    host.setTabButton(1, QTabBar::RightSide, strip);
+    host.removeTab(1);
+    local.setTabButton(0, QTabBar::RightSide, strip);
+    QCOMPARE(local.tabButton(0, QTabBar::RightSide), strip);
+
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+    QVERIFY(guard.isNull());
+    QCOMPARE(local.tabButton(0, QTabBar::RightSide), nullptr);
+    local.removeTab(0);
+    QCOMPARE(local.count(), 0);
 }
 
 QTEST_MAIN(TestAiDockSessionStrip)

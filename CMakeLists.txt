@@ -24,6 +24,12 @@ if(MSVC)
     # Emit PDB in all configs so Sentry can symbolicate release crash reports.
     add_compile_options(/Zi)
     add_link_options(/DEBUG:FULL /OPT:REF /OPT:ICF)
+elseif(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # clang++ (GNU driver, MSVC ABI) leaves MSVC unset, so the block above is
+    # skipped and Release links without a PDB. CodeView only changes the
+    # symbols, not codegen; /DEBUG turns off /OPT:REF,ICF unless re-enabled.
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-g> $<$<COMPILE_LANGUAGE:C,CXX>:-gcodeview>)
+    add_link_options(LINKER:/DEBUG:FULL LINKER:/OPT:REF LINKER:/OPT:ICF)
 endif()
 
 if(UNIX AND NOT APPLE)
