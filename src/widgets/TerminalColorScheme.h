@@ -33,4 +33,21 @@ struct TerminalColorScheme
     static TerminalColorScheme darkScheme();
 };
 
+// xterm's fixed palette for indices 16..255: a 6x6x6 colour cube followed by a
+// 24-step grey ramp. Indices below 16 come from the scheme.
+QRgb xtermIndexedColor(int index);
+
+// Flattened, render-ready form of a scheme: every palette lookup on the paint
+// path is one array read instead of a QColor conversion.
+struct TerminalPalette
+{
+    QRgb indexed[256] = {};
+    QRgb defaultFg = 0;
+    QRgb defaultBg = 0;
+    QRgb cursor = 0;
+    QRgb selection = 0;
+
+    static TerminalPalette fromScheme(const TerminalColorScheme &scheme);
+};
+
 #endif

@@ -132,6 +132,17 @@ TerminalProcessStats::TreeStats TerminalProcessStats::aggregateTree(
     return result;
 }
 
+bool TerminalProcessStats::hasChildProcess(const ProcessSample *samples, int sampleCount, quint32 rootPid)
+{
+    if (!samples || rootPid == 0) return false;
+    for (int i = 0; i < sampleCount; ++i) {
+        if (samples[i].parentPid == rootPid && samples[i].pid != rootPid) {
+            return true;
+        }
+    }
+    return false;
+}
+
 QString TerminalProcessStats::cpuLabel(bool valid, double cpuPercent)
 {
     if (!valid)

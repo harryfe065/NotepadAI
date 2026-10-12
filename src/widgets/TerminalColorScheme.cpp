@@ -69,3 +69,33 @@ TerminalColorScheme TerminalColorScheme::darkScheme()
     s.selection = QColor(0x26, 0x4F, 0x78);
     return s;
 }
+
+QRgb xtermIndexedColor(int index)
+{
+    if (index < 16 || index > 255) {
+        return qRgb(0, 0, 0);
+    }
+    if (index < 232) {
+        static constexpr int kLevels[6] = {0x00, 0x5F, 0x87, 0xAF, 0xD7, 0xFF};
+        const int i = index - 16;
+        return qRgb(kLevels[i / 36], kLevels[(i / 6) % 6], kLevels[i % 6]);
+    }
+    const int grey = 8 + (index - 232) * 10;
+    return qRgb(grey, grey, grey);
+}
+
+TerminalPalette TerminalPalette::fromScheme(const TerminalColorScheme &scheme)
+{
+    TerminalPalette p;
+    for (int i = 0; i < 16; ++i) {
+        p.indexed[i] = scheme.ansi[i].rgb();
+    }
+    for (int i = 16; i < 256; ++i) {
+        p.indexed[i] = xtermIndexedColor(i);
+    }
+    p.defaultFg = scheme.defaultFg.rgb();
+    p.defaultBg = scheme.defaultBg.rgb();
+    p.cursor = scheme.cursor.rgb();
+    p.selection = scheme.selection.rgb();
+    return p;
+}

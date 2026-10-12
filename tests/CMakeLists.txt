@@ -259,6 +259,29 @@ target_sources(test_terminal_selection PRIVATE
 )
 add_test(NAME TerminalSelection COMMAND test_terminal_selection)
 
+# --- TerminalRowLayout: palette resolution + run/background batching for the renderer ---
+qt_add_executable(test_terminal_row_layout test_terminal_row_layout.cpp)
+target_include_directories(test_terminal_row_layout PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
+target_link_libraries(test_terminal_row_layout PRIVATE Qt6::Core Qt6::Gui Qt6::Test libvterm)
+target_sources(test_terminal_row_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.h
+)
+add_test(NAME TerminalRowLayout COMMAND test_terminal_row_layout)
+
+# --- TerminalBoxDrawing: procedural box/block/Powerline glyphs tile without seams ---
+qt_add_executable(test_terminal_box_drawing test_terminal_box_drawing.cpp)
+target_include_directories(test_terminal_box_drawing PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
+target_link_libraries(test_terminal_box_drawing PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+target_sources(test_terminal_box_drawing PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalBoxDrawing.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalBoxDrawing.h
+)
+add_test(NAME TerminalBoxDrawing COMMAND test_terminal_box_drawing)
+set_tests_properties(TerminalBoxDrawing PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # --- TerminalAiHelper: wrapInCodeblock fenced codeblock wrapping ---
 qt_add_executable(test_terminal_send_to_ai test_terminal_send_to_ai.cpp)
 target_include_directories(test_terminal_send_to_ai PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -291,8 +314,17 @@ target_sources(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.h
     ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalBoxDrawing.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalBoxDrawing.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.h
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
 )
 add_test(NAME TerminalKeyRouting COMMAND test_terminal_key_routing)
+set_tests_properties(TerminalKeyRouting PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # --- AcpAgentRegistry: builtin seed, user CRUD, default + auto-approve policy ---
 qt_add_executable(test_acp_agent_registry test_acp_agent_registry.cpp)

@@ -36,6 +36,9 @@ private slots:
 
     void lightScheme_cursorAndSelectionAreValid();
     void darkScheme_cursorAndSelectionAreValid();
+
+    void xtermIndexed_cubeAndGreyRamp();
+    void palette_flattensSchemeAndFixedColours();
 };
 
 void TestTerminalColorScheme::lightScheme_hasSixteenValidAnsiColors()
@@ -96,6 +99,30 @@ void TestTerminalColorScheme::darkScheme_cursorAndSelectionAreValid()
     const TerminalColorScheme s = TerminalColorScheme::darkScheme();
     QVERIFY(s.cursor.isValid());
     QVERIFY(s.selection.isValid());
+}
+
+void TestTerminalColorScheme::xtermIndexed_cubeAndGreyRamp()
+{
+    QCOMPARE(xtermIndexedColor(16), qRgb(0, 0, 0));
+    QCOMPARE(xtermIndexedColor(17), qRgb(0, 0, 0x5F));
+    QCOMPARE(xtermIndexedColor(208), qRgb(0xFF, 0x87, 0x00));
+    QCOMPARE(xtermIndexedColor(231), qRgb(0xFF, 0xFF, 0xFF));
+    QCOMPARE(xtermIndexedColor(232), qRgb(8, 8, 8));
+    QCOMPARE(xtermIndexedColor(255), qRgb(238, 238, 238));
+}
+
+void TestTerminalColorScheme::palette_flattensSchemeAndFixedColours()
+{
+    const TerminalColorScheme s = TerminalColorScheme::darkScheme();
+    const TerminalPalette p = TerminalPalette::fromScheme(s);
+    for (int i = 0; i < 16; ++i) {
+        QCOMPARE(p.indexed[i], s.ansi[i].rgb());
+    }
+    for (int i = 16; i < 256; ++i) {
+        QCOMPARE(p.indexed[i], xtermIndexedColor(i));
+    }
+    QCOMPARE(p.defaultBg, s.defaultBg.rgb());
+    QCOMPARE(p.selection, s.selection.rgb());
 }
 
 QTEST_MAIN(TestTerminalColorScheme)

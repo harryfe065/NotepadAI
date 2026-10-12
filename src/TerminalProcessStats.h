@@ -59,6 +59,10 @@ public:
                                    int logicalCpus,
                                    TreeCpuState *outState);
 
+    // True when some process in `samples` is a direct child of `rootPid`,
+    // i.e. the shell is busy running a command rather than idle at a prompt.
+    static bool hasChildProcess(const ProcessSample *samples, int sampleCount, quint32 rootPid);
+
     static QString cpuLabel(bool valid, double cpuPercent);
     // Machine load, one logical CPU per line. Empty when there is no sample.
     static QString coreLoadLabel(const double *percent, int count);

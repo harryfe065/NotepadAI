@@ -56,6 +56,8 @@ private slots:
     void ramLabel_mbTruncates();
     void ramLabel_gbAt1024MiB();
     void enumerate_includesThisProcess();
+    void hasChildProcess_idleShellHasNone();
+    void hasChildProcess_runningCommandIsChild();
 
 };
 
@@ -326,6 +328,29 @@ void TestTerminalProcessStats::enumerate_includesThisProcess()
     }
     QVERIFY(found);
     QVERIFY(rss > 0);
+}
+
+void TestTerminalProcessStats::hasChildProcess_idleShellHasNone()
+{
+    // Shell 100 idle at a prompt: only unrelated processes and its parent.
+    const Sample samples[] = {
+        {1, 0, 0, 0},
+        {50, 1, 0, 0},
+        {100, 50, 0, 0},
+        {200, 50, 0, 0},
+    };
+    QVERIFY(!TerminalProcessStats::hasChildProcess(samples, 4, 100));
+    QVERIFY(!TerminalProcessStats::hasChildProcess(samples, 4, 0));
+    QVERIFY(!TerminalProcessStats::hasChildProcess(nullptr, 0, 100));
+}
+
+void TestTerminalProcessStats::hasChildProcess_runningCommandIsChild()
+{
+    const Sample samples[] = {
+        {100, 50, 0, 0},
+        {300, 100, 0, 0},
+    };
+    QVERIFY(TerminalProcessStats::hasChildProcess(samples, 2, 100));
 }
 
 

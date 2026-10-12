@@ -568,6 +568,12 @@ qt_add_executable(NotepadAI
 	widgets/ScrollbackBuffer.cpp
 	widgets/TerminalCellSource.h
 	widgets/TerminalCellSource.cpp
+	widgets/TerminalRowLayout.h
+	widgets/TerminalRowLayout.cpp
+	widgets/TerminalBoxDrawing.h
+	widgets/TerminalBoxDrawing.cpp
+	widgets/TerminalGlyphCache.h
+	widgets/TerminalGlyphCache.cpp
 	widgets/TerminalWidget.h
 	widgets/TerminalWidget.cpp
 	docks/TerminalDock.h

@@ -19,6 +19,8 @@
 #include "TerminalDock.h"
 #include "TerminalTabTitle.h"
 #include "TerminalWidget.h"
+#include "NotepadNextApplication.h"
+#include "ApplicationSettings.h"
 
 #include "remote/ExecutionContext.h"
 #include "remote/RemoteExecutionContext.h"
@@ -35,6 +37,20 @@
 #include <QCursor>
 #include <QHelpEvent>
 #include <QWidget>
+
+namespace {
+
+int childMemoryLimitGb()
+{
+    if (auto *app = qobject_cast<NotepadNextApplication *>(qApp)) {
+        if (ApplicationSettings *settings = app->getSettings()) {
+            return settings->terminalChildMemoryLimitGb();
+        }
+    }
+    return 0;
+}
+
+} // namespace
 
 TerminalDock::TerminalDock(const QString &shell, const QString &cwd, QWidget *parent)
     : QWidget(parent)
@@ -124,6 +140,7 @@ void TerminalDock::init(const QString &shell, const QString &cwd)
                 });
     }
 
+    m_terminal->setChildMemoryLimitGb(childMemoryLimitGb());
     m_terminal->start(shell, cwd, m_taskEnv, m_context.data());
 
     if (!m_taskCommand.isEmpty()) {
@@ -277,6 +294,7 @@ void TerminalDock::restartTask()
         QMessageBox::critical(this, tr("Terminal"), msg);
     });
 
+    m_terminal->setChildMemoryLimitGb(childMemoryLimitGb());
     m_terminal->start(m_shell, m_initialCwd, m_taskEnv, m_context.data());
 
     connect(m_terminal, &TerminalWidget::firstOutputReceived, this, [this]() {
@@ -300,6 +318,20 @@ void TerminalDock::restartTask()
 bool TerminalDock::confirmClose()
 {
     if (m_terminal && m_terminal->isProcessRunning()) {
+        // A local shell idle at its prompt closes silently; only a running
+        // command (a child of the shell) is worth asking about. Remote shells
+        // cannot be inspected, so they always ask.
+        if (!m_remoteSession) {
+            QVector<TerminalProcessStats::ProcessSample> samples;
+            const auto shellPid = static_cast<quint32>(m_terminal->ptyPid());
+            if (TerminalProcessStats::enumerateProcesses(samples)
+                && !TerminalProcessStats::hasChildProcess(samples.constData(),
+                                                          static_cast<int>(samples.size()),
+                                                          shellPid)) {
+                m_terminal->killProcess();
+                return true;
+            }
+        }
         QMessageBox::StandardButton answer = QMessageBox::question(
             this,
             tr("Close terminal?"),

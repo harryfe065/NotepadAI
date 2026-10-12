@@ -22,17 +22,22 @@
 #include "ScrollbackBuffer.h"
 #include "TerminalCellSource.h"
 #include "TerminalColorScheme.h"
+#include "TerminalGlyphCache.h"
+#include "TerminalRowLayout.h"
 
 #include <vterm.h>
 
 #include <QAbstractScrollArea>
+#include <QElapsedTimer>
 #include <QFont>
 #include <QPoint>
-#include <QRegion>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
-#include <QVector>
+
+#include <cstdint>
+#include <vector>
 
 class QMenu;
 class QPainter;
@@ -56,6 +61,11 @@ public:
     void injectOutput(const QByteArray &data);
     void setColorScheme(const TerminalColorScheme &scheme);
     void setTerminalFont(const QFont &font);
+    // Row height as a multiple of the font height (1.0 = tight).
+    void setLineHeight(qreal factor);
+    // Commit ceiling for a local shell's process tree, applied by start().
+    // 0 = uncapped. Ignored for remote PTYs.
+    void setChildMemoryLimitGb(int gb);
 
     bool isProcessRunning() const;
     qint64 ptyPid() const;
@@ -88,6 +98,7 @@ protected:
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void inputMethodEvent(QInputMethodEvent *event) override;
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void scrollContentsBy(int dx, int dy) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
 
@@ -95,9 +106,19 @@ private slots:
     void onPtyReadyRead();
     void onPtyFinished(int exitCode);
     void processPendingInput();
+    void flushFrame();
+    void applyPendingResize();
 
 private:
+    // Geometry. Cell sizes are whole device pixels so every row and column
+    // edge lands on a pixel boundary (no seams, no glyph jitter).
     void recomputeMetrics();
+    QSize gridSizeFor(const QSize &viewportSize) const;
+    qreal originY() const;
+    qreal columnX(int col) const { return m_padX + col * m_cellW; }
+    qreal rowTop(int viewportRow) const { return originY() + viewportRow * m_cellH; }
+    QRectF cursorRect() const;
+
     void requestResizeToViewport();
     QPoint pixelToCell(const QPoint &p) const;
     QPoint pixelToAbsoluteCell(const QPoint &p) const;
@@ -109,10 +130,20 @@ private:
     bool isMouseReportingActive(Qt::KeyboardModifiers mods) const;
     VTermModifier qtModsToVterm(Qt::KeyboardModifiers mods) const;
     void selectWord(const QPoint &cellPos);
+    void scrollToBottom();
 
-    void paintCell(QPainter &p, int viewportRow, int col, const VTermScreenCell &cell);
-    void updateScrollbarRange();
-    bool isAtBottom() const;
+    // Damage is tracked per viewport row and flushed at most once per frame.
+    void markLiveRowsDirty(int startRow, int endRow);
+    void markViewportRowDirty(int viewportRow);
+    void markAllDirty();
+    void scheduleFrame();
+    void syncScrollbar();
+
+    bool fetchViewportRow(int viewportRow, VTermScreenCell *out);
+    void paintRow(QPainter &p, int viewportRow);
+    void paintDecorations(QPainter &p, qreal y);
+    void paintCursor(QPainter &p);
+    void paintPreedit(QPainter &p);
 
     static int vtermDamage(VTermRect rect, void *user);
     static int vtermMoveRect(VTermRect dest, VTermRect src, void *user);
@@ -122,6 +153,7 @@ private:
     static int vtermResize(int rows, int cols, void *user);
     static int vtermSbPushLine(int cols, const VTermScreenCell *cells, void *user);
     static int vtermSbPopLine(int cols, VTermScreenCell *cells, void *user);
+    static int vtermSbClear(void *user);
     static void vtermOutput(const char *s, size_t len, void *user);
 
     VTerm *m_vt = nullptr;
@@ -129,10 +161,23 @@ private:
     IPtyProcess *m_pty = nullptr;
 
     TerminalColorScheme m_scheme;
+    TerminalPalette m_palette;
     QFont m_font;
-    int m_cellW = 8;
-    int m_cellH = 16;
-    int m_cellAscent = 12;
+    TerminalGlyphCache m_glyphs;
+
+    qreal m_lineHeight = 1.2;
+    qreal m_padX = 8;
+    qreal m_padY = 4;
+    qreal m_dpr = 1;
+    qreal m_cellW = 8;
+    qreal m_cellH = 16;
+    qreal m_baseline = 12;
+    qreal m_lineWidth = 1;
+    qreal m_underlineY = 14;
+    qreal m_strikeY = 8;
+    int m_frameIntervalMs = 16;
+    int m_childMemoryLimitGb = 0;
+
     int m_cols = 80;
     int m_rows = 24;
     QPoint m_cursor{0, 0};
@@ -141,14 +186,15 @@ private:
     bool m_altScreen = false;
     QString m_title;
     QString m_errorMessage;
+    QString m_preedit;
 
     bool m_selecting = false;
     QPoint m_selStart;
     QPoint m_selEnd;
     bool m_hasSelection = false;
 
-    ScrollbackBuffer m_scrollback{5000};
-    int m_scrollOffset = 0;
+    ScrollbackBuffer m_scrollback{10000};
+    int m_scrollOffset = 0;   // lines scrolled up from the live bottom
 
     int m_mouseMode = 0;
     bool m_focusReporting = false;
@@ -157,10 +203,21 @@ private:
     bool m_firstOutputEmitted = false;
 
     QByteArray m_pendingInput;
+    qsizetype m_pendingOffset = 0;
     QTimer *m_batchTimer = nullptr;
 
-    QRegion m_pendingDamage;
-    QVector<VTermScreenCell> m_rowScratch;
+    std::vector<uint8_t> m_dirtyRows;
+    bool m_allDirty = true;
+    bool m_scrollbarDirty = false;
+    bool m_inScrollbarSync = false;
+    bool m_cursorMoved = false;
+    bool m_inResize = false;
+    QTimer *m_frameTimer = nullptr;
+    QElapsedTimer m_sincePaint;
+    QTimer *m_resizeTimer = nullptr;
+
+    std::vector<VTermScreenCell> m_rowCells;
+    TerminalRowLayout m_layout;
 };
 
 #endif
