@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QThread>
+#include <QTimer>
 
 #include <vector>
 
@@ -159,6 +160,10 @@ void UnixPtyProcess::onMasterReadable()
             m_readBuffer.append(buffer, static_cast<int>(n));
         } else if (n < 0) {
             if (errno == EINTR) continue;
+            // Linux reports the slave side closing (the shell exited) as
+            // EIO, not EOF. Only "no data yet" keeps the session; leaving the
+            // notifier armed on EIO would fire it forever (a busy loop).
+            eof = errno != EAGAIN && errno != EWOULDBLOCK;
             break;
         } else {
             eof = true;
@@ -170,16 +175,28 @@ void UnixPtyProcess::onMasterReadable()
     }
     if (eof) {
         m_readNotifier->setEnabled(false);
-        int status = 0;
-        int exitCode = -1;
-        if (m_childPid > 0) {
-            pid_t r = waitpid(m_childPid, &status, WNOHANG);
-            if (r == m_childPid) {
-                exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-            }
-        }
-        emit finished(exitCode);
+        reapChild(0);
     }
+}
+
+// A process closes its files before it can be reaped, so the end of the pty
+// can arrive a moment before the exit status: poll briefly (10 ms, up to a
+// second) instead of reporting -1.
+void UnixPtyProcess::reapChild(int attempt)
+{
+    int status = 0;
+    const pid_t r = m_childPid > 0 ? waitpid(m_childPid, &status, WNOHANG) : -1;
+    if (r == 0 && attempt < 100) {
+        QTimer::singleShot(10, this, [this, attempt]() { reapChild(attempt + 1); });
+        return;
+    }
+    const int exitCode = r == m_childPid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (r == m_childPid) {
+        // Reaped: the pid may be reused, so kill() must not signal it.
+        m_childPid = -1;
+        m_pid = 0;
+    }
+    emit finished(exitCode);
 }
 
 bool UnixPtyProcess::resize(qint16 cols, qint16 rows)

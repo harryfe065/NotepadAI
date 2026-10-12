@@ -48,6 +48,8 @@ private slots:
     void onMasterReadable();
 
 private:
+    void reapChild(int attempt);
+
     int   m_masterFd;
     pid_t m_childPid;
     QSocketNotifier *m_readNotifier;
