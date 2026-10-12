@@ -267,6 +267,8 @@ private:
                         bool fromGoalAgent = false);
     bool isUnattended() const;
     void restoreExpiredForm();
+    // Scroll so the form's first question is at the top; stops following the stream.
+    void scrollToFormTop(QWidget *form);
     void applyMessageMarker(AcpMessageWidget *w, int messageIndex);
     bool inputKeyEventIsSubmit(QKeyEvent *ke) const;
     // Heartbeat indicator at the tail of the transcript: shows time since the

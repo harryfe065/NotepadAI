@@ -95,6 +95,10 @@ bool askUserCallDropped(const QString &status)
 // bottom". Used both for the user's at-bottom recognition (the flag flips on
 // when they reach this band) and for the programmatic scroll target.
 constexpr int kAtBottomEpsilonPx = 8;
+// Space kept above a form scrolled into view, and a second pass once the
+// form's own layout has settled.
+constexpr int kFormScrollMarginPx = 8;
+constexpr int kFormScrollSettleMs = 60;
 constexpr int kMaxSkillCompletions = 256;
 
 bool isEffortConfigOption(const AcpProtocol::AcpConfigOption &opt)
@@ -2206,9 +2210,9 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
     auto *form = new AskUserFormWidget(spec, initial, m_transcriptHost);
     form->setChatFont(chatFont());
     insertTimelineWidget(form);
-    scrollToBottomDeferred();
 
     if (isUnattended()) {
+        scrollToBottomDeferred();
         const bool goal = m_goalRunning;
         form->setState(AskUserFormWidget::State::Cancelled,
                        goal ? tr("Cancelled — goal agent active") : tr("Cancelled — unattended session"));
@@ -2234,6 +2238,32 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
     // Take focus only from an empty composer the user is sitting in.
     if (m_input && m_input->hasFocus() && m_input->toPlainText().trimmed().isEmpty())
         form->focusFirstQuestion();
+    scrollToFormTop(form);
+}
+
+void AcpSessionView::scrollToFormTop(QWidget *form)
+{
+    // Show question 1, not the bottom: stop following the stream (text the
+    // agent writes after the form would push it away) until the next send.
+    m_stickToBottom = false;
+    updateJumpButtonVisibility();
+    QPointer<AcpSessionView> guard(this);
+    QPointer<QWidget> target(form);
+    auto apply = [guard, target]() {
+        if (!guard || !target || !guard->m_scroll || !guard->m_transcriptHost)
+            return;
+        auto *vb = guard->m_scroll->verticalScrollBar();
+        if (!vb)
+            return;
+        const int top = target->mapTo(guard->m_transcriptHost, QPoint(0, 0)).y() - kFormScrollMarginPx;
+        guard->m_programmaticScroll = true;
+        vb->setValue(qBound(vb->minimum(), top, vb->maximum()));
+        guard->m_programmaticScroll = false;
+        guard->updateJumpButtonVisibility();
+    };
+    // Once after the insert is laid out, once more after the form has sized.
+    QTimer::singleShot(0, this, apply);
+    QTimer::singleShot(kFormScrollSettleMs, this, apply);
 }
 
 void AcpSessionView::settlePendingForm(AskUserFormWidget::State state, const QString &detail,
