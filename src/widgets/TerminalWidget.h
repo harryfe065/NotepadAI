@@ -24,7 +24,6 @@
 #include "TerminalColorScheme.h"
 #include "TerminalContrast.h"
 #include "TerminalGlyphCache.h"
-#include <QImage>
 #include "TerminalRowLayout.h"
 #include "TerminalSearch.h"
 #include "TerminalSearchSession.h"
@@ -35,6 +34,7 @@
 #include <QAbstractScrollArea>
 #include <QElapsedTimer>
 #include <QFont>
+#include <QImage>
 #include <QPoint>
 #include <QRectF>
 #include <QString>
@@ -245,8 +245,15 @@ private:
         QString uri;
         QString text;       // what the span covered; differs once overwritten
         bool dead = false;
+        // Output reached its rows since `text` was last compared.
+        bool stale = false;
     };
+    // The text is compared again only when output touched the span's rows
+    // (markOsc8Stale), never per paint.
     bool osc8SpanAlive(Osc8Span &span) const;
+    void markOsc8Stale(int firstLiveRow, int endLiveRow);
+    // The live OSC 8 hyperlink at a cell, if any.
+    const Osc8Span *osc8SpanAt(qint64 lineId, int col);
     void updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers mods);
     void setHoverLink(const HoverLink &link);
     void clearHoverLink();
@@ -422,8 +429,14 @@ private:
     // (with the glyph tiles) while the terminal is hidden.
     QImage m_frame;
     std::vector<QRgb> m_rowBg;
+    // OSC 8 spans that reach the rows being painted (indexes into
+    // m_osc8Spans), gathered once per paint.
+    std::vector<std::size_t> m_paintOsc8;
     std::vector<uint8_t> m_touchedRow;
     std::vector<uint8_t> m_touchedBelow;
+    std::vector<TerminalGlyphCache::Placement> m_rowPlan;
+    std::vector<uint8_t> m_rowCopied;   // cells an opaque tile covers
+    std::vector<uint8_t> m_rowFromAbove;   // cells the row above drew into
 };
 
 #endif

@@ -24,6 +24,7 @@
 #include <QTextLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -178,18 +179,16 @@ void TerminalGlyphCache::drawRun(QPainter &p, const TerminalRowLayout::Glyph *gl
     flush(p, m_raw[current], originX, baselineY);
 }
 
-void TerminalGlyphCache::drawCluster(QPainter &p, const TerminalRowLayout::Cluster &cluster,
-                                     qreal originX, qreal baselineY, qreal cellW)
+TerminalGlyphCache::ShapedCluster &TerminalGlyphCache::shapedCluster(const TerminalRowLayout::Cluster &cluster)
 {
     int n = 0;
     while (n < VTERM_MAX_CHARS_PER_CELL && cluster.chars[n]) ++n;
-    if (n == 0) return;
     const uint8_t style = cluster.font & 3;
     // Key: the font variant, then the cluster's codepoints.
     QString key = QString::fromUcs4(cluster.chars, n);
     key.prepend(QChar(u'0' + style));
-    auto it = m_clusters.constFind(key);
-    if (it == m_clusters.constEnd()) {
+    auto it = m_clusters.find(key);
+    if (it == m_clusters.end()) {
         QTextLayout layout(key.mid(1), m_fonts[style]);
         layout.setCacheEnabled(false);
         layout.beginLayout();
@@ -203,10 +202,45 @@ void TerminalGlyphCache::drawCluster(QPainter &p, const TerminalRowLayout::Clust
         }
         it = m_clusters.insert(key, shaped);
     }
+    return it.value();
+}
+
+void TerminalGlyphCache::drawCluster(QPainter &p, const TerminalRowLayout::Cluster &cluster,
+                                     qreal originX, qreal baselineY, qreal cellW)
+{
+    if (!cluster.chars[0]) return;
+    const ShapedCluster &shaped = shapedCluster(cluster);
     p.setPen(QColor::fromRgb(cluster.fg));
-    const QPointF origin(originX + cluster.col * cellW, baselineY - it->ascent);
-    for (const QGlyphRun &run : it->runs) {
+    const QPointF origin(originX + cluster.col * cellW, baselineY - shaped.ascent);
+    for (const QGlyphRun &run : shaped.runs) {
         p.drawGlyphRun(origin, run);
+    }
+}
+
+void TerminalGlyphCache::drawClusterDevice(QPainter &devicePainter, const TerminalRowLayout::Cluster &cluster,
+                                           int x0, int baselineY)
+{
+    if (!cluster.chars[0]) return;
+    ShapedCluster &shaped = shapedCluster(cluster);
+    if (shaped.deviceScale != m_tileDpr) {
+        // Same shaping, scaled to device pixels: a device-sized raw font
+        // through an unscaled painter keeps Qt on its cached glyph path.
+        shaped.deviceRuns.clear();
+        for (QGlyphRun run : shaped.runs) {
+            QRawFont font = run.rawFont();
+            font.setPixelSize(font.pixelSize() * m_tileDpr);
+            run.setRawFont(font);
+            QList<QPointF> positions = run.positions();
+            for (QPointF &pos : positions) pos *= m_tileDpr;
+            run.setPositions(positions);
+            shaped.deviceRuns.push_back(run);
+        }
+        shaped.deviceScale = m_tileDpr;
+    }
+    devicePainter.setPen(QColor::fromRgb(cluster.fg));
+    const QPointF origin(x0 + cluster.col * m_tileCellW, baselineY - shaped.ascent * m_tileDpr);
+    for (const QGlyphRun &run : shaped.deviceRuns) {
+        devicePainter.drawGlyphRun(origin, run);
     }
 }
 
@@ -233,26 +267,34 @@ void TerminalGlyphCache::releaseTiles()
     m_spill.clear();
 }
 
+namespace {
+
+// Columns [from, to) as indexes into a Touched array (cols + 2 entries; one
+// spare column on each side for glyphs reaching past the edge).
+std::pair<int, int> touchedRange(int from, int to, int cols)
+{
+    const int first = std::max(from, -1) + 1;
+    return {first, std::max(first, std::min(to, cols + 1) + 1)};
+}
+
+} // namespace
+
 bool TerminalGlyphCache::Touched::any(int from, int to) const
 {
-    for (int c = std::max(from, -1); c < std::min(to, cols + 1); ++c) {
-        if (row[c + 1]) return true;
-    }
-    return false;
+    const auto [first, last] = touchedRange(from, to, cols);
+    return std::any_of(row + first, row + last, [](uint8_t v) { return v != 0; });
 }
 
 void TerminalGlyphCache::Touched::mark(int from, int to)
 {
-    for (int c = std::max(from, -1); c < std::min(to, cols + 1); ++c) {
-        row[c + 1] = 1;
-    }
+    const auto [first, last] = touchedRange(from, to, cols);
+    std::fill(row + first, row + last, uint8_t(1));
 }
 
 void TerminalGlyphCache::Touched::markBelow(int from, int to)
 {
-    for (int c = std::max(from, -1); c < std::min(to, cols + 1); ++c) {
-        below[c + 1] = 1;
-    }
+    const auto [first, last] = touchedRange(from, to, cols);
+    std::fill(below + first, below + last, uint8_t(1));
 }
 
 // Measured, not estimated: the glyph is rendered once, white on black, with
@@ -262,8 +304,7 @@ void TerminalGlyphCache::Touched::markBelow(int from, int to)
 // spill would send most glyphs at fractional scales down the merge path.
 TerminalGlyphCache::Spill TerminalGlyphCache::spillFor(quint32 glyph, uint16_t font, int width)
 {
-    const quint64 key = (static_cast<quint64>(glyph) << 24) | (static_cast<quint64>(font) << 8)
-                        | static_cast<quint64>(width);
+    const quint64 key = glyphKey(glyph, font, width);
     const auto it = m_spill.constFind(key);
     if (it != m_spill.constEnd()) return it.value();
 
@@ -315,8 +356,8 @@ TerminalGlyphCache::Spill TerminalGlyphCache::spillFor(quint32 glyph, uint16_t f
     return s;
 }
 
-bool TerminalGlyphCache::makeTile(const TileKey &key, quint32 glyph, uint16_t font, int width, QRgb fg, QRgb bg,
-                                  Tile *out)
+TerminalGlyphCache::Tile TerminalGlyphCache::makeTile(const TileKey &key, quint32 glyph, uint16_t font, int width,
+                                                      QRgb fg, QRgb bg)
 {
     const Spill s = spillFor(glyph, font, width);
     Tile tile;
@@ -351,8 +392,7 @@ bool TerminalGlyphCache::makeTile(const TileKey &key, quint32 glyph, uint16_t fo
                     static_cast<std::size_t>(tile.width) * 4);
     }
     m_tiles.insert(key, tile);
-    *out = tile;
-    return true;
+    return tile;
 }
 
 void TerminalGlyphCache::copyTile(const Frame &frame, const uint32_t *src, const Tile &tile, int x, int y)
@@ -383,10 +423,20 @@ void TerminalGlyphCache::mergeTile(const Frame &frame, const uint32_t *src, cons
     const int fromY = std::max(0, -y);
     const int toY = std::min<int>(tile.height, frame.height - y);
     // Coverage of the glyph per channel, read back from the tile: (tile - bg)
-    // / (fg - bg). A channel where fg and bg nearly agree says little, so
+    // / (fg - bg), in 1/256ths, through a 16.16 reciprocal per channel taken
+    // once per call. A channel where fg and bg nearly agree says little, so
     // the strongest channel stands in for it.
     const int fgc[3] = {qRed(fg), qGreen(fg), qBlue(fg)};
     const int bgc[3] = {qRed(bg), qGreen(bg), qBlue(bg)};
+    int reciprocal[3];
+    bool usable[3];
+    int strongest = 0;
+    for (int c = 0; c < 3; ++c) {
+        const int span = fgc[c] - bgc[c];
+        usable[c] = std::abs(span) >= 24;
+        reciprocal[c] = span != 0 ? (256 << 16) / span : 0;
+        if (std::abs(span) > std::abs(fgc[strongest] - bgc[strongest])) strongest = c;
+    }
     for (int row = fromY; row < toY; ++row) {
         const uint32_t *s = src + static_cast<qsizetype>(row) * tile.width;
         uint32_t *d = frame.bits + static_cast<qsizetype>(y + row) * frame.stride + x;
@@ -400,23 +450,85 @@ void TerminalGlyphCache::mergeTile(const Frame &frame, const uint32_t *src, cons
             }
             const int ec[3] = {qRed(e), qGreen(e), qBlue(e)};
             const int uc[3] = {qRed(under), qGreen(under), qBlue(under)};
-            int cov[3];
-            int strongest = 0;
-            int best = -1;
-            for (int c = 0; c < 3; ++c) {
-                const int span = fgc[c] - bgc[c];
-                cov[c] = std::abs(span) >= 24 ? std::clamp((ec[c] - bgc[c]) * 256 / span, 0, 256) : -1;
-                if (std::abs(span) > best) {
-                    best = std::abs(span);
-                    strongest = c;
-                }
-            }
+            const auto coverage = [&](int c) {
+                return std::clamp(((ec[c] - bgc[c]) * reciprocal[c]) >> 16, 0, 256);
+            };
+            const int fallback = usable[strongest] ? coverage(strongest) : 0;
             int out[3];
             for (int c = 0; c < 3; ++c) {
-                const int a = cov[c] >= 0 ? cov[c] : std::max(cov[strongest], 0);
+                const int a = usable[c] ? coverage(c) : fallback;
                 out[c] = uc[c] + (((fgc[c] - uc[c]) * a) >> 8);
             }
             d[k] = qRgb(out[0], out[1], out[2]);
+        }
+    }
+}
+
+void TerminalGlyphCache::planRun(const Frame &frame, const TerminalRowLayout::Glyph *glyphs, int count,
+                                 uint8_t style, QRgb fg, const QRgb *cellBg, Touched &touched, int x0, int y,
+                                 std::vector<Placement> &plan)
+{
+    if (count <= 0 || m_raw.empty() || m_tileCellW <= 0) return;
+    for (int i = 0; i < count; ++i) {
+        const TerminalRowLayout::Glyph &g = glyphs[i];
+        const Ref ref = lookup(g.cp, style);
+        Placement pl;
+        pl.col = g.col;
+        pl.width = std::clamp(g.width, 1, 2);
+        pl.glyph = ref.glyph;
+        pl.font = ref.font;
+        pl.fg = fg;
+        pl.bg = cellBg[g.col];
+        const TileKey key{glyphKey(ref.glyph, ref.font, pl.width), (static_cast<quint64>(fg) << 32) | pl.bg};
+        const auto it = m_tiles.constFind(key);
+        if (it != m_tiles.constEnd()) {
+            pl.tile = it.value();
+            pl.hasTile = true;
+        } else if (m_tileBudget > 0) {
+            --m_tileBudget;
+            pl.tile = makeTile(key, ref.glyph, ref.font, pl.width, fg, pl.bg);
+            pl.hasTile = true;
+        }
+
+        if (!pl.hasTile) {
+            // Budget spent: drawn through Qt, in order, like a merge.
+            const Spill s = spillFor(ref.glyph, ref.font, pl.width);
+            touched.mark(g.col + pl.width, g.col + pl.width + s.right);
+            if (s.down) touched.markBelow(g.col - s.left, g.col + pl.width + s.right);
+            plan.push_back(pl);
+            continue;
+        }
+        const int tx = x0 + g.col * m_tileCellW + pl.tile.x;
+        const int ty = y + pl.tile.y;
+        const bool inside = tx >= 0 && ty >= 0 && tx + pl.tile.width <= frame.width;
+        pl.copy = !pl.tile.extended && inside && !touched.any(g.col, g.col + pl.width);
+        plan.push_back(pl);
+        if (pl.tile.extended) {
+            const int right = (pl.tile.x + pl.tile.width) / m_tileCellW - pl.width;
+            const int left = -pl.tile.x / m_tileCellW;
+            touched.mark(g.col + pl.width, g.col + pl.width + right);
+            if (pl.tile.y + pl.tile.height > m_tileCellH) touched.markBelow(g.col - left, g.col + pl.width + right);
+        }
+    }
+}
+
+void TerminalGlyphCache::drawPlan(QPainter &devicePainter, const Frame &frame, const std::vector<Placement> &plan,
+                                  int x0, int y)
+{
+    for (const Placement &pl : plan) {
+        const int x = x0 + pl.col * m_tileCellW;
+        if (!pl.hasTile) {
+            devicePainter.setPen(QColor::fromRgb(pl.fg));
+            m_indexes.assign(1, pl.glyph);
+            m_positions.assign(1, QPointF(0, 0));
+            flush(devicePainter, deviceFont(pl.font), x, y + m_tileBaselineDevice);
+            continue;
+        }
+        const uint32_t *src = m_tilePixels.data() + pl.tile.offset;
+        if (pl.copy) {
+            copyTile(frame, src, pl.tile, x + pl.tile.x, y + pl.tile.y);
+        } else {
+            mergeTile(frame, src, pl.tile, x + pl.tile.x, y + pl.tile.y, pl.fg, pl.bg);
         }
     }
 }
@@ -425,53 +537,7 @@ void TerminalGlyphCache::blitRun(QPainter &devicePainter, const Frame &frame,
                                  const TerminalRowLayout::Glyph *glyphs, int count, uint8_t style, QRgb fg,
                                  const QRgb *cellBg, Touched &touched, int x0, int y)
 {
-    if (count <= 0 || m_raw.empty() || m_tileCellW <= 0) return;
-    for (int i = 0; i < count; ++i) {
-        const TerminalRowLayout::Glyph &g = glyphs[i];
-        const Ref ref = lookup(g.cp, style);
-        const int width = std::clamp(g.width, 1, 2);
-        const int x = x0 + g.col * m_tileCellW;
-        const QRgb bg = cellBg[g.col];
-        const TileKey key{(static_cast<quint64>(ref.glyph) << 24) | (static_cast<quint64>(ref.font) << 8)
-                              | static_cast<quint64>(width),
-                          (static_cast<quint64>(fg) << 32) | bg};
-        Tile tile;
-        bool have = false;
-        const auto it = m_tiles.constFind(key);
-        if (it != m_tiles.constEnd()) {
-            tile = it.value();
-            have = true;
-        } else if (m_tileBudget > 0) {
-            --m_tileBudget;
-            have = makeTile(key, ref.glyph, ref.font, width, fg, bg, &tile);
-        }
-
-        if (!have) {
-            // Budget spent: draw it through Qt, in order, like the merge would.
-            const Spill s = spillFor(ref.glyph, ref.font, width);
-            touched.mark(g.col + width, g.col + width + s.right);
-            if (s.down) touched.markBelow(g.col - s.left, g.col + width + s.right);
-            devicePainter.setPen(QColor::fromRgb(fg));
-            m_indexes.assign(1, ref.glyph);
-            m_positions.assign(1, QPointF(0, 0));
-            flush(devicePainter, deviceFont(ref.font), x, y + m_tileBaselineDevice);
-            continue;
-        }
-
-        const uint32_t *src = m_tilePixels.data() + tile.offset;
-        const int tx = x + tile.x;
-        const int ty = y + tile.y;
-        const bool inside = tx >= 0 && ty >= 0 && tx + tile.width <= frame.width;
-        if (!tile.extended && inside && !touched.any(g.col, g.col + width)) {
-            copyTile(frame, src, tile, tx, ty);
-            continue;
-        }
-        mergeTile(frame, src, tile, tx, ty, fg, bg);
-        if (tile.extended) {
-            const int right = (tile.x + tile.width) / m_tileCellW - width;
-            const int left = -tile.x / m_tileCellW;
-            touched.mark(g.col + width, g.col + width + right);
-            if (tile.y + tile.height > m_tileCellH) touched.markBelow(g.col - left, g.col + width + right);
-        }
-    }
+    m_runPlan.clear();
+    planRun(frame, glyphs, count, style, fg, cellBg, touched, x0, y, m_runPlan);
+    drawPlan(devicePainter, frame, m_runPlan, x0, y);
 }

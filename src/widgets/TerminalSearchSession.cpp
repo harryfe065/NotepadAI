@@ -188,21 +188,18 @@ void TerminalSearchSession::activateLast()
     if (!m_matches.empty()) m_active = static_cast<int>(m_matches.size()) - 1;
 }
 
-int TerminalSearchSession::highlightsFor(qint64 line, QRgb normal, QRgb strong,
-                                         std::vector<TerminalRowLayout::Highlight> &out, int *activeFrom,
-                                         int *activeTo) const
+TerminalSearchSession::ActiveSpan TerminalSearchSession::highlightsFor(
+    qint64 line, QRgb normal, QRgb strong, std::vector<TerminalRowLayout::Highlight> &out) const
 {
     out.clear();
-    *activeFrom = -1;
-    *activeTo = -1;
+    ActiveSpan active;
     auto it = std::lower_bound(m_matches.begin(), m_matches.end(), line, lineLess);
     for (; it != m_matches.end() && it->line == line; ++it) {
         const bool isActive = (it - m_matches.begin()) == m_active;
         out.push_back({it->col, it->col + it->width, isActive ? strong : normal});
         if (isActive) {
-            *activeFrom = it->col;
-            *activeTo = it->col + it->width;
+            active = {it->col, it->col + it->width};
         }
     }
-    return static_cast<int>(out.size());
+    return active;
 }

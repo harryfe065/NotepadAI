@@ -184,6 +184,8 @@ void UnixPtyProcess::onMasterReadable()
 // second) instead of reporting -1.
 void UnixPtyProcess::reapChild(int attempt)
 {
+    // kill() reaped it meanwhile (restart / close): nothing left to report.
+    if (attempt > 0 && m_childPid <= 0) return;
     int status = 0;
     const pid_t r = m_childPid > 0 ? waitpid(m_childPid, &status, WNOHANG) : -1;
     if (r == 0 && attempt < 100) {

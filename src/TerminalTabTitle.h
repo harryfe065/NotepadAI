@@ -23,8 +23,8 @@
 #include <QFileInfo>
 #include <QString>
 
-// ADS tab label for an interactive terminal: the spawn cwd, never the PTY
-// window title (Windows ConPTY reports the shell image, e.g. pwsh.exe).
+// A terminal cwd as shown to the user (tooltip, and the base of
+// terminalCwdLabel): native separators, drive roots keep their slash.
 inline QString terminalTabTitle(const QString &cwd)
 {
     if (cwd.trimmed().isEmpty())

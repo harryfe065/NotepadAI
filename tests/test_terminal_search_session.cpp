@@ -266,15 +266,15 @@ void TestTerminalSearchSession::highlightsMarkTheCurrentMatch()
     s.step(1);
     s.step(1);
     std::vector<TerminalRowLayout::Highlight> out;
-    int from = 0;
-    int to = 0;
-    QCOMPARE(s.highlightsFor(0, 1, 2, out, &from, &to), 3);
+    TerminalSearchSession::ActiveSpan active = s.highlightsFor(0, 1, 2, out);
+    QCOMPARE(out.size(), std::size_t(3));
     QCOMPARE(out[1].color, QRgb(2));
     QCOMPARE(out[0].color, QRgb(1));
-    QCOMPARE(from, 3);
-    QCOMPARE(to, 5);
-    QCOMPARE(s.highlightsFor(1, 1, 2, out, &from, &to), 0);
-    QCOMPARE(from, -1);
+    QCOMPARE(active.from, 3);
+    QCOMPARE(active.to, 5);
+    active = s.highlightsFor(1, 1, 2, out);
+    QVERIFY(out.empty());
+    QCOMPARE(active.from, -1);
 }
 
 QTEST_APPLESS_MAIN(TestTerminalSearchSession)

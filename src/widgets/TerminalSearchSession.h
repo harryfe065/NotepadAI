@@ -55,7 +55,8 @@ public:
     // to slicing.
     static constexpr qint64 kSyncLines = 5000;
     // A regex row taking this long, or an incremental pass taking
-    // kRegexPassLimit, ends the search.
+    // kRegexPassLimit, ends the search. The check runs between rows: one row
+    // is bounded by PCRE2's own match limit, not interrupted.
     static constexpr std::chrono::milliseconds kRegexRowLimit{20};
     static constexpr std::chrono::milliseconds kRegexPassLimit{50};
 
@@ -82,12 +83,17 @@ public:
     bool isActive() const { return m_state == State::Scanning || m_state == State::Ready; }
     const std::vector<TerminalSearchMatch> &matches() const { return m_matches; }
     int activeMatch() const { return m_active; }
-    const TerminalSearchOptions &options() const { return m_options; }
 
-    // Background highlights of `line` into `out` (`normal`, and `strong` for
-    // the current match, whose columns go to activeFrom/activeTo, else -1).
-    int highlightsFor(qint64 line, QRgb normal, QRgb strong, std::vector<TerminalRowLayout::Highlight> &out,
-                      int *activeFrom, int *activeTo) const;
+    // Columns of the current match on a row ([from, to)), or -1 when it is
+    // elsewhere.
+    struct ActiveSpan {
+        int from = -1;
+        int to = -1;
+    };
+    // Background highlights of `line` into `out`: `normal`, and `strong` for
+    // the current match, whose columns are returned.
+    ActiveSpan highlightsFor(qint64 line, QRgb normal, QRgb strong,
+                             std::vector<TerminalRowLayout::Highlight> &out) const;
 
 private:
     bool searchRow(qint64 line, int cols);

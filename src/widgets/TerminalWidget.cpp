@@ -83,7 +83,7 @@ constexpr int kWheelLines = 3;
 // Search: re-run after typing settles; follow new output in small batches.
 constexpr int kSearchDebounceMs = 100;
 constexpr int kSearchFollowMs = 150;
-// More new lines than this since the last search: redo it off-thread.
+// Hyperlinks remembered per terminal (oldest dropped first).
 constexpr std::size_t kMaxOsc8Spans = 2048;
 constexpr int kMaxLogicalLineRows = 16;
 constexpr int kMaxPathCache = 512;
@@ -160,6 +160,20 @@ private:
     mutable int m_cachedRow = -1;
     mutable std::vector<VTermScreenCell> m_cachedLine;
 };
+
+// Solid fill of a device-pixel rectangle of the frame, clipped to it.
+void fillFrame(const TerminalGlyphCache::Frame &frame, int x, int y, int w, int h, QRgb color)
+{
+    const int left = std::clamp(x, 0, frame.width);
+    const int right = std::clamp(x + w, left, frame.width);
+    const int top = std::clamp(y, 0, frame.height);
+    const int bottom = std::clamp(y + h, top, frame.height);
+    const uint32_t pixel = 0xFF000000u | color;
+    for (int yy = top; yy < bottom; ++yy) {
+        uint32_t *line = frame.bits + static_cast<qsizetype>(yy) * frame.stride;
+        std::fill(line + left, line + right, pixel);
+    }
+}
 
 qreal snapTo(qreal v, qreal dpr)
 {
@@ -275,14 +289,18 @@ TerminalWidget::~TerminalWidget()
 
 int TerminalWidget::vtermDamage(VTermRect rect, void *user)
 {
-    static_cast<TerminalWidget *>(user)->markLiveRowsDirty(rect.start_row, rect.end_row);
+    auto *w = static_cast<TerminalWidget *>(user);
+    w->markLiveRowsDirty(rect.start_row, rect.end_row);
+    w->markOsc8Stale(rect.start_row, rect.end_row);
     return 1;
 }
 
 int TerminalWidget::vtermMoveRect(VTermRect dest, VTermRect src, void *user)
 {
     Q_UNUSED(src);
-    static_cast<TerminalWidget *>(user)->markLiveRowsDirty(dest.start_row, dest.end_row);
+    auto *w = static_cast<TerminalWidget *>(user);
+    w->markLiveRowsDirty(dest.start_row, dest.end_row);
+    w->markOsc8Stale(dest.start_row, dest.end_row);
     return 1;
 }
 
@@ -429,7 +447,10 @@ void TerminalWidget::handleOsc(int command, const QByteArray &payload)
             if (m_osc8Spans.size() > kMaxOsc8Spans) {
                 m_osc8Spans.pop_front();
             }
-            markAllDirty();
+            // Its faint underline: just the rows it covers.
+            const qint64 liveStart = m_linesDropped + m_scrollback.size();
+            markLiveRowsDirty(static_cast<int>(std::max<qint64>(0, m_osc8StartLine - liveStart)),
+                              static_cast<int>(line - liveStart) + 1);
         }
         // Schemes that would launch arbitrary OS handlers are not links.
         const QString scheme = QUrl(uri).scheme().toLower();
@@ -1226,7 +1247,6 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         QImage deviceView(m_frame.bits(), m_frame.width(), m_frame.height(), m_frame.bytesPerLine(),
                           QImage::Format_RGB32);
         QPainter dp(&deviceView);
-        fp.fillRect(bounds, QColor::fromRgb(m_palette.defaultBg));
 
         const qreal top = originY();
         const int first = std::max(0, static_cast<int>(std::floor((bounds.top() - top) / m_cellH)));
@@ -1236,6 +1256,25 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         const auto touchedSize = static_cast<std::size_t>(m_cols) + 2;
         m_touchedRow.assign(touchedSize, 0);
         m_touchedBelow.assign(touchedSize, 0);
+        // Hyperlinks reaching the painted rows, found once for the whole paint.
+        m_paintOsc8.clear();
+        if (!m_osc8Spans.empty() && first <= last) {
+            const qint64 firstLine = lineIdForAbsoluteRow(viewportToAbsoluteRow(first));
+            const qint64 lastLine = lineIdForAbsoluteRow(viewportToAbsoluteRow(last));
+            for (std::size_t i = 0; i < m_osc8Spans.size(); ++i) {
+                const Osc8Span &span = m_osc8Spans[i];
+                if (span.endLine >= firstLine && span.startLine <= lastLine) m_paintOsc8.push_back(i);
+            }
+        }
+        // Rows fill their own cells (paintRow); the space above and below the
+        // grid is filled here.
+        const QRgb bg = m_palette.defaultBg;
+        const int boundsTop = static_cast<int>(std::floor(bounds.top() * m_dpr));
+        const int boundsBottom = static_cast<int>(std::ceil((bounds.bottom() + 1) * m_dpr));
+        const int gridTop = static_cast<int>(std::lround(top * m_dpr));
+        const int gridBottom = static_cast<int>(std::lround(rowTop(m_rows) * m_dpr));
+        fillFrame(frame, 0, boundsTop, frame.width, gridTop - boundsTop, bg);
+        fillFrame(frame, 0, gridBottom, frame.width, boundsBottom - gridBottom, bg);
         int previous = -2;
         for (int row = first; row <= last; ++row) {
             const QRect rowRect(0, static_cast<int>(std::floor(rowTop(row))), width,
@@ -1293,43 +1332,81 @@ void TerminalWidget::paintRow(QPainter &p, QPainter &devicePainter, const Termin
     const int x0 = static_cast<int>(std::lround(m_padX * m_dpr));
     const int y0 = static_cast<int>(std::lround(y * m_dpr));
     // Per-cell background: tiles are pre-blended onto it.
-    m_rowBg.assign(static_cast<std::size_t>(m_cols) + 1, m_palette.defaultBg);
+    const QRgb defaultBg = m_palette.defaultBg;
+    m_rowBg.assign(static_cast<std::size_t>(m_cols) + 1, defaultBg);
     for (const auto &bg : m_layout.backgrounds) {
         std::fill_n(m_rowBg.begin() + bg.col, std::min(bg.span, m_cols - bg.col), bg.color);
-        const int x = x0 + bg.col * cellW;
-        const int right = std::min(frame.width, x + bg.span * cellW);
-        const int bottom = std::min(frame.height, y0 + cellH);
-        for (int yy = std::max(0, y0); yy < bottom; ++yy) {
-            uint32_t *line = frame.bits + static_cast<qsizetype>(yy) * frame.stride;
-            std::fill(line + std::max(0, x), line + std::max(0, right), 0xFF000000u | bg.color);
+    }
+
+    // Pass 1: which glyphs are opaque tile copies, which are merged. Planning
+    // adds this row's own marks, so what the row above reached is kept aside.
+    m_rowFromAbove = m_touchedRow;
+    TerminalGlyphCache::Touched touched{m_touchedRow.data(), m_touchedBelow.data(), m_cols};
+    m_rowPlan.clear();
+    for (const auto &run : m_layout.runs) {
+        m_glyphs.planRun(frame, m_layout.glyphs.data() + run.firstGlyph, run.glyphCount, run.font, run.fg,
+                         m_rowBg.data(), touched, x0, y0, m_rowPlan);
+    }
+    for (const auto &cluster : m_layout.clusters) {
+        // Shaped clusters may reach into the row below; keep its tiles off them.
+        touched.markBelow(cluster.col - 1, cluster.col + cluster.width + 1);
+    }
+
+    // Fill every cell no copied tile covers, in its background (clamped: while
+    // a resize settles m_cols can be wider than the frame). A cell the row
+    // above drew into keeps that overhang unless it has its own background.
+    m_rowCopied.assign(static_cast<std::size_t>(m_cols) + 1, 0);
+    for (const auto &pl : m_rowPlan) {
+        if (pl.copy) std::fill_n(m_rowCopied.begin() + pl.col, std::min(pl.width, m_cols - pl.col), uint8_t(1));
+    }
+    const auto fromAbove = [this](int col) { return m_rowFromAbove[static_cast<std::size_t>(col) + 1] != 0; };
+    if (!fromAbove(-1)) fillFrame(frame, 0, y0, x0, cellH, defaultBg);
+    if (!fromAbove(m_cols)) fillFrame(frame, x0 + m_cols * cellW, y0, frame.width, cellH, defaultBg);
+    for (int col = 0; col < m_cols;) {
+        const QRgb cellBg = m_rowBg[static_cast<std::size_t>(col)];
+        const bool skip = m_rowCopied[static_cast<std::size_t>(col)] || (fromAbove(col) && cellBg == defaultBg);
+        int end = col + 1;
+        while (end < m_cols && m_rowBg[static_cast<std::size_t>(end)] == cellBg
+               && (m_rowCopied[static_cast<std::size_t>(end)]
+                   || (fromAbove(end) && cellBg == defaultBg)) == skip) {
+            ++end;
+        }
+        if (!skip) fillFrame(frame, x0 + col * cellW, y0, (end - col) * cellW, cellH, cellBg);
+        col = end;
+    }
+    // Cells of the row below that our glyphs reach get the default
+    // background now, so the overhang lands on it (that row keeps them).
+    if (viewportRow + 1 < m_rows) {
+        const int below = y0 + cellH;
+        for (int col = -1; col <= m_cols; ++col) {
+            if (!m_touchedBelow[static_cast<std::size_t>(col) + 1]) continue;
+            const int x = col < 0 ? 0 : x0 + col * cellW;
+            const int w = col < 0 ? x0 : (col == m_cols ? frame.width - x : cellW);
+            fillFrame(frame, x, below, w, cellH, defaultBg);
         }
     }
+
     for (const auto &special : m_layout.specials) {
         TerminalBoxDrawing::paint(p, QRectF(columnX(special.col), y, special.width * m_cellW, m_cellH),
                                   special.cp, QColor::fromRgb(special.fg), m_lineWidth, m_dpr);
     }
-    const qreal baseline = y + m_baseline;
-    TerminalGlyphCache::Touched touched{m_touchedRow.data(), m_touchedBelow.data(), m_cols};
-    for (const auto &run : m_layout.runs) {
-        m_glyphs.blitRun(devicePainter, frame, m_layout.glyphs.data() + run.firstGlyph, run.glyphCount,
-                         run.font, run.fg, m_rowBg.data(), touched, x0, y0);
-    }
+    // Pass 2: the glyphs, in column order.
+    m_glyphs.drawPlan(devicePainter, frame, m_rowPlan, x0, y0);
+    const int baselineDevice = y0 + static_cast<int>(std::lround(m_baseline * m_dpr));
     for (const auto &cluster : m_layout.clusters) {
-        m_glyphs.drawCluster(p, cluster, m_padX, baseline, m_cellW);
-        // Shaped clusters may reach into the row below; keep its tiles off them.
-        touched.markBelow(cluster.col - 1, cluster.col + cluster.width + 1);
+        m_glyphs.drawClusterDevice(devicePainter, cluster, x0, baselineDevice);
     }
     paintDecorations(p, y);
 
     // OSC 8 hyperlinks: a faint underline marks them without Ctrl.
-    if (!m_osc8Spans.empty()) {
+    if (!m_paintOsc8.empty()) {
         QColor faint = QColor::fromRgb(m_palette.defaultFg);
         faint.setAlpha(90);
-        int scanned = 0;
-        for (auto it = m_osc8Spans.rbegin(); it != m_osc8Spans.rend() && scanned < 256; ++it, ++scanned) {
-            if (it->endLine < lineId || it->startLine > lineId || !osc8SpanAlive(*it)) continue;
-            const int from = it->startLine == lineId ? it->startCol : 0;
-            const int to = it->endLine == lineId ? it->endCol : m_cols;
+        for (const std::size_t index : m_paintOsc8) {
+            Osc8Span &span = m_osc8Spans[index];
+            if (span.endLine < lineId || span.startLine > lineId || !osc8SpanAlive(span)) continue;
+            const int from = span.startLine == lineId ? span.startCol : 0;
+            const int to = span.endLine == lineId ? span.endCol : m_cols;
             if (to > from) {
                 p.fillRect(QRectF(columnX(from), y + m_underlineY, (to - from) * m_cellW, m_lineWidth), faint);
             }
@@ -1692,7 +1769,9 @@ bool TerminalWidget::handleTerminalShortcut(QKeyEvent *event)
         case Qt::Key_F: openSearch(); return true;
         case Qt::Key_L: emit clearRequested(); return true;
         case Qt::Key_A:
-            if (m_hasSelection) emit sendToAiRequested();
+            // Like Ctrl+C: with nothing selected the keys reach the program.
+            if (!m_hasSelection) return false;
+            emit sendToAiRequested();
             return true;
         case Qt::Key_Plus: emit zoomRequested(1); return true;  // Ctrl+Shift+= on US layouts
         default: return false;
@@ -2223,10 +2302,34 @@ QString TerminalWidget::textBetween(qint64 startLine, int startCol, qint64 endLi
 bool TerminalWidget::osc8SpanAlive(Osc8Span &span) const
 {
     if (span.dead) return false;
-    if (textBetween(span.startLine, span.startCol, span.endLine, span.endCol) != span.text) {
-        span.dead = true;
+    if (span.stale) {
+        span.stale = false;
+        span.dead = textBetween(span.startLine, span.startCol, span.endLine, span.endCol) != span.text;
     }
     return !span.dead;
+}
+
+// Called from libvterm's damage callbacks, which arrive merged once per input
+// batch: a link is re-checked only after output touched its rows.
+void TerminalWidget::markOsc8Stale(int firstLiveRow, int endLiveRow)
+{
+    if (m_osc8Spans.empty()) return;
+    const qint64 liveStart = m_linesDropped + m_scrollback.size();
+    const qint64 from = liveStart + firstLiveRow;
+    const qint64 to = liveStart + endLiveRow;   // exclusive
+    for (Osc8Span &span : m_osc8Spans) {
+        if (span.endLine >= from && span.startLine < to) span.stale = true;
+    }
+}
+
+const TerminalWidget::Osc8Span *TerminalWidget::osc8SpanAt(qint64 lineId, int col)
+{
+    for (auto it = m_osc8Spans.rbegin(); it != m_osc8Spans.rend(); ++it) {
+        const bool after = lineId > it->startLine || (lineId == it->startLine && col >= it->startCol);
+        const bool before = lineId < it->endLine || (lineId == it->endLine && col < it->endCol);
+        if (after && before && osc8SpanAlive(*it)) return &*it;
+    }
+    return nullptr;
 }
 
 // --- context menu ----------------------------------------------------------------
@@ -2261,53 +2364,69 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
     clearAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L));
     connect(clearAct, &QAction::triggered, this, [this]() { emit clearRequested(); });
 
-    // Owner section: Send to AI.
+    // One group: the owner's Send to AI, then the link under the pointer.
+    menu.addSeparator();
     emit contextMenuAboutToShow(&menu);
 
-    // Link under the pointer.
-    const QPoint local = viewport()->mapFromGlobal(event->globalPos());
-    const QPoint cell = pixelToCell(local);
+    const QPoint cell = pixelToCell(viewport()->mapFromGlobal(event->globalPos()));
     const int absRow = viewportToAbsoluteRow(cell.y());
-    QString text;
-    std::vector<qint64> lineOf;
-    std::vector<int> colOf;
-    if (logicalLineAt(absRow, &text, &lineOf, &colOf)) {
-        const qint64 lineId = lineIdForAbsoluteRow(absRow);
-        int index = -1;
-        for (int i = 0; i < static_cast<int>(colOf.size()); ++i) {
-            if (lineOf[static_cast<std::size_t>(i)] == lineId && colOf[static_cast<std::size_t>(i)] <= cell.x()) {
-                index = i;
+    const qint64 lineId = lineIdForAbsoluteRow(absRow);
+    QString url;
+    TerminalLink link;
+    if (const Osc8Span *span = osc8SpanAt(lineId, cell.x())) {
+        url = span->uri;   // the program said exactly what it points at
+    } else {
+        QString text;
+        std::vector<qint64> lineOf;
+        std::vector<int> colOf;
+        if (logicalLineAt(absRow, &text, &lineOf, &colOf)) {
+            int index = -1;
+            for (int i = 0; i < static_cast<int>(colOf.size()); ++i) {
+                if (lineOf[static_cast<std::size_t>(i)] == lineId && colOf[static_cast<std::size_t>(i)] <= cell.x()) {
+                    index = i;
+                }
+            }
+            link = index >= 0 ? findTerminalLinkAt(text, index) : TerminalLink{};
+            if (link.kind == TerminalLink::Url) url = link.target;
+        }
+    }
+    if (!url.isEmpty()) {
+        connect(menu.addAction(tr("Open Link")), &QAction::triggered, this, [this, url]() { openUrlTarget(url); });
+        connect(menu.addAction(tr("Copy Link")), &QAction::triggered, this,
+                [url]() { QApplication::clipboard()->setText(url); });
+    } else if (link.kind == TerminalLink::Path && m_localPathLinks) {
+        // Like hovering: a path is a link only if it exists. The user asked,
+        // so it is checked now, from the hover cache when it has the answer;
+        // network paths are never touched on the UI thread.
+        const QStringList candidates = pathCandidates(link.target);
+        QFileInfo target;
+        const auto cached = m_pathCache.constFind(candidates.join(QLatin1Char('\n')));
+        if (cached != m_pathCache.constEnd() && !cached->resolved.isEmpty()) {
+            target = QFileInfo(cached->resolved);
+        } else {
+            for (const QString &c : candidates) {
+                if (c.startsWith(QLatin1String("//")) || c.startsWith(QLatin1String("\\\\"))) continue;
+                const QFileInfo fi(c);
+                if (fi.exists()) {
+                    target = fi;
+                    break;
+                }
             }
         }
-        const TerminalLink link = index >= 0 ? findTerminalLinkAt(text, index) : TerminalLink{};
-        if (link.kind == TerminalLink::Url) {
-            menu.addSeparator();
-            const QString url = link.target;
-            connect(menu.addAction(tr("Open Link")), &QAction::triggered, this,
-                    [this, url]() { openUrlTarget(url); });
-            connect(menu.addAction(tr("Copy Link")), &QAction::triggered, this,
-                    [url]() { QApplication::clipboard()->setText(url); });
-        } else if (link.kind == TerminalLink::Path && m_localPathLinks) {
-            menu.addSeparator();
-            const QStringList candidates = pathCandidates(link.target);
-            const int line = link.line;
-            const int column = link.column;
-            connect(menu.addAction(tr("Open File")), &QAction::triggered, this, [this, candidates, line, column]() {
-                for (const QString &c : candidates) {
-                    const QFileInfo fi(c);
-                    if (fi.isDir()) {
-                        emit revealPathRequested(fi.absoluteFilePath());
-                        return;
-                    }
-                    if (fi.exists()) {
-                        emit openFileRequested(fi.absoluteFilePath(), line, column);
-                        return;
-                    }
-                }
-            });
-            const QString path = link.target;
+        if (target.exists()) {
+            const QString resolved = target.absoluteFilePath();
+            if (target.isDir()) {
+                connect(menu.addAction(tr("Reveal in Workspace")), &QAction::triggered, this,
+                        [this, resolved]() { emit revealPathRequested(resolved); });
+            } else {
+                const int line = link.line;
+                const int column = link.column;
+                connect(menu.addAction(tr("Open File")), &QAction::triggered, this,
+                        [this, resolved, line, column]() { emit openFileRequested(resolved, line, column); });
+            }
+            const QString written = link.target;
             connect(menu.addAction(tr("Copy Path")), &QAction::triggered, this,
-                    [path]() { QApplication::clipboard()->setText(path); });
+                    [written]() { QApplication::clipboard()->setText(written); });
         }
     }
 
@@ -2380,22 +2499,17 @@ void TerminalWidget::updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers 
     const qint64 lineId = lineIdForAbsoluteRow(absRow);
 
     // OSC 8 hyperlinks first: the program said exactly what they point at.
-    for (auto it = m_osc8Spans.rbegin(); it != m_osc8Spans.rend(); ++it) {
-        const bool after = lineId > it->startLine || (lineId == it->startLine && cell.x() >= it->startCol);
-        const bool before = lineId < it->endLine || (lineId == it->endLine && cell.x() < it->endCol);
-        if (after && before && osc8SpanAlive(*it)) {
-            HoverLink link;
-            link.valid = true;
-            link.url = true;
-            link.startLine = it->startLine;
-            link.startCol = it->startCol;
-            link.endLine = it->endLine;
-            link.endCol = it->endCol;
-            link.target = it->uri;
-            setHoverLink(link);
-            return;
-        }
-        if (it->endLine < lineId) break;
+    if (const Osc8Span *span = osc8SpanAt(lineId, cell.x())) {
+        HoverLink link;
+        link.valid = true;
+        link.url = true;
+        link.startLine = span->startLine;
+        link.startCol = span->startCol;
+        link.endLine = span->endLine;
+        link.endCol = span->endCol;
+        link.target = span->uri;
+        setHoverLink(link);
+        return;
     }
 
     QString text;
@@ -2732,9 +2846,12 @@ void TerminalWidget::syncSearchMarks()
 int TerminalWidget::collectHighlights(qint64 lineId)
 {
     // Hits use the scheme's yellow; the current one is stronger and outlined.
-    return m_search.highlightsFor(lineId, blendRgb(m_palette.defaultBg, m_palette.indexed[3], 35),
-                                  blendRgb(m_palette.defaultBg, m_palette.indexed[11], 60), m_rowHighlights,
-                                  &m_rowActiveFrom, &m_rowActiveTo);
+    const TerminalSearchSession::ActiveSpan active =
+        m_search.highlightsFor(lineId, blendRgb(m_palette.defaultBg, m_palette.indexed[3], 35),
+                               blendRgb(m_palette.defaultBg, m_palette.indexed[11], 60), m_rowHighlights);
+    m_rowActiveFrom = active.from;
+    m_rowActiveTo = active.to;
+    return static_cast<int>(m_rowHighlights.size());
 }
 
 // --- drag and drop ----------------------------------------------------------------

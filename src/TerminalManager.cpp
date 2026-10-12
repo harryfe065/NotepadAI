@@ -378,8 +378,6 @@ TerminalAppearance TerminalManager::appearance() const
 {
     TerminalAppearance a;
     ApplicationSettings *s = m_app ? m_app->getSettings() : nullptr;
-    const bool dark = m_app ? m_app->isEffectiveThemeDark() : true;
-    Q_UNUSED(dark);
     a.scheme = currentScheme();
     a.font = terminalFont();
     if (s) {
@@ -812,17 +810,15 @@ void TerminalManager::wireContextMenu(TerminalDock *dock)
         if (!dock)
             return;
         TerminalWidget *w = dock->terminalWidget();
-        // Always offered with a selection; the target AI tab is found (or
-        // started) when it is used.
-        if (w && w->hasSelection()) {
-            menu->addSeparator();
-            QAction *sendAi = menu->addAction(tr("Send to AI"));
-            sendAi->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
-            connect(sendAi, &QAction::triggered, this, [this, dock]() {
-                if (dock)
-                    sendSelectionToAi(dock.data());
-            });
-        }
+        // Always shown, usable with a selection; the target AI tab is found
+        // (or started) when it is used.
+        QAction *sendAi = menu->addAction(tr("Send to AI"));
+        sendAi->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
+        sendAi->setEnabled(w && w->hasSelection());
+        connect(sendAi, &QAction::triggered, this, [this, dock]() {
+            if (dock)
+                sendSelectionToAi(dock.data());
+        });
     });
     connect(tw, &TerminalWidget::contextMenuTailAboutToShow,
             this, [this, dock = QPointer<TerminalDock>(dock)](QMenu *menu) {
@@ -951,8 +947,6 @@ void TerminalManager::openFileAt(const QString &path, int line, int column)
     static_cast<QWidget *>(editor)->setFocus(Qt::OtherFocusReason);
 }
 
-// The AI tab of the terminal's own project (deepest working directory that
-// contains its cwd), else the active one.
 // The AI tab of the terminal's own project: the aiDockGroupKey (directory +
 // SSH profile) of the terminal's cwd or its nearest ancestor that has one,
 // else the active AI tab.
@@ -967,9 +961,10 @@ AiAgentDock *TerminalManager::aiDockFor(TerminalDock *dock) const
             if (AiAgentDock *found = agents->dockForGroup(aiDockGroupKey(dir, profile)))
                 return found;
             const qsizetype slash = dir.lastIndexOf(QLatin1Char('/'));
-            if (slash <= 0 || dir.endsWith(QLatin1String(":/")))
+            if (slash < 0 || dir == QLatin1String("/") || dir.endsWith(QLatin1String(":/")))
                 break;
-            dir = dir.left(slash);
+            // "/home" -> "/" so the POSIX root is tried too.
+            dir = slash == 0 ? QStringLiteral("/") : dir.left(slash);
             // "C:" -> "C:/" so the drive root is tried too.
             if (dir.size() == 2 && dir.at(1) == QLatin1Char(':'))
                 dir += QLatin1Char('/');

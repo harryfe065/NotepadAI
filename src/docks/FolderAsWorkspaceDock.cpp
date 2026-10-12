@@ -127,6 +127,10 @@ FolderAsWorkspaceDock::FolderAsWorkspaceDock(QWidget *parent) :
     ui->treeView->header()->hideSection(3);
     // Multi-select support (D7): Ctrl+click / Shift+click for batch transfers.
     ui->treeView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    // Files drag out as URLs (a terminal types their paths, the editor opens
+    // them). Drag only: nothing is ever moved inside the tree by a drop.
+    ui->treeView->setDragEnabled(true);
+    ui->treeView->setDragDropMode(QAbstractItemView::DragOnly);
 
     wireFileTreeGitDecorations();
 
@@ -202,6 +206,10 @@ FolderAsWorkspaceDock::FolderAsWorkspaceDock(const QString &initialPath, QWidget
     ui->treeView->header()->hideSection(3);
     // Multi-select support (D7): Ctrl+click / Shift+click for batch transfers.
     ui->treeView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    // Files drag out as URLs (a terminal types their paths, the editor opens
+    // them). Drag only: nothing is ever moved inside the tree by a drop.
+    ui->treeView->setDragEnabled(true);
+    ui->treeView->setDragDropMode(QAbstractItemView::DragOnly);
 
     wireFileTreeGitDecorations();
 
