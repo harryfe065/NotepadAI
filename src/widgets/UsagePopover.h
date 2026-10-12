@@ -7,6 +7,7 @@
 #include "ai/ClaudeUsage.h"
 
 class QLabel;
+class QTimer;
 class QToolButton;
 class QVariantAnimation;
 class QVBoxLayout;
@@ -23,7 +24,8 @@ public:
 
     explicit UsagePopover(QWidget *parent = nullptr);
 
-    void setData(const ai::claudeusage::Usage &usage, bool loaded, bool loading, qint64 nowMs);
+    void setData(const ai::claudeusage::Usage &usage, const ai::claudeusage::Health &health,
+                 bool loaded, bool loading, qint64 nowMs);
     void setPercentMode(ai::claudeusage::PercentMode mode);
     // Right edge aligned to the anchor's right edge, 6px below it, kept on screen.
     void showBelow(QWidget *anchor);
@@ -50,9 +52,11 @@ private:
     QToolButton *m_refreshButton = nullptr;
     QVBoxLayout *m_body = nullptr;
     QVariantAnimation *m_spin = nullptr;
+    QTimer *m_staleTimer = nullptr;   // keeps "Updated 3m ago / Retry in 4m" current while open
     QVector<UsageWindowBar *> m_bars;
 
     ai::claudeusage::Usage m_usage;
+    ai::claudeusage::Health m_health;
     ai::claudeusage::PercentMode m_mode = ai::claudeusage::PercentMode::Used;
     qint64 m_nowMs = 0;
     bool m_loaded = false;

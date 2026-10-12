@@ -529,6 +529,8 @@ void AcpAgentManager::wireConnectionToModel(AcpConnection *conn, AcpSessionModel
             model, &AcpSessionModel::onPromptStarted);
     connect(conn, &AcpConnection::promptEnded,
             model, &AcpSessionModel::onPromptEnded);
+    connect(conn, &AcpConnection::promptEnded,
+            this, &AcpAgentManager::agentTurnEnded);
     connect(conn, &AcpConnection::asyncTasksChanged,
             model, &AcpSessionModel::onAsyncTasksChanged);
     // permissionRequested + errorOccurred bypass the model — the view will

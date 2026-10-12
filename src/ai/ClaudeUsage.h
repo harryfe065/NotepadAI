@@ -82,6 +82,35 @@ QVector<NamedWindow> windowsOf(const Usage &usage);
 // The most-consumed window - the one that will stall an agent first.
 std::optional<NamedWindow> tightestWindow(const Usage &usage);
 
+// Fetch health, kept apart from the last good `Usage` so a failed refresh never
+// discards numbers that were already shown.
+struct Health {
+    QString error;            // empty = the last refresh succeeded
+    qint64 lastOkMs = 0;      // wall clock of the last successful parse, 0 = never
+    qint64 retryAtMs = 0;     // no request before this wall-clock instant, 0 = none
+    int failures = 0;         // consecutive failures, drives the backoff
+};
+
+constexpr qint64 kBackoffBaseMs = 60'000;
+constexpr qint64 kBackoffCapMs = 15 * 60'000;
+constexpr qint64 kRetryAfterCapMs = 60 * 60'000;
+
+// `Retry-After` header: delta-seconds or an HTTP-date -> milliseconds from
+// `nowMs` (a past date is 0). nullopt for empty, negative or malformed values.
+std::optional<qint64> parseRetryAfter(const QByteArray &header, qint64 nowMs);
+
+// Delay before the next attempt after `failures` consecutive failures: 60 s
+// doubling to a 15 min cap, scaled by 0.9..1.1 from `jitterUnit` (0..1) and
+// re-clamped to [60 s, 15 min]. A larger server `Retry-After` (ms) wins, up to 1 h.
+qint64 backoffDelayMs(int failures, std::optional<qint64> retryAfterMs, double jitterUnit);
+
+// "just now", "5m ago", "2h ago", "3d ago".
+QString formatAgo(qint64 atMs, qint64 nowMs);
+// Popover notice for a failed refresh: "Last synced 3m ago" when numbers are
+// on screen; otherwise the error plus "Try again at 2:30 PM" while a cooldown
+// is running.
+QString staleNotice(const Health &health, qint64 nowMs, const QLocale &locale = QLocale());
+
 } // namespace ai::claudeusage
 
 #endif // AI_CLAUDE_USAGE_H

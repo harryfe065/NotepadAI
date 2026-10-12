@@ -143,7 +143,7 @@ QString httpErrorMessage(int httpStatus)
     case 403:
         return QStringLiteral("Sign-in expired - run claude once to refresh it");
     case 429:
-        return QStringLiteral("Rate limited by provider - try again shortly");
+        return QStringLiteral("Rate limited by provider");
     default:
         return QStringLiteral("Provider returned HTTP %1").arg(httpStatus);
     }
@@ -235,6 +235,66 @@ std::optional<NamedWindow> tightestWindow(const Usage &usage)
             best = w;
     }
     return best;
+}
+
+std::optional<qint64> parseRetryAfter(const QByteArray &header, qint64 nowMs)
+{
+    const QByteArray s = header.trimmed();
+    if (s.isEmpty())
+        return std::nullopt;
+
+    // The int64 -> ms multiply must not overflow; a day of seconds is far past
+    // any cap we apply later.
+    constexpr qint64 kMaxSeconds = 86'400;
+    if (std::all_of(s.cbegin(), s.cend(), [](char c) { return c >= '0' && c <= '9'; })) {
+        bool ok = false;
+        const qint64 seconds = s.toLongLong(&ok);
+        if (!ok)
+            return std::nullopt;
+        return std::min(seconds, kMaxSeconds) * 1000;
+    }
+
+    const QDateTime at = QDateTime::fromString(QString::fromLatin1(s), Qt::RFC2822Date);
+    if (!at.isValid())
+        return std::nullopt;
+    return std::clamp<qint64>(at.toMSecsSinceEpoch() - nowMs, 0, kMaxSeconds * 1000);
+}
+
+qint64 backoffDelayMs(int failures, std::optional<qint64> retryAfterMs, double jitterUnit)
+{
+    // 60 s << 4 already passes the 15 min cap; clamping the shift avoids overflow.
+    const int shift = std::clamp(failures - 1, 0, 4);
+    const double base = static_cast<double>(kBackoffBaseMs << shift);
+    const double factor = 0.9 + 0.2 * std::clamp(jitterUnit, 0.0, 1.0);
+    const qint64 own = std::clamp(static_cast<qint64>(std::llround(base * factor)),
+                                  kBackoffBaseMs, kBackoffCapMs);
+    if (!retryAfterMs)
+        return own;
+    return std::max(own, std::min(*retryAfterMs, kRetryAfterCapMs));
+}
+
+QString formatAgo(qint64 atMs, qint64 nowMs)
+{
+    const qint64 minutes = (nowMs - atMs) / 60'000;
+    if (minutes < 1)
+        return QStringLiteral("just now");
+    if (minutes < 60)
+        return QStringLiteral("%1m ago").arg(minutes);
+    const qint64 hours = minutes / 60;
+    if (hours < 24)
+        return QStringLiteral("%1h ago").arg(hours);
+    return QStringLiteral("%1d ago").arg(hours / 24);
+}
+
+QString staleNotice(const Health &health, qint64 nowMs, const QLocale &locale)
+{
+    if (health.lastOkMs <= 0) {
+        if (health.retryAtMs <= nowMs)
+            return health.error;
+        return health.error + QStringLiteral("\nTry again at ")
+               + formatResetAt(health.retryAtMs, nowMs, locale);
+    }
+    return QStringLiteral("Last synced %1").arg(formatAgo(health.lastOkMs, nowMs));
 }
 
 } // namespace ai::claudeusage

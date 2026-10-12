@@ -1,10 +1,12 @@
 #include "UsagePopover.h"
 
+#include <QDateTime>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 #include <QScreen>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVariantAnimation>
@@ -26,6 +28,7 @@ constexpr int kScreenMargin = 8;
 constexpr int kRefreshIcon = 12;
 constexpr int kRefreshButton = 24;
 constexpr int kProviderIcon = 14;
+constexpr int kStaleTickMs = 15'000;
 
 QLabel *boldLabel(const QString &text, QWidget *parent)
 {
@@ -111,6 +114,15 @@ UsagePopover::UsagePopover(QWidget *parent)
     m_body->addWidget(m_hint);
     root->addLayout(m_body);
 
+    // Only runs while the popup is open and a failure notice is showing.
+    m_staleTimer = new QTimer(this);
+    m_staleTimer->setInterval(kStaleTickMs);
+    connect(m_staleTimer, &QTimer::timeout, this, [this] {
+        if (m_health.error.isEmpty())
+            return;
+        rebuild();
+    });
+
     m_spin = new QVariantAnimation(this);
     m_spin->setStartValue(0.0);
     m_spin->setEndValue(360.0);
@@ -124,9 +136,10 @@ UsagePopover::UsagePopover(QWidget *parent)
     setPercentMode(PercentMode::Used);
 }
 
-void UsagePopover::setData(const Usage &usage, bool loaded, bool loading, qint64 nowMs)
+void UsagePopover::setData(const Usage &usage, const Health &health, bool loaded, bool loading, qint64 nowMs)
 {
     m_usage = usage;
+    m_health = health;
     m_loaded = loaded;
     m_loading = loading;
     m_nowMs = nowMs;
@@ -145,18 +158,30 @@ void UsagePopover::rebuild()
 {
     const QVector<NamedWindow> windows = windowsOf(m_usage);
 
+    // Countdown text needs the real clock, not the last-completed stamp.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool failing = !m_health.error.isEmpty();
+    const bool cooling = m_health.retryAtMs > now;   // refresh would be a no-op
+
     QString hint;
+    bool showBars = false;
     if (!m_loaded)
         hint = tr("Loading usage…");
     else if (m_usage.status == Status::Unavailable)
         hint = tr("Not signed in. Run claude and sign in.");
     else if (m_usage.status == Status::Error)
-        hint = m_usage.error.isEmpty() ? tr("Usage unavailable") : m_usage.error;
+        hint = failing ? staleNotice(m_health, now)
+                       : (m_usage.error.isEmpty() ? tr("Usage unavailable") : m_usage.error);
     else if (windows.isEmpty())
         hint = tr("No usage data.");
-    const bool showBars = hint.isEmpty();
+    else {
+        // Last good numbers stay on screen; a failed refresh only adds the notice.
+        showBars = true;
+        if (failing)
+            hint = staleNotice(m_health, now);
+    }
     m_hint->setText(hint);
-    m_hint->setVisible(!showBars);
+    m_hint->setVisible(!hint.isEmpty());
 
     const int want = showBars ? int(windows.size()) : 0;
     while (m_bars.size() > want)
@@ -169,7 +194,7 @@ void UsagePopover::rebuild()
     for (int i = 0; i < want; ++i)
         m_bars[i]->setWindow(windows[i].label, windows[i].window, m_mode, m_nowMs);
 
-    m_refreshButton->setEnabled(!m_loading);
+    m_refreshButton->setEnabled(!m_loading && !cooling);
     setSpinning(m_loading && isVisible());
 
     if (isVisible()) {
@@ -230,6 +255,7 @@ void UsagePopover::showBelow(QWidget *anchor)
 
     show();
     setSpinning(m_loading);
+    m_staleTimer->start();
 }
 
 void UsagePopover::paintEvent(QPaintEvent *)
@@ -276,6 +302,7 @@ void UsagePopover::applyChrome()
 void UsagePopover::hideEvent(QHideEvent *event)
 {
     setSpinning(false);
+    m_staleTimer->stop();
     QFrame::hideEvent(event);
     emit closed();
 }

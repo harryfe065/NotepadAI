@@ -1607,6 +1607,10 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
     cornerLayout->addWidget(tabsQuickActionsBar);
     ui->menuBar->setCornerWidget(cornerHost, Qt::TopRightCorner);
     usageService->startPolling();
+    // A finished agent turn is the moment usage moved; refresh() is gated, so a
+    // swarm of turn ends still costs at most one request per minute.
+    if (AcpAgentManager *agentManager = app->getAiAgentManager())
+        connect(agentManager, &AcpAgentManager::agentTurnEnded, usageService, [usageService] { usageService->refresh(); });
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::createNewTabClicked, this, [this]() { newFile(true); });
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::closeCurrentTabClicked, this, &MainWindow::closeCurrentFile);
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::tabsMenuAboutToShow, this, [this](QMenu *editorsMenu) {

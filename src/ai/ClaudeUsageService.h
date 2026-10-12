@@ -35,8 +35,9 @@ public:
     virtual void cancel() = 0;
 
 signals:
-    // Any HTTP response, success or not.
-    void finished(int httpStatus, const QByteArray &body);
+    // Any HTTP response, success or not. `retryAfterMs` is the parsed
+    // `Retry-After` header, -1 when absent or unusable.
+    void finished(int httpStatus, const QByteArray &body, qint64 retryAfterMs);
     // No HTTP response at all (DNS, TLS, timeout, cancelled-by-peer).
     void failed();
 };
@@ -64,14 +65,21 @@ private:
 // Owns the latest Claude usage snapshot. UI-thread object; the only blocking
 // work is a sub-millisecond read of the small credentials file, everything
 // else is async. At most one request in flight.
+//
+// A failed refresh (429, 5xx, network, bad body) never discards a snapshot
+// that was already loaded: the failure lands in health() and puts the service
+// on a cooldown (Retry-After, else exponential backoff) that no trigger - not
+// even a forced refresh - can bypass.
 class ClaudeUsageService : public QObject
 {
     Q_OBJECT
 public:
-    static constexpr int kPollIntervalMs = 60'000;
-    // Non-forced refreshes closer together than this are dropped so opening the
-    // popover repeatedly cannot trip the provider's rate limit.
-    static constexpr qint64 kMinRefreshGapMs = 15'000;
+    // Safety net only; real triggers are popover open, app activation and
+    // finished agent turns, all behind the same gate in refresh().
+    static constexpr int kPollIntervalMs = 5 * 60'000;
+    // Non-forced refreshes closer together than this are dropped: a burst of
+    // triggers (swarm of agent turns, popover hover) costs one request per minute.
+    static constexpr qint64 kMinRefreshGapMs = 60'000;
     static QUrl usageUrl();
 
     // `credentialsFile` empty -> claudeusage::credentialsPath() from the environment.
@@ -88,22 +96,29 @@ public:
     // keeps it visible so the message is reachable.
     bool buttonVisible() const;
     std::optional<claudeusage::NamedWindow> headline() const { return claudeusage::tightestWindow(m_usage); }
+    // Outcome of the latest refresh: error text, last success, cooldown end.
+    const claudeusage::Health &health() const { return m_health; }
 
-    // `force` bypasses the min-gap guard (explicit refresh click); an in-flight
-    // request is never duplicated either way.
+    // `force` bypasses the min-gap guard (explicit refresh click) but not the
+    // cooldown; an in-flight request is never duplicated either way.
     void refresh(bool force = false);
-    // Starts the 60 s poll (ticks are skipped while the app is inactive).
+    // Starts the safety poll (ticks are skipped while the app is inactive).
     void startPolling();
 
     void setClock(std::function<qint64()> clock) { m_clock = std::move(clock); }
+    // 0..1 source for the backoff jitter; tests pin it.
+    void setJitter(std::function<double()> jitter) { m_jitter = std::move(jitter); }
 
 signals:
     void changed();
 
 private:
     void sendWithToken(const QString &token);
-    void complete(claudeusage::Usage usage);
-    void onResponse(int httpStatus, const QByteArray &body);
+    void publish();
+    void succeed(claudeusage::Usage usage);
+    void signedOut();
+    void fail(const QString &error, qint64 retryAfterMs);
+    void onResponse(int httpStatus, const QByteArray &body, qint64 retryAfterMs);
     void onTransportFailed();
     void readKeychainAsync();
 
@@ -112,7 +127,9 @@ private:
     QTimer m_pollTimer;
     QProcess *m_keychain = nullptr;
     claudeusage::Usage m_usage;
+    claudeusage::Health m_health;
     std::function<qint64()> m_clock;
+    std::function<double()> m_jitter;
     qint64 m_nowMs = 0;
     qint64 m_lastCompletedMs = 0;
     bool m_loaded = false;

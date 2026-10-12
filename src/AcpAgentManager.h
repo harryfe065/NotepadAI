@@ -155,6 +155,11 @@ signals:
     // closeSession. `ok` is true only for a completed prompt turn.
     void headlessSessionFinished(const QString &sessionId, bool ok);
 
+    // Any session's prompt turn ended. Fires for every connection wired through
+    // wireConnectionToModel (local, SSH, headless), so listeners must be cheap
+    // or gate themselves (the usage chip does).
+    void agentTurnEnded();
+
 private slots:
     void onIdleReaperTick();
     void onDockDestroyed(QObject *obj);

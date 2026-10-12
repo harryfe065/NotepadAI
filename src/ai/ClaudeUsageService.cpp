@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QRandomGenerator>
 
 namespace ai {
 
@@ -65,6 +66,7 @@ void ClaudeUsageHttpTransport::onFinished()
 
     const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QByteArray body = r->readAll();
+    const QByteArray retryAfter = r->rawHeader("Retry-After");
     r->deleteLater();
 
     // Deliberately no logging: errorString() embeds the request URL and the
@@ -72,7 +74,8 @@ void ClaudeUsageHttpTransport::onFinished()
     if (status == 0)
         emit failed();
     else
-        emit finished(status, body);
+        emit finished(status, body,
+                      claudeusage::parseRetryAfter(retryAfter, QDateTime::currentMSecsSinceEpoch()).value_or(-1));
 }
 
 // --------------------------------------------------------------- service
@@ -91,12 +94,13 @@ ClaudeUsageService::ClaudeUsageService(IClaudeUsageTransport *transport,
                             ? claudeusage::credentialsPath(qEnvironmentVariable("CLAUDE_CONFIG_DIR"), QDir::homePath())
                             : credentialsFile)
     , m_clock([] { return QDateTime::currentMSecsSinceEpoch(); })
+    , m_jitter([] { return QRandomGenerator::global()->generateDouble(); })
 {
     connect(m_transport, &IClaudeUsageTransport::finished, this, &ClaudeUsageService::onResponse);
     connect(m_transport, &IClaudeUsageTransport::failed, this, &ClaudeUsageService::onTransportFailed);
 
-    // Coming back to the app after a while: don't wait for the next 60 s tick
-    // (the min-gap guard in refresh() still applies).
+    // Coming back to the app after a while: don't wait for the next poll tick
+    // (the gate in refresh() still applies).
     if (qGuiApp) {
         connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState s) {
             if (s == Qt::ApplicationActive && m_pollTimer.isActive())
@@ -127,7 +131,10 @@ void ClaudeUsageService::refresh(bool force)
 {
     if (m_inflight)
         return;
-    if (!force && m_lastCompletedMs != 0 && m_clock() - m_lastCompletedMs < kMinRefreshGapMs)
+    const qint64 now = m_clock();
+    if (m_health.retryAtMs > now)   // cooldown: not even an explicit click gets through
+        return;
+    if (!force && m_lastCompletedMs != 0 && now - m_lastCompletedMs < kMinRefreshGapMs)
         return;
 
     m_inflight = true;
@@ -149,9 +156,8 @@ void ClaudeUsageService::sendWithToken(const QString &token)
     m_transport->get({usageUrl(), token});
 }
 
-void ClaudeUsageService::complete(claudeusage::Usage usage)
+void ClaudeUsageService::publish()
 {
-    m_usage = std::move(usage);
     m_loaded = true;
     m_inflight = false;
     m_nowMs = m_clock();
@@ -159,46 +165,68 @@ void ClaudeUsageService::complete(claudeusage::Usage usage)
     emit changed();
 }
 
-void ClaudeUsageService::onResponse(int httpStatus, const QByteArray &body)
+void ClaudeUsageService::succeed(claudeusage::Usage usage)
+{
+    m_usage = std::move(usage);
+    m_health = {};
+    m_health.lastOkMs = m_clock();
+    publish();
+}
+
+void ClaudeUsageService::signedOut()
+{
+    m_usage = {};
+    m_usage.status = claudeusage::Status::Unavailable;
+    m_usage.error = QStringLiteral("Not signed in");
+    m_health = {};
+    publish();
+}
+
+void ClaudeUsageService::fail(const QString &error, qint64 retryAfterMs)
+{
+    using namespace claudeusage;
+    // Numbers already on screen stay; only a first load has nothing to keep.
+    if (!m_loaded || m_usage.status != Status::Ok) {
+        m_usage = {};
+        m_usage.status = Status::Error;
+        m_usage.error = error;
+    }
+    const qint64 now = m_clock();
+    m_health.error = error;
+    m_health.failures += 1;
+    m_health.retryAtMs = now + backoffDelayMs(m_health.failures,
+                                              retryAfterMs >= 0 ? std::optional<qint64>(retryAfterMs) : std::nullopt,
+                                              m_jitter());
+    publish();
+}
+
+void ClaudeUsageService::onResponse(int httpStatus, const QByteArray &body, qint64 retryAfterMs)
 {
     if (!m_inflight)
         return;
 
     using namespace claudeusage;
-    Usage u;
     if (httpStatus < 200 || httpStatus >= 300) {
-        u.status = Status::Error;
-        u.error = httpErrorMessage(httpStatus);
-    } else {
-        const QJsonDocument doc = QJsonDocument::fromJson(body);
-        if (doc.isObject()) {
-            u = parseUsage(doc.object());
-        } else {
-            u.status = Status::Error;
-            u.error = QStringLiteral("Unexpected usage response");
-        }
+        fail(httpErrorMessage(httpStatus), retryAfterMs);
+        return;
     }
-    complete(std::move(u));
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (doc.isObject())
+        succeed(parseUsage(doc.object()));
+    else
+        fail(QStringLiteral("Unexpected usage response"), -1);
 }
 
 void ClaudeUsageService::onTransportFailed()
 {
     if (!m_inflight)
         return;
-    claudeusage::Usage u;
-    u.status = claudeusage::Status::Error;
-    u.error = QStringLiteral("Network error - check your connection");
-    complete(std::move(u));
+    fail(QStringLiteral("Network error - check your connection"), -1);
 }
 
 void ClaudeUsageService::readKeychainAsync()
 {
-    auto unavailable = [this] {
-        claudeusage::Usage u;
-        u.status = claudeusage::Status::Unavailable;
-        u.error = QStringLiteral("Not signed in");
-        complete(std::move(u));
-    };
+    auto unavailable = [this] { signedOut(); };
 
 #ifdef Q_OS_MACOS
     // macOS keeps Claude Code credentials in the login keychain, not a file.

@@ -62,7 +62,8 @@ void UsageButton::onServiceChanged()
     if (headline) {
         const double used = headline->window.usedPercent;
         setText(QStringLiteral("%1%").arg(displayPercent(used, m_mode)));
-        setToolTip(tr("Usage: Claude %1 %2").arg(headline->label, percentText(used, m_mode)));
+        const QString stale = m_service->health().error.isEmpty() ? QString() : tr(" (stale)");
+        setToolTip(tr("Usage: Claude %1 %2%3").arg(headline->label, percentText(used, m_mode), stale));
         setAccessibleName(toolTip());
         applyTone(toneFor(used));
     } else {
@@ -77,7 +78,8 @@ void UsageButton::onServiceChanged()
 
 void UsageButton::pushDataToPopover()
 {
-    m_popover->setData(m_service->usage(), m_service->loaded(), m_service->loading(), m_service->nowMs());
+    m_popover->setData(m_service->usage(), m_service->health(), m_service->loaded(), m_service->loading(),
+                       m_service->nowMs());
 }
 
 void UsageButton::togglePopover()
