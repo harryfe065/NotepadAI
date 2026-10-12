@@ -585,6 +585,8 @@ qt_add_executable(NotepadAI
 	widgets/TerminalLinkDetector.cpp
 	widgets/TerminalSearch.h
 	widgets/TerminalSearch.cpp
+	widgets/TerminalSearchSession.h
+	widgets/TerminalSearchSession.cpp
 	widgets/TerminalSearchBar.h
 	widgets/TerminalSearchBar.cpp
 	widgets/TerminalIcons.h

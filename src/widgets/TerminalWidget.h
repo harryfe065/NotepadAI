@@ -27,6 +27,7 @@
 #include <QImage>
 #include "TerminalRowLayout.h"
 #include "TerminalSearch.h"
+#include "TerminalSearchSession.h"
 #include "TerminalTaskLauncher.h"
 
 #include <vterm.h>
@@ -185,15 +186,11 @@ private slots:
     void toggleCursorBlink();
     void runSearch();
     void searchSlice();
-    // Searches m_rowCells as `line`; false (search abandoned) when a regex
-    // spent kRegexRowLimit on it.
-    bool searchRowCells(qint64 line, QString &text, std::vector<int> &colOf);
-    // A default QRegularExpression is valid (empty pattern): "no search" is
-    // an empty pattern, not an invalid one.
-    bool searchActive() const { return m_searchRe.isValid() && !m_searchRe.pattern().isEmpty(); }
-    void abandonSlowSearch();
 
 private:
+    // The rows as TerminalSearchSession reads them.
+    class SearchSource;
+    void searchChanged();
     // Geometry. Cell sizes are whole device pixels so every row and column
     // edge lands on a pixel boundary (no seams, no glyph jitter).
     void recomputeMetrics();
@@ -387,20 +384,11 @@ private:
     QString m_osc8Uri;
 
     TerminalSearchBar *m_searchBar = nullptr;
-    TerminalSearchOptions m_searchOptions;
-    QRegularExpression m_searchRe;
-    std::vector<TerminalSearchMatch> m_matches;
-    int m_activeMatch = -1;
-    // History ids below this were searched; ids at/after it are re-searched
-    // (they were live rows, which change).
-    qint64 m_searchedHistoryEnd = 0;
+    TerminalSearchSession m_search;
     QTimer *m_searchDebounce = nullptr;
     QTimer *m_searchFollow = nullptr;
     QTimer *m_searchSlice = nullptr;
-    qint64 m_searchScanNext = 0;
-    bool m_searchScanning = false;
     bool m_searchRevealPending = false;
-    bool m_searchSkipBlank = false;
     std::vector<TerminalRowLayout::Highlight> m_rowHighlights;
     int m_rowActiveFrom = -1;
     int m_rowActiveTo = -1;

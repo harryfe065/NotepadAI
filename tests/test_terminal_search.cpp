@@ -62,8 +62,6 @@ private slots:
     void regexOption();
     void matchColumnsSkipWideSpacer();
     void skipBlankRowsOnlySkipsBlankRows();
-    void scrollbackSearchUsesStableLineIds();
-    void cancelStopsEarly();
 };
 
 void TestTerminalSearch::emptyOrBrokenQueryIsInvalid()
@@ -176,28 +174,6 @@ void TestTerminalSearch::skipBlankRowsOnlySkipsBlankRows()
     const auto hit = row(QStringLiteral("axx"), 4);
     searchTerminalRow(re, 1, hit.data(), 4, out, text, colOf, true);
     QVERIFY(!out.empty());
-}
-
-void TestTerminalSearch::scrollbackSearchUsesStableLineIds()
-{
-    ScrollbackBuffer sb(3);
-    for (int i = 0; i < 5; ++i) {
-        const auto cells = row(i % 2 ? QStringLiteral("hit") : QStringLiteral("miss"), 6);
-        sb.pushLine(6, cells.data());
-    }
-    // Lines 0 and 1 were evicted: history index 0 is line id 2.
-    const auto found = searchScrollback(sb, 2, 0, 6, terminalSearchRegex(plain(QStringLiteral("hit"))));
-    QCOMPARE(found.size(), std::size_t(1));
-    QCOMPARE(found[0].line, qint64(3));
-}
-
-void TestTerminalSearch::cancelStopsEarly()
-{
-    ScrollbackBuffer sb(100);
-    const auto cells = row(QStringLiteral("hit"), 4);
-    for (int i = 0; i < 50; ++i) sb.pushLine(4, cells.data());
-    std::atomic<bool> cancel(true);
-    QVERIFY(searchScrollback(sb, 0, 0, 4, terminalSearchRegex(plain(QStringLiteral("hit"))), &cancel).empty());
 }
 
 QTEST_APPLESS_MAIN(TestTerminalSearch)

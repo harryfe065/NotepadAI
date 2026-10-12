@@ -77,11 +77,6 @@ constexpr int kResizeSettleMs = 24;
 constexpr qint64 kMissingPathRecheckMs = 3000;
 // Search slices on the UI thread stay under this budget per event-loop pass.
 constexpr auto kSearchSliceBudget = std::chrono::milliseconds(4);
-// A user regex can backtrack catastrophically on some output. One row taking
-// this long, or one incremental pass taking kRegexPassLimit, ends the search
-// instead of stalling the UI thread on every row.
-constexpr auto kRegexRowLimit = std::chrono::milliseconds(20);
-constexpr auto kRegexPassLimit = std::chrono::milliseconds(50);
 constexpr int kCursorBlinkMs = 500;
 // Wheel: three lines per notch, as on every platform default.
 constexpr int kWheelLines = 3;
@@ -89,7 +84,6 @@ constexpr int kWheelLines = 3;
 constexpr int kSearchDebounceMs = 100;
 constexpr int kSearchFollowMs = 150;
 // More new lines than this since the last search: redo it off-thread.
-constexpr qint64 kSearchSyncLines = 5000;
 constexpr std::size_t kMaxOsc8Spans = 2048;
 constexpr int kMaxLogicalLineRows = 16;
 constexpr int kMaxPathCache = 512;
@@ -510,10 +504,7 @@ int TerminalWidget::vtermSbPopLine(int cols, VTermScreenCell *cells, void *user)
         return 0;
     }
     w->m_scrollOffset = std::min(w->m_scrollOffset, w->m_scrollback.size());
-    // The popped line is live again: searched history ends before it.
-    const qint64 historyEnd = w->m_linesDropped + w->m_scrollback.size();
-    w->m_searchedHistoryEnd = std::min(w->m_searchedHistoryEnd, historyEnd);
-    w->m_searchScanNext = std::min(w->m_searchScanNext, historyEnd);
+    w->m_search.historyShrunk(w->m_linesDropped + w->m_scrollback.size());
     w->m_scrollbarDirty = true;
     w->markAllDirty();
     return 1;
@@ -966,7 +957,7 @@ void TerminalWidget::processPendingInput()
     }
 
     scheduleFrame();
-    if (m_searchBar && m_searchBar->isVisible() && searchActive() && !m_searchFollow->isActive()) {
+    if (m_searchBar && m_searchBar->isVisible() && m_search.isActive() && !m_searchFollow->isActive()) {
         m_searchFollow->start();
     }
 
@@ -2148,14 +2139,7 @@ void TerminalWidget::noteLinesDropped(int count)
     while (!m_osc8Spans.empty() && m_osc8Spans.front().endLine < m_linesDropped) {
         m_osc8Spans.pop_front();
     }
-    if (!m_matches.empty() && m_matches.front().line < m_linesDropped) {
-        const auto keep = std::lower_bound(m_matches.begin(), m_matches.end(), m_linesDropped,
-                                           [](const TerminalSearchMatch &m, qint64 line) { return m.line < line; });
-        const int removed = static_cast<int>(keep - m_matches.begin());
-        m_matches.erase(m_matches.begin(), keep);
-        // An evicted current match leaves none current.
-        m_activeMatch = m_activeMatch < removed ? -1 : m_activeMatch - removed;
-    }
+    m_search.linesDropped(m_linesDropped);
     if (m_hover.valid && m_hover.startLine < m_linesDropped) {
         clearHoverLink();
     }
@@ -2596,55 +2580,53 @@ void TerminalWidget::closeSearch()
     m_searchDebounce->stop();
     m_searchFollow->stop();
     m_searchSlice->stop();
-    m_searchScanning = false;
     if (m_searchBar) {
         m_searchBar->hide();
     }
-    m_searchRe = QRegularExpression();
-    m_matches.clear();
-    m_activeMatch = -1;
-    syncSearchMarks();
-    markAllDirty();
-    scheduleFrame();
+    m_search.stop();
+    searchChanged();
     setFocus(Qt::OtherFocusReason);
 }
 
+// The widget's rows as the search session sees them.
+class TerminalWidget::SearchSource final : public TerminalSearchSession::Source
+{
+public:
+    explicit SearchSource(const TerminalWidget &w) : m_w(w) {}
+    qint64 firstLine() const override { return m_w.m_linesDropped; }
+    qint64 historyEnd() const override { return m_w.m_linesDropped + m_w.m_scrollback.size(); }
+    int columns() const override { return m_w.m_cols; }
+    int liveRows() const override { return m_w.m_rows; }
+    bool historyLine(qint64 line, VTermScreenCell *cells) const override
+    {
+        return m_w.m_scrollback.lineAt(m_w.absoluteRowForLineId(line), m_w.m_cols, cells);
+    }
+    bool liveRow(int row, VTermScreenCell *cells) const override
+    {
+        for (VTermPos pos{row, 0}; pos.col < m_w.m_cols; ++pos.col) {
+            if (!vterm_screen_get_cell(m_w.m_screen, pos, &cells[pos.col])) return false;
+        }
+        return true;
+    }
+
+private:
+    const TerminalWidget &m_w;
+};
+
 // Full search: history in slices (searchSlice), then the tail and the live
-// screen (searchNewOutput).
+// screen.
 void TerminalWidget::runSearch()
 {
     if (!m_searchBar) return;
-    m_searchOptions = m_searchBar->options();
     m_searchFollow->stop();
     m_searchSlice->stop();
-    m_searchScanning = false;
-    m_matches.clear();
-    m_activeMatch = -1;
-    if (m_searchOptions.query.isEmpty()) {
-        m_searchRe = QRegularExpression();
-        m_searchBar->setInvalid(false);
-        m_searchBar->setCount(-1, 0);
-        syncSearchMarks();
-        markAllDirty();
-        scheduleFrame();
+    const TerminalSearchSession::State state = m_search.start(m_searchBar->options(), m_linesDropped);
+    m_searchBar->setInvalid(state == TerminalSearchSession::State::Invalid);
+    if (state != TerminalSearchSession::State::Scanning) {
+        if (state == TerminalSearchSession::State::Off) m_searchBar->setCount(-1, 0);
+        searchChanged();
         return;
     }
-    QRegularExpression re = terminalSearchRegex(m_searchOptions);
-    if (!re.isValid()) {
-        m_searchRe = QRegularExpression();
-        m_searchBar->setInvalid(true);
-        syncSearchMarks();
-        markAllDirty();
-        scheduleFrame();
-        return;
-    }
-    m_searchBar->setInvalid(false);
-    m_searchRe = re;
-    // Blank rows cannot hold a literal match without spaces; regexes might.
-    m_searchSkipBlank = !m_searchOptions.regex && !m_searchOptions.query.contains(QLatin1Char(' '));
-    m_searchScanNext = m_linesDropped;
-    m_searchedHistoryEnd = m_linesDropped;
-    m_searchScanning = true;
     m_searchRevealPending = true;
     searchSlice();
 }
@@ -2654,161 +2636,45 @@ void TerminalWidget::runSearch()
 // scrollback, no locking, and the UI stays responsive on 100k lines.
 void TerminalWidget::searchSlice()
 {
-    if (!m_searchScanning || !searchActive()) return;
-    const auto start = std::chrono::steady_clock::now();
-    const qint64 historyEnd = m_linesDropped + m_scrollback.size();
-    m_searchScanNext = std::max(m_searchScanNext, m_linesDropped);
-    if (static_cast<int>(m_rowCells.size()) < m_cols) {
-        m_rowCells.resize(static_cast<std::size_t>(m_cols));
-    }
-    QString text;
-    std::vector<int> colOf;
-    int scanned = 0;
-    while (m_searchScanNext < historyEnd) {
-        if (m_scrollback.lineAt(absoluteRowForLineId(m_searchScanNext), m_cols, m_rowCells.data())
-            && !searchRowCells(m_searchScanNext, text, colOf)) {
-            return;
-        }
-        ++m_searchScanNext;
-        // A regex row can take milliseconds, so the clock is read after each.
-        if (((++scanned & 63) == 0 || m_searchOptions.regex)
-            && std::chrono::steady_clock::now() - start > kSearchSliceBudget) {
-            break;
-        }
-    }
-    m_searchedHistoryEnd = m_searchScanNext;
-    if (m_searchScanNext < historyEnd) {
-        if (m_searchBar) m_searchBar->setCount(m_activeMatch, static_cast<int>(m_matches.size()));
+    if (m_search.state() != TerminalSearchSession::State::Scanning) return;
+    const TerminalSearchSession::State state = m_search.scan(SearchSource(*this), kSearchSliceBudget);
+    if (state == TerminalSearchSession::State::Scanning) {
+        if (m_searchBar) m_searchBar->setCount(m_search.activeMatch(), static_cast<int>(m_search.matches().size()));
         m_searchSlice->start();
         return;
     }
-
-    m_searchScanning = false;
-    searchNewOutput();
     // Start from the most recent hit, like a terminal search from the prompt.
-    if (m_searchRevealPending) {
+    if (state == TerminalSearchSession::State::Ready && m_searchRevealPending) {
         m_searchRevealPending = false;
-        if (!m_matches.empty()) {
-            m_activeMatch = static_cast<int>(m_matches.size()) - 1;
-            revealMatch(m_matches.back());
-        }
+        m_search.activateLast();
+        if (m_search.activeMatch() >= 0) revealMatch(m_search.matches().back());
     }
-    if (m_searchBar) m_searchBar->setCount(m_activeMatch, static_cast<int>(m_matches.size()));
-    syncSearchMarks();
-    markAllDirty();
-    scheduleFrame();
+    searchChanged();
 }
 
-
-
-// Incremental pass: history pushed since the last search plus the live rows.
-// Old matches on rows that were live (they may have changed) are replaced.
-// Incremental pass: history pushed since the last search plus the live rows.
-// Old matches on rows that were live (they may have changed) are replaced.
+// New output while the find bar is open: only lines that reached history
+// since the last pass, plus the live screen, are searched.
 void TerminalWidget::searchNewOutput()
 {
-    // While history is still being sliced, the slice reaches the new lines.
-    if (!searchActive() || m_searchScanning) return;
-    const qint64 historyEnd = m_linesDropped + m_scrollback.size();
-    // History can shrink (a taller window pops lines back): clamp.
-    const qint64 from = std::clamp(m_searchedHistoryEnd, m_linesDropped, historyEnd);
-
-    TerminalSearchMatch active{};
-    const bool hadActive = m_activeMatch >= 0 && m_activeMatch < static_cast<int>(m_matches.size());
-    if (hadActive) active = m_matches[static_cast<std::size_t>(m_activeMatch)];
-
-    m_matches.erase(std::remove_if(m_matches.begin(), m_matches.end(),
-                                   [this, from](const TerminalSearchMatch &m) {
-                                       return m.line >= from || m.line < m_linesDropped;
-                                   }),
-                    m_matches.end());
-
-    if (historyEnd - from > kSearchSyncLines) {
-        // Too much to do in one pass: continue in slices.
-        m_activeMatch = -1;
-        m_searchScanNext = from;
-        m_searchScanning = true;
+    if (m_search.state() != TerminalSearchSession::State::Ready) return;
+    if (m_search.searchNewOutput(SearchSource(*this)) == TerminalSearchSession::State::Scanning) {
+        // Too much new history for one pass: continue in slices.
         m_searchSlice->start();
         return;
     }
-
-    if (static_cast<int>(m_rowCells.size()) < m_cols) {
-        m_rowCells.resize(static_cast<std::size_t>(m_cols));
-    }
-    QString text;
-    std::vector<int> colOf;
-    const auto passStart = std::chrono::steady_clock::now();
-    const auto overPassLimit = [this, passStart]() {
-        return m_searchOptions.regex && std::chrono::steady_clock::now() - passStart > kRegexPassLimit;
-    };
-    for (qint64 id = from; id < historyEnd; ++id) {
-        if (m_scrollback.lineAt(absoluteRowForLineId(id), m_cols, m_rowCells.data())
-            && !searchRowCells(id, text, colOf)) {
-            return;
-        }
-        if (overPassLimit()) {
-            abandonSlowSearch();
-            return;
-        }
-    }
-    m_searchedHistoryEnd = historyEnd;
-    VTermPos pos{0, 0};
-    for (pos.row = 0; pos.row < m_rows; ++pos.row) {
-        bool ok = true;
-        for (pos.col = 0; pos.col < m_cols && ok; ++pos.col) {
-            ok = vterm_screen_get_cell(m_screen, pos, &m_rowCells[static_cast<std::size_t>(pos.col)]) != 0;
-        }
-        if (ok && !searchRowCells(historyEnd + pos.row, text, colOf)) {
-            return;
-        }
-        if (overPassLimit()) {
-            abandonSlowSearch();
-            return;
-        }
-    }
-
-    m_activeMatch = -1;
-    if (hadActive) {
-        for (std::size_t i = 0; i < m_matches.size(); ++i) {
-            if (m_matches[i].line == active.line && m_matches[i].col == active.col) {
-                m_activeMatch = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-    if (m_activeMatch < 0 && !m_matches.empty() && hadActive) {
-        m_activeMatch = static_cast<int>(m_matches.size()) - 1;
-    }
-    if (m_searchBar) m_searchBar->setCount(m_activeMatch, static_cast<int>(m_matches.size()));
-    syncSearchMarks();
-    markAllDirty();
-    scheduleFrame();
+    searchChanged();
 }
 
-bool TerminalWidget::searchRowCells(qint64 line, QString &text, std::vector<int> &colOf)
+// Bar count, scrollbar ticks and highlights after the matches changed.
+void TerminalWidget::searchChanged()
 {
-    if (!m_searchOptions.regex) {
-        // Literal patterns are escaped: linear time, nothing to watch.
-        searchTerminalRow(m_searchRe, line, m_rowCells.data(), m_cols, m_matches, text, colOf, m_searchSkipBlank);
-        return true;
+    if (m_searchBar) {
+        if (m_search.state() == TerminalSearchSession::State::TooSlow) {
+            m_searchBar->setTooSlow();
+        } else if (m_search.isActive()) {
+            m_searchBar->setCount(m_search.activeMatch(), static_cast<int>(m_search.matches().size()));
+        }
     }
-    const auto start = std::chrono::steady_clock::now();
-    searchTerminalRow(m_searchRe, line, m_rowCells.data(), m_cols, m_matches, text, colOf, m_searchSkipBlank);
-    if (std::chrono::steady_clock::now() - start <= kRegexRowLimit) return true;
-    abandonSlowSearch();
-    return false;
-}
-
-void TerminalWidget::abandonSlowSearch()
-{
-    m_searchScanning = false;
-    m_searchSlice->stop();
-    m_searchFollow->stop();
-    m_matches.clear();
-    m_activeMatch = -1;
-    // An invalid expression also stops the incremental search on new output.
-    m_searchRe = QRegularExpression();
-    if (m_searchBar) m_searchBar->setTooSlow();
     syncSearchMarks();
     markAllDirty();
     scheduleFrame();
@@ -2816,14 +2682,10 @@ void TerminalWidget::abandonSlowSearch()
 
 void TerminalWidget::stepSearch(int delta)
 {
-    if (m_matches.empty()) return;
-    const int n = static_cast<int>(m_matches.size());
-    m_activeMatch = m_activeMatch < 0 ? (delta > 0 ? 0 : n - 1) : ((m_activeMatch + delta) % n + n) % n;
-    revealMatch(m_matches[static_cast<std::size_t>(m_activeMatch)]);
-    if (m_searchBar) m_searchBar->setCount(m_activeMatch, n);
-    syncSearchMarks();
-    markAllDirty();
-    scheduleFrame();
+    const int active = m_search.step(delta);
+    if (active < 0) return;
+    revealMatch(m_search.matches()[static_cast<std::size_t>(active)]);
+    searchChanged();
 }
 
 void TerminalWidget::revealMatch(const TerminalSearchMatch &match)
@@ -2839,17 +2701,18 @@ void TerminalWidget::revealMatch(const TerminalSearchMatch &match)
 
 void TerminalWidget::syncSearchMarks()
 {
-    if (m_matches.empty()) {
+    const std::vector<TerminalSearchMatch> &matches = m_search.matches();
+    if (matches.empty()) {
         m_scrollBar->setMarks({}, -1, 0, 0);
         return;
     }
     std::vector<int> rows;
-    rows.reserve(m_matches.size());
+    rows.reserve(matches.size());
     int lastRow = -1;
     int active = -1;
-    for (std::size_t i = 0; i < m_matches.size(); ++i) {
-        const int row = absoluteRowForLineId(m_matches[i].line);
-        if (static_cast<int>(i) == m_activeMatch) {
+    for (std::size_t i = 0; i < matches.size(); ++i) {
+        const int row = absoluteRowForLineId(matches[i].line);
+        if (static_cast<int>(i) == m_search.activeMatch()) {
             active = static_cast<int>(rows.size());
             rows.push_back(row);
             lastRow = row;
@@ -2868,24 +2731,10 @@ void TerminalWidget::syncSearchMarks()
 
 int TerminalWidget::collectHighlights(qint64 lineId)
 {
-    m_rowHighlights.clear();
-    m_rowActiveFrom = -1;
-    m_rowActiveTo = -1;
-    if (m_matches.empty()) return 0;
-    auto it = std::lower_bound(m_matches.begin(), m_matches.end(), lineId,
-                               [](const TerminalSearchMatch &m, qint64 line) { return m.line < line; });
     // Hits use the scheme's yellow; the current one is stronger and outlined.
-    const QRgb normal = blendRgb(m_palette.defaultBg, m_palette.indexed[3], 35);
-    const QRgb strong = blendRgb(m_palette.defaultBg, m_palette.indexed[11], 60);
-    for (; it != m_matches.end() && it->line == lineId; ++it) {
-        const bool isActive = (it - m_matches.begin()) == m_activeMatch;
-        m_rowHighlights.push_back({it->col, it->col + it->width, isActive ? strong : normal});
-        if (isActive) {
-            m_rowActiveFrom = it->col;
-            m_rowActiveTo = it->col + it->width;
-        }
-    }
-    return static_cast<int>(m_rowHighlights.size());
+    return m_search.highlightsFor(lineId, blendRgb(m_palette.defaultBg, m_palette.indexed[3], 35),
+                                  blendRgb(m_palette.defaultBg, m_palette.indexed[11], 60), m_rowHighlights,
+                                  &m_rowActiveFrom, &m_rowActiveTo);
 }
 
 // --- drag and drop ----------------------------------------------------------------

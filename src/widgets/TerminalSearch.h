@@ -19,14 +19,11 @@
 #ifndef TERMINALSEARCH_H
 #define TERMINALSEARCH_H
 
-#include "ScrollbackBuffer.h"
-
 #include <vterm.h>
 
 #include <QRegularExpression>
 #include <QString>
 
-#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -60,12 +57,5 @@ void terminalRowText(const VTermScreenCell *cells, int cols, QString &text, std:
 void searchTerminalRow(const QRegularExpression &re, qint64 line, const VTermScreenCell *cells, int cols,
                        std::vector<TerminalSearchMatch> &out, QString &text, std::vector<int> &colOf,
                        bool skipBlankRows = false);
-
-// Searches history lines [fromIndex, size) of `buffer` (a snapshot, so it can
-// run on a worker thread). `firstLineId` is the id of history index 0.
-// `cancel` is polled between lines.
-std::vector<TerminalSearchMatch> searchScrollback(const ScrollbackBuffer &buffer, qint64 firstLineId,
-                                                  int fromIndex, int cols, const QRegularExpression &re,
-                                                  const std::atomic<bool> *cancel = nullptr);
 
 #endif

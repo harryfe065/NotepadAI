@@ -18,6 +18,8 @@
 
 #include "TerminalSearch.h"
 
+#include "ScrollbackBuffer.h"   // kTerminalWideSpacer
+
 QRegularExpression terminalSearchRegex(const TerminalSearchOptions &options)
 {
     if (options.query.isEmpty()) {
@@ -88,25 +90,4 @@ void searchTerminalRow(const QRegularExpression &re, qint64 line, const VTermScr
         const int lastWidth = cells[lastCol].width >= 2 ? 2 : 1;
         out.push_back({line, colStart, lastCol + lastWidth - colStart});
     }
-}
-
-std::vector<TerminalSearchMatch> searchScrollback(const ScrollbackBuffer &buffer, qint64 firstLineId,
-                                                  int fromIndex, int cols, const QRegularExpression &re,
-                                                  const std::atomic<bool> *cancel)
-{
-    std::vector<TerminalSearchMatch> out;
-    if (!re.isValid() || cols <= 0) return out;
-    std::vector<VTermScreenCell> row(static_cast<std::size_t>(cols));
-    QString text;
-    std::vector<int> colOf;
-    for (int i = std::max(0, fromIndex); i < buffer.size(); ++i) {
-        if (cancel && cancel->load(std::memory_order_relaxed)) {
-            out.clear();
-            return out;
-        }
-        if (buffer.lineAt(i, cols, row.data())) {
-            searchTerminalRow(re, firstLineId + i, row.data(), cols, out, text, colOf, false);
-        }
-    }
-    return out;
 }

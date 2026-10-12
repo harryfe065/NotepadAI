@@ -127,6 +127,24 @@ target_sources(test_terminal_process_stats PRIVATE
 add_test(NAME TerminalProcessStats COMMAND test_terminal_process_stats)
 
 
+# --- TerminalSearchSession: sliced history scan, incremental pass, regex guard ---
+qt_add_executable(test_terminal_search_session test_terminal_search_session.cpp)
+target_include_directories(test_terminal_search_session PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_terminal_search_session PRIVATE Qt6::Core Qt6::Test libvterm)
+target_sources(test_terminal_search_session PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchSession.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchSession.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.h
+)
+add_test(NAME TerminalSearchSession COMMAND test_terminal_search_session)
+
+
 # --- TerminalGlyphCache tiles: same pixels as drawing each glyph through Qt ---
 qt_add_executable(test_terminal_glyph_tiles test_terminal_glyph_tiles.cpp)
 target_include_directories(test_terminal_glyph_tiles PRIVATE
@@ -329,8 +347,6 @@ target_link_libraries(test_terminal_search PRIVATE Qt6::Core Qt6::Test libvterm)
 target_sources(test_terminal_search PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.h
-    ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/ScrollbackBuffer.h
 )
 add_test(NAME TerminalSearch COMMAND test_terminal_search)
 
@@ -391,6 +407,8 @@ target_sources(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalLinkDetector.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchSession.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchSession.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchBar.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchBar.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.cpp
