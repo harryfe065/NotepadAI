@@ -82,10 +82,18 @@ public:
     static constexpr qint64 kMinRefreshGapMs = 60'000;
     static QUrl usageUrl();
 
-    // `credentialsFile` empty -> claudeusage::credentialsPath() from the environment.
+    // One Claude account: the config folder holding its `.credentials.json`
+    // (`configDir` empty = $CLAUDE_CONFIG_DIR, else ~/.claude).
     explicit ClaudeUsageService(IClaudeUsageTransport *transport,
-                                const QString &credentialsFile = {},
+                                const QString &configDir = {},
                                 QObject *parent = nullptr);
+
+    // The folder as configured (empty = default); identifies the account.
+    const QString &configDir() const { return m_configDir; }
+    // Signed-in email from the folder's `.claude.json`, else the folder name.
+    QString accountLabel() const { return m_email.isEmpty() ? m_folderLabel : m_email; }
+    // Folder the credentials are read from, resolved for display.
+    QString resolvedConfigDir() const;
 
     const claudeusage::Usage &usage() const { return m_usage; }
     bool loaded() const { return m_loaded; }
@@ -106,10 +114,6 @@ public:
     void startPolling();
 
     void setClock(std::function<qint64()> clock) { m_clock = std::move(clock); }
-    // Switches to another Claude config folder (`dir` empty = $CLAUDE_CONFIG_DIR /
-    // ~/.claude). It is a different account, so the snapshot, the cooldown and
-    // any request in flight are dropped and a fresh fetch starts right away.
-    void setConfigDir(const QString &dir);
     // 0..1 source for the backoff jitter; tests pin it.
     void setJitter(std::function<double()> jitter) { m_jitter = std::move(jitter); }
 
@@ -125,9 +129,18 @@ private:
     void onResponse(int httpStatus, const QByteArray &body, qint64 retryAfterMs);
     void onTransportFailed();
     void readKeychainAsync();
+    void readAccountEmail();
 
     IClaudeUsageTransport *m_transport = nullptr;
+    QString m_configDir;
     QString m_credentialsFile;
+    QString m_accountFile;
+    QString m_folderLabel;
+    QString m_email;
+    // `.claude.json` is rewritten often and can be large: re-parse only when its
+    // mtime or size moved.
+    qint64 m_accountFileMtimeMs = -1;
+    qint64 m_accountFileSize = -1;
     QTimer m_pollTimer;
     QProcess *m_keychain = nullptr;
     claudeusage::Usage m_usage;

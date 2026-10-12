@@ -25,6 +25,7 @@
 #include <QObject>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QMetaEnum>
 
 
@@ -225,9 +226,11 @@ signals:
     // Storage key Ai/UsagePercentRemaining.
     DEFINE_SETTING(UsagePercentRemaining, usagePercentRemaining, bool)
 
-    // Claude config folder the usage chip reads `.credentials.json` from.
-    // Empty = $CLAUDE_CONFIG_DIR, else ~/.claude. Storage key Ai/UsageClaudeConfigDir.
-    DEFINE_SETTING(UsageClaudeConfigDir, usageClaudeConfigDir, QString)
+    // Claude config folders the usage chip reads `.credentials.json` from, one
+    // account each, in display order. Empty = $CLAUDE_CONFIG_DIR, else ~/.claude.
+    // Storage key Ai/UsageClaudeConfigDirs (replaces the single-folder
+    // Ai/UsageClaudeConfigDir, migrated in the constructor).
+    DEFINE_SETTING(UsageClaudeConfigDirs, usageClaudeConfigDirs, QStringList)
 
     // AI / ACP agent settings. Stored under the "Ai/" group.
 public:

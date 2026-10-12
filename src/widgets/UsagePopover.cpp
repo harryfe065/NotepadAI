@@ -58,6 +58,95 @@ protected:
 
 } // namespace
 
+// One account: brand glyph + "Claude" + account label, then a hint line and/or
+// one bar per window.
+class UsageAccountSection : public QWidget
+{
+public:
+    explicit UsageAccountSection(QWidget *parent) : QWidget(parent)
+    {
+        auto *root = new QVBoxLayout(this);
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(kSpacing);
+
+        auto *head = new QHBoxLayout;
+        head->setContentsMargins(0, 0, 0, 0);
+        head->setSpacing(4);
+        m_icon = new QLabel(this);
+        m_icon->setFixedSize(kProviderIcon, kProviderIcon);
+        head->addWidget(m_icon);
+        m_provider = boldLabel(QStringLiteral("Claude"), this);
+        head->addWidget(m_provider);
+        m_account = new QLabel(this);
+        m_account->setForegroundRole(QPalette::PlaceholderText);
+        head->addWidget(m_account, 1);
+        root->addLayout(head);
+
+        m_hint = new QLabel(this);
+        m_hint->setWordWrap(true);
+        m_hint->setForegroundRole(QPalette::PlaceholderText);
+        root->addWidget(m_hint);
+
+        applyChrome();
+    }
+
+    void setAccount(const UsagePopover::Account &a, PercentMode mode, qint64 now)
+    {
+        // Head: the label takes what "Claude" leaves of the popup width.
+        const int room = UsagePopover::kWidth - 2 * kPadding - kProviderIcon - 8
+                         - m_provider->fontMetrics().horizontalAdvance(m_provider->text());
+        m_account->setText(m_account->fontMetrics().elidedText(a.label, Qt::ElideMiddle, std::max(0, room)));
+        m_account->setToolTip(QStringLiteral("%1\n%2").arg(a.label, a.configDir));
+
+        const QVector<NamedWindow> windows = windowsOf(a.usage);
+        const bool failing = !a.health.error.isEmpty();
+
+        QString hint;
+        bool showBars = false;
+        if (!a.loaded)
+            hint = UsagePopover::tr("Loading usage…");
+        else if (a.usage.status == Status::Unavailable)
+            hint = UsagePopover::tr("Not signed in. Run claude and sign in.");
+        else if (a.usage.status == Status::Error)
+            hint = failing ? staleNotice(a.health, now)
+                           : (a.usage.error.isEmpty() ? UsagePopover::tr("Usage unavailable") : a.usage.error);
+        else if (windows.isEmpty())
+            hint = UsagePopover::tr("No usage data.");
+        else {
+            // Last good numbers stay on screen; a failed refresh only adds the notice.
+            showBars = true;
+            if (failing)
+                hint = staleNotice(a.health, now);
+        }
+        m_hint->setText(hint);
+        m_hint->setVisible(!hint.isEmpty());
+
+        const int want = showBars ? int(windows.size()) : 0;
+        while (m_bars.size() > want)
+            delete m_bars.takeLast();
+        while (m_bars.size() < want) {
+            auto *bar = new UsageWindowBar(this);
+            layout()->addWidget(bar);
+            m_bars.push_back(bar);
+        }
+        for (int i = 0; i < want; ++i)
+            m_bars[i]->setWindow(windows[i].label, windows[i].window, mode, a.nowMs);
+    }
+
+    void applyChrome()
+    {
+        m_icon->setPixmap(usagestyle::brandPixmap(QStringLiteral(":/icons/claude.svg"), kProviderIcon,
+                                                  devicePixelRatioF()));
+    }
+
+private:
+    QLabel *m_icon = nullptr;
+    QLabel *m_provider = nullptr;
+    QLabel *m_account = nullptr;
+    QLabel *m_hint = nullptr;
+    QVector<UsageWindowBar *> m_bars;
+};
+
 UsagePopover::UsagePopover(QWidget *parent)
     : QFrame(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint)
 {
@@ -94,33 +183,18 @@ UsagePopover::UsagePopover(QWidget *parent)
 
     root->addWidget(new Divider(this));
 
-    // Provider head: brand glyph + name.
-    auto *head = new QHBoxLayout;
-    head->setContentsMargins(0, 0, 0, 0);
-    head->setSpacing(4);
-    m_providerIcon = new QLabel(this);
-    m_providerIcon->setFixedSize(kProviderIcon, kProviderIcon);
-    head->addWidget(m_providerIcon);
-    head->addWidget(boldLabel(QStringLiteral("Claude"), this));
-    head->addStretch(1);
-    root->addLayout(head);
-
-    m_body = new QVBoxLayout;
-    m_body->setContentsMargins(0, 0, 0, 0);
-    m_body->setSpacing(kSpacing);
-    m_hint = new QLabel(this);
-    m_hint->setWordWrap(true);
-    m_hint->setForegroundRole(QPalette::PlaceholderText);
-    m_body->addWidget(m_hint);
-    root->addLayout(m_body);
+    m_sectionsLayout = new QVBoxLayout;
+    m_sectionsLayout->setContentsMargins(0, 0, 0, 0);
+    m_sectionsLayout->setSpacing(kSpacing);
+    root->addLayout(m_sectionsLayout);
 
     // Only runs while the popup is open and a failure notice is showing.
     m_staleTimer = new QTimer(this);
     m_staleTimer->setInterval(kStaleTickMs);
     connect(m_staleTimer, &QTimer::timeout, this, [this] {
-        if (m_health.error.isEmpty())
-            return;
-        rebuild();
+        if (std::any_of(m_accounts.cbegin(), m_accounts.cend(),
+                        [](const Account &a) { return !a.health.error.isEmpty(); }))
+            rebuild();
     });
 
     m_spin = new QVariantAnimation(this);
@@ -136,13 +210,9 @@ UsagePopover::UsagePopover(QWidget *parent)
     setPercentMode(PercentMode::Used);
 }
 
-void UsagePopover::setData(const Usage &usage, const Health &health, bool loaded, bool loading, qint64 nowMs)
+void UsagePopover::setData(QVector<Account> accounts)
 {
-    m_usage = usage;
-    m_health = health;
-    m_loaded = loaded;
-    m_loading = loading;
-    m_nowMs = nowMs;
+    m_accounts = std::move(accounts);
     rebuild();
 }
 
@@ -156,46 +226,36 @@ void UsagePopover::setPercentMode(PercentMode mode)
 
 void UsagePopover::rebuild()
 {
-    const QVector<NamedWindow> windows = windowsOf(m_usage);
-
     // Countdown text needs the real clock, not the last-completed stamp.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const bool failing = !m_health.error.isEmpty();
-    const bool cooling = m_health.retryAtMs > now;   // refresh would be a no-op
 
-    QString hint;
-    bool showBars = false;
-    if (!m_loaded)
-        hint = tr("Loading usage…");
-    else if (m_usage.status == Status::Unavailable)
-        hint = tr("Not signed in. Run claude and sign in.");
-    else if (m_usage.status == Status::Error)
-        hint = failing ? staleNotice(m_health, now)
-                       : (m_usage.error.isEmpty() ? tr("Usage unavailable") : m_usage.error);
-    else if (windows.isEmpty())
-        hint = tr("No usage data.");
-    else {
-        // Last good numbers stay on screen; a failed refresh only adds the notice.
-        showBars = true;
-        if (failing)
-            hint = staleNotice(m_health, now);
+    const int want = int(m_accounts.size());
+    while (m_sections.size() > want) {
+        delete m_sections.takeLast();
+        delete m_dividers.takeLast();
     }
-    m_hint->setText(hint);
-    m_hint->setVisible(!hint.isEmpty());
-
-    const int want = showBars ? int(windows.size()) : 0;
-    while (m_bars.size() > want)
-        delete m_bars.takeLast();
-    while (m_bars.size() < want) {
-        auto *bar = new UsageWindowBar(this);
-        m_body->addWidget(bar);
-        m_bars.push_back(bar);
+    while (m_sections.size() < want) {
+        auto *divider = new Divider(this);
+        divider->setVisible(!m_sections.isEmpty());
+        m_sectionsLayout->addWidget(divider);
+        m_dividers.push_back(divider);
+        auto *section = new UsageAccountSection(this);
+        m_sectionsLayout->addWidget(section);
+        m_sections.push_back(section);
     }
-    for (int i = 0; i < want; ++i)
-        m_bars[i]->setWindow(windows[i].label, windows[i].window, m_mode, m_nowMs);
 
-    m_refreshButton->setEnabled(!m_loading && !cooling);
-    setSpinning(m_loading && isVisible());
+    // Refresh is a no-op only when every account is fetching or cooling down.
+    bool anyLoading = false;
+    bool anyRefreshable = false;
+    for (int i = 0; i < want; ++i) {
+        const Account &a = m_accounts[i];
+        m_sections[i]->setAccount(a, m_mode, now);
+        anyLoading = anyLoading || a.loading;
+        anyRefreshable = anyRefreshable || (!a.loading && a.health.retryAtMs <= now);
+    }
+
+    m_refreshButton->setEnabled(anyRefreshable);
+    setSpinning(anyLoading && isVisible());
 
     if (isVisible()) {
         layout()->activate();
@@ -254,7 +314,7 @@ void UsagePopover::showBelow(QWidget *anchor)
     move(pos);
 
     show();
-    setSpinning(m_loading);
+    setSpinning(std::any_of(m_accounts.cbegin(), m_accounts.cend(), [](const Account &a) { return a.loading; }));
     m_staleTimer->start();
 }
 
@@ -288,8 +348,8 @@ void UsagePopover::changeEvent(QEvent *event)
 // SVG pixmaps and the link-colored toggle.
 void UsagePopover::applyChrome()
 {
-    const qreal dpr = devicePixelRatioF();
-    m_providerIcon->setPixmap(usagestyle::brandPixmap(QStringLiteral(":/icons/claude.svg"), kProviderIcon, dpr));
+    for (UsageAccountSection *section : std::as_const(m_sections))
+        section->applyChrome();
     updateRefreshIcon(0.0);
 
     // The "% used" toggle reads as a link.

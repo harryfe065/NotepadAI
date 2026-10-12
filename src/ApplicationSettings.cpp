@@ -40,6 +40,15 @@ ApplicationSetting<type> name{#group "/" #name, (default)}; /* NOLINT(bugprone-m
 ApplicationSettings::ApplicationSettings(QObject *parent)
     : QSettings{parent}
 {
+    // The Claude usage chip used to track one config folder; it now takes a list.
+    const QString legacyClaudeDir = QStringLiteral("Ai/UsageClaudeConfigDir");
+    if (contains(legacyClaudeDir)) {
+        const QString dir = value(legacyClaudeDir).toString().trimmed();
+        const QString dirsKey = QStringLiteral("Ai/UsageClaudeConfigDirs");
+        if (!dir.isEmpty() && !contains(dirsKey))
+            setValue(dirsKey, QStringList{dir});
+        remove(legacyClaudeDir);
+    }
 }
 
 // File-scope ApplicationSetting<T> objects and by-value QString setters are the
@@ -189,7 +198,7 @@ CREATE_SETTING(Ai, CommitMessageGenerateShortcut, commitMessageGenerateShortcut,
 
 CREATE_SETTING(Ai, SyncWorkspaceOnAiSwitch, syncWorkspaceOnAiSwitch, bool, true)
 CREATE_SETTING(Ai, UsagePercentRemaining, usagePercentRemaining, bool, false)
-CREATE_SETTING(Ai, UsageClaudeConfigDir, usageClaudeConfigDir, QString, QString())
+CREATE_SETTING(Ai, UsageClaudeConfigDirs, usageClaudeConfigDirs, QStringList, QStringList())
 // NOLINTEND(bugprone-throwing-static-initialization,performance-unnecessary-value-param)
 
 // --- AI / ACP agent settings ---------------------------------------------------

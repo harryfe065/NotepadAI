@@ -574,6 +574,8 @@ qt_add_executable(NotepadAI
 	ai/CredentialStore_Common.cpp
 	ai/ClaudeUsage.cpp
 	ai/ClaudeUsage.h
+	ai/ClaudeUsageAccounts.cpp
+	ai/ClaudeUsageAccounts.h
 	ai/ClaudeUsageService.cpp
 	ai/ClaudeUsageService.h
 	ai/IAnthropicMessagesClient.h

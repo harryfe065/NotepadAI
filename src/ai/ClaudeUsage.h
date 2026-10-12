@@ -6,6 +6,7 @@
 #include <QJsonValue>
 #include <QLocale>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <optional>
@@ -59,6 +60,22 @@ QString parseCredentialsJson(const QByteArray &raw);
 
 // `$CLAUDE_CONFIG_DIR/.credentials.json`, else `<home>/.claude/.credentials.json`.
 QString credentialsPath(const QString &configDirEnv, const QString &homeDir);
+
+// Where Claude Code keeps the signed-in profile: `<configDir>/.claude.json`,
+// else `<home>/.claude.json` (beside, not inside, the default ~/.claude).
+QString accountJsonPath(const QString &configDirEnv, const QString &homeDir);
+
+// `{"oauthAccount":{"emailAddress":"..."}}` -> trimmed address, empty when absent.
+QString parseAccountEmail(const QByteArray &raw);
+
+// Name of the config folder itself (".claude-sub"); the account label when no
+// email is known.
+QString configFolderLabel(const QString &configDirEnv, const QString &homeDir);
+
+// The configured folder list as account keys: trimmed, '/'-separated, cleaned,
+// empties and duplicates (case-insensitive on Windows) dropped, order kept.
+// An empty result means one account in the default folder: `{QString()}`.
+QStringList normalizeConfigDirs(const QStringList &dirs);
 
 Usage parseUsage(const QJsonObject &body);
 

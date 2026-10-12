@@ -37,6 +37,7 @@
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QSignalBlocker>
@@ -402,27 +403,67 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
         ui->spinBoxTerminalMemoryLimit->setValue(settings->terminalChildMemoryLimitGb());
     });
 
-    // --- Claude usage config folder --------------------------------------------
+    // --- Claude usage config folders -------------------------------------------
 
-    ui->lineEditClaudeConfigDir->setText(QDir::toNativeSeparators(settings->usageClaudeConfigDir()));
-    connect(ui->lineEditClaudeConfigDir, &QLineEdit::textChanged, this, [=](const QString &) {
+    ui->labelClaudeConfigDirsHint->setForegroundRole(QPalette::PlaceholderText);
+    auto fillClaudeConfigDirs = [this](const QStringList &dirs) {
+        ui->listClaudeConfigDirs->clear();
+        for (const QString &dir : dirs) {
+            auto *item = new QListWidgetItem(QDir::toNativeSeparators(dir), ui->listClaudeConfigDirs);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+        }
+    };
+    auto claudeConfigDirsFromUi = [this]() {
+        QStringList dirs;
+        for (int i = 0; i < ui->listClaudeConfigDirs->count(); ++i) {
+            const QString dir = ui->listClaudeConfigDirs->item(i)->text().trimmed();
+            if (!dir.isEmpty())
+                dirs.append(QDir::fromNativeSeparators(dir));
+        }
+        return dirs;
+    };
+    fillClaudeConfigDirs(settings->usageClaudeConfigDirs());
+    ui->btnRemoveClaudeConfigDir->setEnabled(false);
+    connect(ui->listClaudeConfigDirs, &QListWidget::itemSelectionChanged, this, [this]() {
+        ui->btnRemoveClaudeConfigDir->setEnabled(!ui->listClaudeConfigDirs->selectedItems().isEmpty());
+    });
+    connect(ui->listClaudeConfigDirs, &QListWidget::itemChanged, this, [=](QListWidgetItem *) {
         m_pending.markDirty();
     });
-    connect(ui->btnBrowseClaudeConfigDir, &QToolButton::clicked, this, [this]() {
-        const QString dir = QFileDialog::getExistingDirectory(
-            this, tr("Claude Config Folder"), ui->lineEditClaudeConfigDir->text());
-        if (!dir.isEmpty())
-            ui->lineEditClaudeConfigDir->setText(QDir::toNativeSeparators(dir));
+    connect(ui->listClaudeConfigDirs->model(), &QAbstractItemModel::rowsMoved, this, [=]() {
+        m_pending.markDirty();
+    });
+    connect(ui->btnAddClaudeConfigDir, &QPushButton::clicked, this, [=]() {
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("Claude Config Folder"), QDir::homePath());
+        if (dir.isEmpty())
+            return;
+        const QString native = QDir::toNativeSeparators(dir);
+        const QList<QListWidgetItem *> existing = ui->listClaudeConfigDirs->findItems(native, Qt::MatchFixedString);
+        if (!existing.isEmpty()) {
+            ui->listClaudeConfigDirs->setCurrentItem(existing.first());
+            return;
+        }
+        auto *item = new QListWidgetItem(native, ui->listClaudeConfigDirs);
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        ui->listClaudeConfigDirs->setCurrentItem(item);
+        m_pending.markDirty();
+    });
+    connect(ui->btnRemoveClaudeConfigDir, &QPushButton::clicked, this, [=]() {
+        const QList<QListWidgetItem *> selected = ui->listClaudeConfigDirs->selectedItems();
+        if (selected.isEmpty())
+            return;
+        qDeleteAll(selected);
+        m_pending.markDirty();
     });
     m_pending.addApply([=]() {
-        // The setter always emits, and a change drops the usage snapshot: skip no-ops.
-        const QString dir = QDir::fromNativeSeparators(ui->lineEditClaudeConfigDir->text().trimmed());
-        if (dir != settings->usageClaudeConfigDir())
-            settings->setUsageClaudeConfigDir(dir);
+        // The setter always emits; an unchanged list keeps every account as is anyway.
+        const QStringList dirs = claudeConfigDirsFromUi();
+        if (dirs != settings->usageClaudeConfigDirs())
+            settings->setUsageClaudeConfigDirs(dirs);
     });
     m_pending.addRevert([=]() {
-        QSignalBlocker blocker(ui->lineEditClaudeConfigDir);
-        ui->lineEditClaudeConfigDir->setText(QDir::toNativeSeparators(settings->usageClaudeConfigDir()));
+        QSignalBlocker blocker(ui->listClaudeConfigDirs);
+        fillClaudeConfigDirs(settings->usageClaudeConfigDirs());
     });
 
     // --- Data Directory section ------------------------------------------------

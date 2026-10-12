@@ -393,35 +393,87 @@
          </property>
          <layout class="QFormLayout" name="formLayoutClaudeUsage">
           <item row="0" column="0">
-           <widget class="QLabel" name="labelClaudeConfigDir">
+           <widget class="QLabel" name="labelClaudeConfigDirs">
             <property name="text">
-             <string>Config folder</string>
+             <string>Config folders</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
             </property>
             <property name="toolTip">
-             <string>Folder holding .credentials.json for the usage indicator. Leave empty for $CLAUDE_CONFIG_DIR or ~/.claude.</string>
+             <string>Folders holding .credentials.json for the usage indicator, one Claude account each. Leave empty for $CLAUDE_CONFIG_DIR or ~/.claude.</string>
             </property>
            </widget>
           </item>
           <item row="0" column="1">
-           <layout class="QHBoxLayout" name="layoutClaudeConfigDir">
+           <layout class="QHBoxLayout" name="layoutClaudeConfigDirs">
             <item>
-             <widget class="QLineEdit" name="lineEditClaudeConfigDir">
-              <property name="placeholderText">
-               <string>Default (~/.claude)</string>
+             <widget class="QListWidget" name="listClaudeConfigDirs">
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>110</height>
+               </size>
               </property>
-              <property name="clearButtonEnabled">
-               <bool>true</bool>
+              <property name="toolTip">
+               <string>Double-click to edit a path. Drag to reorder.</string>
+              </property>
+              <property name="editTriggers">
+               <set>QAbstractItemView::DoubleClicked|QAbstractItemView::EditKeyPressed</set>
+              </property>
+              <property name="dragDropMode">
+               <enum>QAbstractItemView::InternalMove</enum>
+              </property>
+              <property name="defaultDropAction">
+               <enum>Qt::MoveAction</enum>
+              </property>
+              <property name="selectionMode">
+               <enum>QAbstractItemView::ExtendedSelection</enum>
               </property>
              </widget>
             </item>
             <item>
-             <widget class="QToolButton" name="btnBrowseClaudeConfigDir">
-              <property name="text">
-               <string>...</string>
-              </property>
-             </widget>
+             <layout class="QVBoxLayout" name="layoutClaudeConfigDirButtons">
+              <item>
+               <widget class="QPushButton" name="btnAddClaudeConfigDir">
+                <property name="text">
+                 <string>Add...</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="btnRemoveClaudeConfigDir">
+                <property name="text">
+                 <string>Remove</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="spacerClaudeConfigDirButtons">
+                <property name="orientation">
+                 <enum>Qt::Vertical</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>0</width>
+                  <height>0</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
             </item>
            </layout>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLabel" name="labelClaudeConfigDirsHint">
+            <property name="text">
+             <string>One account per folder. Empty uses $CLAUDE_CONFIG_DIR or ~/.claude.</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>

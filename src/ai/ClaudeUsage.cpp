@@ -126,6 +126,49 @@ QString credentialsPath(const QString &configDirEnv, const QString &homeDir)
     return QDir::cleanPath(base + QStringLiteral("/.credentials.json"));
 }
 
+QString accountJsonPath(const QString &configDirEnv, const QString &homeDir)
+{
+    return QDir::cleanPath((configDirEnv.isEmpty() ? homeDir : configDirEnv) + QStringLiteral("/.claude.json"));
+}
+
+QString parseAccountEmail(const QByteArray &raw)
+{
+    const QJsonValue email = QJsonDocument::fromJson(raw).object()
+                                 .value(QLatin1String("oauthAccount")).toObject()
+                                 .value(QLatin1String("emailAddress"));
+    return email.isString() ? email.toString().trimmed() : QString();
+}
+
+QString configFolderLabel(const QString &configDirEnv, const QString &homeDir)
+{
+    const QString base = configDirEnv.isEmpty() ? homeDir + QStringLiteral("/.claude") : configDirEnv;
+    const QString cleaned = QDir::cleanPath(base);
+    const QString name = QDir(cleaned).dirName();
+    return name.isEmpty() ? cleaned : name;   // a drive root has no name
+}
+
+QStringList normalizeConfigDirs(const QStringList &dirs)
+{
+#ifdef Q_OS_WIN
+    constexpr Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+    constexpr Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+    QStringList out;
+    out.reserve(dirs.size());
+    for (const QString &raw : dirs) {
+        const QString trimmed = raw.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        const QString dir = QDir::cleanPath(QDir::fromNativeSeparators(trimmed));
+        if (!out.contains(dir, cs))
+            out.append(dir);
+    }
+    if (out.isEmpty())
+        out.append(QString());
+    return out;
+}
+
 Usage parseUsage(const QJsonObject &body)
 {
     Usage u;

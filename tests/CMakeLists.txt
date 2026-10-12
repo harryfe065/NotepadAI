@@ -923,6 +923,8 @@ target_link_libraries(test_claude_usage PRIVATE Qt6::Core Qt6::Gui Qt6::Network 
 target_sources(test_claude_usage PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsage.cpp
     ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsage.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsageAccounts.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsageAccounts.h
     ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsageService.cpp
     ${CMAKE_SOURCE_DIR}/src/ai/ClaudeUsageService.h
 )

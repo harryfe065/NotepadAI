@@ -1,12 +1,16 @@
 #include "UsageButton.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QEvent>
 #include <QMenuBar>
 #include <QResizeEvent>
 
+#include <algorithm>
+
 #include "UsagePopover.h"
 #include "UsageStyle.h"
+#include "ai/ClaudeUsageAccounts.h"
 #include "ai/ClaudeUsageService.h"
 
 using namespace ai::claudeusage;
@@ -17,9 +21,9 @@ constexpr int kDismissClickGuardMs = 250;
 constexpr int kHoverRefreshDelayMs = 300;   // a pass-over must not hit the network
 } // namespace
 
-UsageButton::UsageButton(ai::ClaudeUsageService *service, QWidget *parent)
+UsageButton::UsageButton(ai::ClaudeUsageAccounts *accounts, QWidget *parent)
     : QToolButton(parent)
-    , m_service(service)
+    , m_accounts(accounts)
     , m_popover(new UsagePopover(this))
 {
     setAutoRaise(true);
@@ -31,12 +35,12 @@ UsageButton::UsageButton(ai::ClaudeUsageService *service, QWidget *parent)
 
     m_hoverTimer.setSingleShot(true);
     m_hoverTimer.setInterval(kHoverRefreshDelayMs);
-    connect(&m_hoverTimer, &QTimer::timeout, this, [this] { m_service->refresh(); });
+    connect(&m_hoverTimer, &QTimer::timeout, this, [this] { m_accounts->refresh(); });
 
     connect(this, &QToolButton::clicked, this, &UsageButton::togglePopover);
-    connect(m_service, &ai::ClaudeUsageService::changed, this, &UsageButton::onServiceChanged);
+    connect(m_accounts, &ai::ClaudeUsageAccounts::changed, this, &UsageButton::onServiceChanged);
     connect(m_popover, &UsagePopover::closed, this, [this] { m_lastClosed.start(); });
-    connect(m_popover, &UsagePopover::refreshRequested, this, [this] { m_service->refresh(true); });
+    connect(m_popover, &UsagePopover::refreshRequested, this, [this] { m_accounts->refresh(true); });
     connect(m_popover, &UsagePopover::percentModeToggleRequested, this, [this] {
         const PercentMode next = m_mode == PercentMode::Used ? PercentMode::Remaining : PercentMode::Used;
         setPercentMode(next);
@@ -58,23 +62,35 @@ void UsageButton::setPercentMode(PercentMode mode)
 
 void UsageButton::onServiceChanged()
 {
-    const bool show = m_service->buttonVisible();
+    const bool show = m_accounts->buttonVisible();
     const bool wasVisible = !isHidden();
     const QString oldText = text();
 
-    const auto headline = m_service->headline();
-    if (headline) {
+    const auto &accounts = m_accounts->accounts();
+    const bool several = accounts.size() > 1;
+    QStringList percents;
+    QStringList tips;
+    Tone tone = Tone::Ok;
+    for (const ai::ClaudeUsageService *account : accounts) {
+        const auto headline = account->headline();
+        if (!account->buttonVisible() || !headline)
+            continue;
         const double used = headline->window.usedPercent;
-        setText(QStringLiteral("%1%").arg(displayPercent(used, m_mode)));
-        const QString stale = m_service->health().error.isEmpty() ? QString() : tr(" (stale)");
-        setToolTip(tr("Usage: Claude %1 %2%3").arg(headline->label, percentText(used, m_mode), stale));
-        setAccessibleName(toolTip());
-        applyTone(toneFor(used));
-    } else {
-        setText(QString());
-        setToolTip(tr("Usage"));
-        applyTone(Tone::Ok);
+        percents.append(QStringLiteral("%1%").arg(displayPercent(used, m_mode)));
+        const QString stale = account->health().error.isEmpty() ? QString() : tr(" (stale)");
+        tips.append(several ? tr("%1: %2 %3%4").arg(account->accountLabel(), headline->label,
+                                                     percentText(used, m_mode), stale)
+                            : tr("Usage: Claude %1 %2%3").arg(headline->label, percentText(used, m_mode), stale));
+        tone = std::max(tone, toneFor(used));
     }
+
+    setText(percents.join(QStringLiteral(" · ")));
+    if (tips.isEmpty())
+        setToolTip(tr("Usage"));
+    else
+        setToolTip(several ? tr("Usage: Claude") + QLatin1Char('\n') + tips.join(QLatin1Char('\n')) : tips.first());
+    setAccessibleName(toolTip());
+    applyTone(tone);
     setVisible(show);
 
     if (show != wasVisible || text() != oldText)
@@ -100,8 +116,15 @@ void UsageButton::relayoutMenuBar()
 
 void UsageButton::pushDataToPopover()
 {
-    m_popover->setData(m_service->usage(), m_service->health(), m_service->loaded(), m_service->loading(),
-                       m_service->nowMs());
+    QVector<UsagePopover::Account> data;
+    data.reserve(m_accounts->accounts().size());
+    for (const ai::ClaudeUsageService *account : m_accounts->accounts()) {
+        data.append(UsagePopover::Account{account->accountLabel(),
+                                          QDir::toNativeSeparators(account->resolvedConfigDir()),
+                                          account->usage(), account->health(), account->loaded(),
+                                          account->loading(), account->nowMs()});
+    }
+    m_popover->setData(std::move(data));
 }
 
 void UsageButton::togglePopover()
@@ -113,7 +136,7 @@ void UsageButton::togglePopover()
         return;
 
     pushDataToPopover();
-    m_service->refresh();
+    m_accounts->refresh();
     m_popover->showBelow(this);
 }
 

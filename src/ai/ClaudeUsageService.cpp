@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -15,6 +16,8 @@ namespace ai {
 
 namespace {
 constexpr qint64 kMaxCredentialsBytes = 1 << 20;
+// `.claude.json` carries the project history too; past this it is not parsed.
+constexpr qint64 kMaxAccountFileBytes = 16 << 20;
 constexpr int kTransferTimeoutMs = 10'000;
 } // namespace
 
@@ -86,16 +89,20 @@ QUrl ClaudeUsageService::usageUrl()
 }
 
 ClaudeUsageService::ClaudeUsageService(IClaudeUsageTransport *transport,
-                                       const QString &credentialsFile,
+                                       const QString &configDir,
                                        QObject *parent)
     : QObject(parent)
     , m_transport(transport)
-    , m_credentialsFile(credentialsFile.isEmpty()
-                            ? claudeusage::credentialsPath(qEnvironmentVariable("CLAUDE_CONFIG_DIR"), QDir::homePath())
-                            : credentialsFile)
+    , m_configDir(configDir)
     , m_clock([] { return QDateTime::currentMSecsSinceEpoch(); })
     , m_jitter([] { return QRandomGenerator::global()->generateDouble(); })
 {
+    const QString dir = configDir.isEmpty() ? qEnvironmentVariable("CLAUDE_CONFIG_DIR") : configDir;
+    const QString home = QDir::homePath();
+    m_credentialsFile = claudeusage::credentialsPath(dir, home);
+    m_accountFile = claudeusage::accountJsonPath(dir, home);
+    m_folderLabel = claudeusage::configFolderLabel(dir, home);
+
     connect(m_transport, &IClaudeUsageTransport::finished, this, &ClaudeUsageService::onResponse);
     connect(m_transport, &IClaudeUsageTransport::failed, this, &ClaudeUsageService::onTransportFailed);
 
@@ -113,6 +120,11 @@ ClaudeUsageService::ClaudeUsageService(IClaudeUsageTransport *transport,
         if (QGuiApplication::applicationState() == Qt::ApplicationActive)
             refresh();
     });
+}
+
+QString ClaudeUsageService::resolvedConfigDir() const
+{
+    return QFileInfo(m_credentialsFile).path();
 }
 
 bool ClaudeUsageService::buttonVisible() const
@@ -138,6 +150,7 @@ void ClaudeUsageService::refresh(bool force)
         return;
 
     m_inflight = true;
+    readAccountEmail();
     emit changed();   // spinner on
 
     QString token;
@@ -151,18 +164,26 @@ void ClaudeUsageService::refresh(bool force)
         readKeychainAsync();
 }
 
-void ClaudeUsageService::setConfigDir(const QString &dir)
+void ClaudeUsageService::readAccountEmail()
 {
-    m_credentialsFile = claudeusage::credentialsPath(
-        dir.isEmpty() ? qEnvironmentVariable("CLAUDE_CONFIG_DIR") : dir, QDir::homePath());
+    const QFileInfo info(m_accountFile);
+    if (!info.exists()) {
+        m_email.clear();
+        m_accountFileMtimeMs = m_accountFileSize = -1;
+        return;
+    }
+    const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
+    const qint64 size = info.size();
+    if (mtime == m_accountFileMtimeMs && size == m_accountFileSize)
+        return;
+    m_accountFileMtimeMs = mtime;
+    m_accountFileSize = size;
 
-    m_transport->cancel();
-    m_inflight = false;
-    m_usage = {};
-    m_health = {};
-    m_loaded = false;
-    m_lastCompletedMs = 0;
-    refresh(true);
+    QFile f(m_accountFile);
+    if (size <= kMaxAccountFileBytes && f.open(QIODevice::ReadOnly))
+        m_email = claudeusage::parseAccountEmail(f.readAll());
+    else
+        m_email.clear();
 }
 
 void ClaudeUsageService::sendWithToken(const QString &token)

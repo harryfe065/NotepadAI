@@ -6,15 +6,15 @@
 
 #include "ai/ClaudeUsage.h"
 
-class QLabel;
 class QTimer;
 class QToolButton;
 class QVariantAnimation;
 class QVBoxLayout;
-class UsageWindowBar;
+class UsageAccountSection;
 
 // Frameless popup anchored under the usage button: header ("Usage", % used/left
-// toggle, refresh), then the Claude section with one UsageWindowBar per window.
+// toggle, refresh), then one Claude section per account, each with one
+// UsageWindowBar per window.
 class UsagePopover : public QFrame
 {
     Q_OBJECT
@@ -22,10 +22,20 @@ class UsagePopover : public QFrame
 public:
     static constexpr int kWidth = 320;
 
+    // Snapshot of one account, copied out of its ClaudeUsageService.
+    struct Account {
+        QString label;          // email, else the config folder name
+        QString configDir;      // resolved folder, for the tooltip
+        ai::claudeusage::Usage usage;
+        ai::claudeusage::Health health;
+        bool loaded = false;
+        bool loading = false;
+        qint64 nowMs = 0;
+    };
+
     explicit UsagePopover(QWidget *parent = nullptr);
 
-    void setData(const ai::claudeusage::Usage &usage, const ai::claudeusage::Health &health,
-                 bool loaded, bool loading, qint64 nowMs);
+    void setData(QVector<Account> accounts);
     void setPercentMode(ai::claudeusage::PercentMode mode);
     // Right edge aligned to the anchor's right edge, 6px below it, kept on screen.
     void showBelow(QWidget *anchor);
@@ -46,21 +56,17 @@ private:
     void updateRefreshIcon(qreal angle);
     void setSpinning(bool on);
 
-    QLabel *m_providerIcon = nullptr;
-    QLabel *m_hint = nullptr;
     QToolButton *m_modeButton = nullptr;
     QToolButton *m_refreshButton = nullptr;
-    QVBoxLayout *m_body = nullptr;
+    QVBoxLayout *m_sectionsLayout = nullptr;
     QVariantAnimation *m_spin = nullptr;
     QTimer *m_staleTimer = nullptr;   // keeps "Updated 3m ago / Retry in 4m" current while open
-    QVector<UsageWindowBar *> m_bars;
+    // Section i sits under divider i (divider 0 is hidden: the header already has one).
+    QVector<UsageAccountSection *> m_sections;
+    QVector<QWidget *> m_dividers;
 
-    ai::claudeusage::Usage m_usage;
-    ai::claudeusage::Health m_health;
+    QVector<Account> m_accounts;
     ai::claudeusage::PercentMode m_mode = ai::claudeusage::PercentMode::Used;
-    qint64 m_nowMs = 0;
-    bool m_loaded = false;
-    bool m_loading = false;
 };
 
 #endif // USAGE_POPOVER_H

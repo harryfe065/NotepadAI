@@ -10,10 +10,12 @@
 #include <QDateTime>
 #include <QFile>
 #include <QJsonDocument>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
 #include "ai/ClaudeUsage.h"
+#include "ai/ClaudeUsageAccounts.h"
 #include "ai/ClaudeUsageService.h"
 
 using namespace ai;
@@ -60,6 +62,9 @@ private slots:
     void timestamp_rejects_garbage();
     void credentials_token_extraction();
     void credentials_path_env_then_home();
+    void account_json_path_and_email();
+    void config_folder_label();
+    void normalize_config_dirs();
     void parse_maps_session_weekly_and_scoped_fable();
     void parse_clamps_and_accepts_used_percentage_alias();
     void parse_fable_fallback_keys();
@@ -101,9 +106,15 @@ private slots:
     void service_signed_out_replaces_snapshot();
     void service_min_gap_is_one_minute();
     void service_custom_config_dir_reads_that_dirs_token();
-    void service_config_dir_change_drops_old_snapshot_and_refetches();
-    void service_config_dir_change_clears_cooldown();
     void service_empty_config_dir_without_credentials_is_signed_out();
+    void service_account_label_prefers_email_then_folder();
+
+    void accounts_each_folder_uses_its_own_token();
+    void accounts_cooldown_is_per_account();
+    void accounts_kept_folder_keeps_snapshot_and_removed_is_dropped();
+    void accounts_same_list_is_a_no_op();
+    void accounts_new_folder_fetches_once_polling();
+    void accounts_visibility_and_loading_are_any();
 };
 
 void TestClaudeUsage::timestamp_forms()
@@ -148,6 +159,40 @@ void TestClaudeUsage::credentials_path_env_then_home()
              QStringLiteral("C:/cfg/.credentials.json"));
     QCOMPARE(credentialsPath(QString(), QStringLiteral("C:/home")),
              QStringLiteral("C:/home/.claude/.credentials.json"));
+}
+
+void TestClaudeUsage::account_json_path_and_email()
+{
+    // A custom folder keeps .claude.json inside; the default keeps it beside ~/.claude.
+    QCOMPARE(accountJsonPath(QStringLiteral("C:/cfg"), QStringLiteral("C:/home")),
+             QStringLiteral("C:/cfg/.claude.json"));
+    QCOMPARE(accountJsonPath(QString(), QStringLiteral("C:/home")), QStringLiteral("C:/home/.claude.json"));
+
+    QCOMPARE(parseAccountEmail(R"({"projects":{},"oauthAccount":{"emailAddress":" a@b.c ","displayName":"A"}})"),
+             QStringLiteral("a@b.c"));
+    QVERIFY(parseAccountEmail("{}").isEmpty());
+    QVERIFY(parseAccountEmail("not json").isEmpty());
+    QVERIFY(parseAccountEmail(R"({"oauthAccount":{"emailAddress":7}})").isEmpty());
+}
+
+void TestClaudeUsage::config_folder_label()
+{
+    QCOMPARE(configFolderLabel(QStringLiteral("C:/Users/x/.claude-sub/"), QStringLiteral("C:/home")),
+             QStringLiteral(".claude-sub"));
+    QCOMPARE(configFolderLabel(QString(), QStringLiteral("C:/home")), QStringLiteral(".claude"));
+}
+
+void TestClaudeUsage::normalize_config_dirs()
+{
+    QCOMPARE(normalizeConfigDirs({}), QStringList{QString()});
+    QCOMPARE(normalizeConfigDirs({QStringLiteral("  "), QString()}), QStringList{QString()});
+    QCOMPARE(normalizeConfigDirs({QStringLiteral(" C:/u/.claude-sub/ "), QStringLiteral("C:/u/.claude-1"),
+                                  QStringLiteral("C:/u/./.claude-sub")}),
+             (QStringList{QStringLiteral("C:/u/.claude-sub"), QStringLiteral("C:/u/.claude-1")}));
+#ifdef Q_OS_WIN
+    QCOMPARE(normalizeConfigDirs({QStringLiteral("C:\\u\\a"), QStringLiteral("c:/U/A")}),
+             QStringList{QStringLiteral("C:/u/a")});
+#endif
 }
 
 void TestClaudeUsage::parse_maps_session_weekly_and_scoped_fable()
@@ -427,7 +472,7 @@ struct ServiceFixture {
             QVERIFY(f.open(QIODevice::WriteOnly));
             f.write(R"({"claudeAiOauth":{"accessToken":"secret-token"}})");
         }
-        service = new ClaudeUsageService(&transport, path, &transport);
+        service = new ClaudeUsageService(&transport, dir.path(), &transport);
         service->setClock([this] { return clock; });
         service->setJitter([] { return 0.5; });   // factor exactly 1.0: delays are the plain base
     }
@@ -750,59 +795,181 @@ struct OtherConfigDir {
 
 void TestClaudeUsage::service_custom_config_dir_reads_that_dirs_token()
 {
-    ServiceFixture fx;
+    FakeTransport transport;
     OtherConfigDir other("sub-token");
+    auto *service = new ClaudeUsageService(&transport, other.path(), &transport);
 
-    fx.service->setConfigDir(other.path());
+    service->refresh();
 
-    QCOMPARE(fx.transport.requests.size(), 1);
-    QCOMPARE(fx.transport.requests[0].token, QStringLiteral("sub-token"));   // not "secret-token"
-}
-
-void TestClaudeUsage::service_config_dir_change_drops_old_snapshot_and_refetches()
-{
-    ServiceFixture fx;
-    OtherConfigDir other("sub-token");
-    primeWithGoodSnapshot(fx);
-
-    fx.service->setConfigDir(other.path());
-
-    // Another account: the old numbers must not linger, even stale.
-    QVERIFY(!fx.service->loaded());
-    QVERIFY(!fx.service->buttonVisible());
-    QVERIFY(fx.service->loading());
-    QCOMPARE(fx.transport.requests.size(), 2);
-
-    fx.transport.reply(200, R"({"five_hour":{"utilization":70.0}})");
-    QCOMPARE(fx.service->usage().session->usedPercent, 70.0);
-    QVERIFY(fx.service->health().error.isEmpty());
-}
-
-void TestClaudeUsage::service_config_dir_change_clears_cooldown()
-{
-    ServiceFixture fx;
-    OtherConfigDir other("sub-token");
-    primeWithGoodSnapshot(fx);
-    fx.service->refresh();
-    fx.transport.reply(429, "{}");
-    QVERIFY(fx.service->health().retryAtMs > fx.clock);
-
-    fx.service->setConfigDir(other.path());   // same instant, still inside the cooldown
-
-    QCOMPARE(fx.transport.requests.size(), 3);
-    QCOMPARE(fx.service->health().failures, 0);
+    QCOMPARE(transport.requests.size(), 1);
+    QCOMPARE(transport.requests[0].token, QStringLiteral("sub-token"));
+    QCOMPARE(service->configDir(), other.path());
 }
 
 void TestClaudeUsage::service_empty_config_dir_without_credentials_is_signed_out()
 {
+    FakeTransport transport;
+    QTemporaryDir empty;   // folder exists but holds no credentials
+    auto *service = new ClaudeUsageService(&transport, empty.path(), &transport);
+
+    service->refresh();
+
+    QCOMPARE(transport.requests.size(), 0);
+    QCOMPARE(service->usage().status, Status::Unavailable);
+    QVERIFY(!service->buttonVisible());
+}
+
+void TestClaudeUsage::service_account_label_prefers_email_then_folder()
+{
     ServiceFixture fx;
-    QTemporaryDir empty;
+    QCOMPARE(fx.service->accountLabel(), QDir(fx.dir.path()).dirName());   // nothing read yet
 
-    fx.service->setConfigDir(empty.path());   // folder exists but holds no credentials
+    QFile f(fx.dir.filePath(QStringLiteral(".claude.json")));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(R"({"projects":{},"oauthAccount":{"emailAddress":"me@example.com"}})");
+    f.close();
 
-    QCOMPARE(fx.transport.requests.size(), 0);
-    QCOMPARE(fx.service->usage().status, Status::Unavailable);
-    QVERIFY(!fx.service->buttonVisible());
+    fx.service->refresh();
+    QCOMPARE(fx.service->accountLabel(), QStringLiteral("me@example.com"));
+    fx.transport.reply(200, kBody);
+
+    // Signed out of that folder: back to the folder name.
+    QVERIFY(QFile::remove(f.fileName()));
+    fx.clock += ClaudeUsageService::kMinRefreshGapMs;
+    fx.service->refresh();
+    QCOMPARE(fx.service->accountLabel(), QDir(fx.dir.path()).dirName());
+}
+
+// ------------------------------------------------------------- accounts
+
+namespace {
+
+// Every account gets its own FakeTransport, owned by that account's service.
+struct AccountsFixture {
+    int transportsMade = 0;
+    ClaudeUsageAccounts accounts{[this] {
+        ++transportsMade;
+        return new FakeTransport;
+    }};
+    qint64 clock = 1'000'000;
+
+    AccountsFixture() { accounts.setClock([this] { return clock; }); }
+
+    ClaudeUsageService *at(int i) const { return accounts.accounts().at(i); }
+    FakeTransport *transportOf(int i) const
+    {
+        return static_cast<FakeTransport *>(at(i)->findChild<IClaudeUsageTransport *>());
+    }
+};
+
+} // namespace
+
+void TestClaudeUsage::accounts_each_folder_uses_its_own_token()
+{
+    OtherConfigDir a("token-a");
+    OtherConfigDir b("token-b");
+    AccountsFixture fx;
+    fx.accounts.setConfigDirs({a.path(), b.path()});
+    QCOMPARE(fx.accounts.accounts().size(), 2);
+
+    fx.accounts.refresh();
+    QCOMPARE(fx.transportOf(0)->requests.size(), 1);
+    QCOMPARE(fx.transportOf(0)->requests[0].token, QStringLiteral("token-a"));
+    QCOMPARE(fx.transportOf(1)->requests.size(), 1);
+    QCOMPARE(fx.transportOf(1)->requests[0].token, QStringLiteral("token-b"));
+
+    fx.transportOf(0)->reply(200, R"({"five_hour":{"utilization":10.0}})");
+    fx.transportOf(1)->reply(200, R"({"five_hour":{"utilization":90.0}})");
+    QCOMPARE(fx.at(0)->usage().session->usedPercent, 10.0);
+    QCOMPARE(fx.at(1)->usage().session->usedPercent, 90.0);
+}
+
+void TestClaudeUsage::accounts_cooldown_is_per_account()
+{
+    OtherConfigDir a("token-a");
+    OtherConfigDir b("token-b");
+    AccountsFixture fx;
+    fx.accounts.setConfigDirs({a.path(), b.path()});
+    fx.accounts.refresh();
+    fx.transportOf(0)->reply(429, "{}", 10 * kMin);   // A is rate limited for 10 min
+    fx.transportOf(1)->reply(200, kBody);
+
+    fx.clock += ClaudeUsageService::kMinRefreshGapMs;
+    fx.accounts.refresh(true);
+    QCOMPARE(fx.transportOf(0)->requests.size(), 1);   // still cooling down
+    QCOMPARE(fx.transportOf(1)->requests.size(), 2);   // unaffected
+}
+
+void TestClaudeUsage::accounts_kept_folder_keeps_snapshot_and_removed_is_dropped()
+{
+    OtherConfigDir a("token-a");
+    OtherConfigDir b("token-b");
+    OtherConfigDir c("token-c");
+    AccountsFixture fx;
+    fx.accounts.setConfigDirs({a.path(), b.path()});
+    fx.accounts.refresh();
+    fx.transportOf(0)->reply(200, R"({"five_hour":{"utilization":10.0}})");
+    fx.transportOf(1)->reply(200, R"({"five_hour":{"utilization":90.0}})");
+    ClaudeUsageService *keptB = fx.at(1);
+    QPointer<ClaudeUsageService> droppedA = fx.at(0);
+
+    QSignalSpy changed(&fx.accounts, &ClaudeUsageAccounts::changed);
+    fx.accounts.setConfigDirs({b.path(), c.path()});
+    QCOMPARE(changed.count(), 1);
+
+    QCOMPARE(fx.accounts.accounts().size(), 2);
+    QCOMPARE(fx.at(0), keptB);                                // same service, moved first
+    QCOMPARE(fx.at(0)->usage().session->usedPercent, 90.0);   // its snapshot survived
+    QVERIFY(!fx.at(1)->loaded());                             // C is new
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QVERIFY(droppedA.isNull());
+}
+
+void TestClaudeUsage::accounts_same_list_is_a_no_op()
+{
+    OtherConfigDir a("token-a");
+    AccountsFixture fx;
+    fx.accounts.setConfigDirs({a.path()});
+    ClaudeUsageService *first = fx.at(0);
+
+    QSignalSpy changed(&fx.accounts, &ClaudeUsageAccounts::changed);
+    // Native separators, a trailing slash and a duplicate all name the same folder.
+    fx.accounts.setConfigDirs({QDir::toNativeSeparators(a.path()) + QDir::separator(), a.path()});
+    QCOMPARE(changed.count(), 0);
+    QCOMPARE(fx.at(0), first);
+    QCOMPARE(fx.transportsMade, 1);
+}
+
+void TestClaudeUsage::accounts_new_folder_fetches_once_polling()
+{
+    OtherConfigDir a("token-a");
+    OtherConfigDir b("token-b");
+    AccountsFixture fx;
+    fx.accounts.setConfigDirs({a.path()});
+    QCOMPARE(fx.transportOf(0)->requests.size(), 0);   // nothing before polling starts
+
+    fx.accounts.startPolling();
+    QCOMPARE(fx.transportOf(0)->requests.size(), 1);
+
+    fx.accounts.setConfigDirs({a.path(), b.path()});
+    QCOMPARE(fx.transportOf(0)->requests.size(), 1);   // in flight, not duplicated
+    QCOMPARE(fx.transportOf(1)->requests.size(), 1);   // the new account fetched right away
+}
+
+void TestClaudeUsage::accounts_visibility_and_loading_are_any()
+{
+    OtherConfigDir a("token-a");
+    QTemporaryDir signedOut;
+    AccountsFixture fx;
+    fx.accounts.setConfigDirs({signedOut.path(), a.path()});
+    QVERIFY(!fx.accounts.buttonVisible());
+
+    fx.accounts.refresh();
+    QVERIFY(fx.accounts.loading());              // A in flight
+    QVERIFY(!fx.at(0)->buttonVisible());         // signed out, no request made
+    fx.transportOf(1)->reply(200, kBody);
+    QVERIFY(!fx.accounts.loading());
+    QVERIFY(fx.accounts.buttonVisible());        // one signed-in account is enough
 }
 
 QTEST_GUILESS_MAIN(TestClaudeUsage)

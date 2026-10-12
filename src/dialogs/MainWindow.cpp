@@ -151,6 +151,7 @@
 
 #include "TabsQuickActionsBar.h"
 #include "UsageButton.h"
+#include "ai/ClaudeUsageAccounts.h"
 #include "ai/ClaudeUsageService.h"
 
 #include "QuickFindWidget.h"
@@ -1593,14 +1594,12 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
     cornerLayout->setContentsMargins(0, 0, 0, 0);
     cornerLayout->setSpacing(0);
 
-    const QString usageConfigDir = app->getSettings()->usageClaudeConfigDir();
-    auto *usageService = new ai::ClaudeUsageService(
-        new ai::ClaudeUsageHttpTransport(this),
-        usageConfigDir.isEmpty() ? QString() : ai::claudeusage::credentialsPath(usageConfigDir, QDir::homePath()),
-        this);
-    connect(app->getSettings(), &ApplicationSettings::usageClaudeConfigDirChanged, usageService,
-            &ai::ClaudeUsageService::setConfigDir);
-    auto *usageButton = new UsageButton(usageService, cornerHost);
+    // One usage service per configured Claude config folder (account).
+    auto *usageAccounts = new ai::ClaudeUsageAccounts([] { return new ai::ClaudeUsageHttpTransport; }, this);
+    usageAccounts->setConfigDirs(app->getSettings()->usageClaudeConfigDirs());
+    connect(app->getSettings(), &ApplicationSettings::usageClaudeConfigDirsChanged, usageAccounts,
+            &ai::ClaudeUsageAccounts::setConfigDirs);
+    auto *usageButton = new UsageButton(usageAccounts, cornerHost);
     usageButton->setPercentMode(app->getSettings()->usagePercentRemaining()
                                     ? ai::claudeusage::PercentMode::Remaining
                                     : ai::claudeusage::PercentMode::Used);
@@ -1612,11 +1611,11 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
     tabsQuickActionsBar = new TabsQuickActionsBar(cornerHost);
     cornerLayout->addWidget(tabsQuickActionsBar);
     ui->menuBar->setCornerWidget(cornerHost, Qt::TopRightCorner);
-    usageService->startPolling();
+    usageAccounts->startPolling();
     // A finished agent turn is the moment usage moved; refresh() is gated, so a
-    // swarm of turn ends still costs at most one request per minute.
+    // swarm of turn ends still costs at most one request per minute per account.
     if (AcpAgentManager *agentManager = app->getAiAgentManager())
-        connect(agentManager, &AcpAgentManager::agentTurnEnded, usageService, [usageService] { usageService->refresh(); });
+        connect(agentManager, &AcpAgentManager::agentTurnEnded, usageAccounts, [usageAccounts] { usageAccounts->refresh(); });
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::createNewTabClicked, this, [this]() { newFile(true); });
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::closeCurrentTabClicked, this, &MainWindow::closeCurrentFile);
     connect(tabsQuickActionsBar, &TabsQuickActionsBar::tabsMenuAboutToShow, this, [this](QMenu *editorsMenu) {
