@@ -7,6 +7,8 @@
 
 #include <QtTest>
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QTextBrowser>
 #include <QStringList>
@@ -20,6 +22,7 @@ class TestAcpToolCallCard : public QObject
     Q_OBJECT
 
 private slots:
+    void ask_user_card_title_names_the_questions();
     void collapsed_card_defers_body_render_until_expanded();
     void expanded_card_coalesces_running_updates();
     void diff_card_auto_expands_at_terminal_status();
@@ -97,6 +100,33 @@ QString titleOf(AcpToolCallCard &card)
 
 
 } // namespace
+
+void TestAcpToolCallCard::ask_user_card_title_names_the_questions()
+{
+    auto titleOf = [](const AcpProtocol::AcpToolCall &tc) {
+        AcpToolCallCard card(tc);
+        card.resize(800, 120); // the title elides to the label width
+        card.show();
+        QCoreApplication::processEvents();
+        QStringList texts;
+        for (const QLabel *label : card.findChildren<QLabel *>())
+            texts.append(label->text());
+        return texts.join(QLatin1Char('|'));
+    };
+    AcpProtocol::AcpToolCall tc;
+    tc.id = QStringLiteral("ask1");
+    tc.title = QStringLiteral("mcp__notepadai__ask_user");
+    tc.status = QStringLiteral("completed");
+    QJsonArray questions;
+    for (int i = 0; i < 3; ++i)
+        questions.append(QJsonObject{{QStringLiteral("title"), QStringLiteral("q")}});
+    tc.rawInput = QJsonObject{{QStringLiteral("questions"), questions}};
+    QVERIFY2(titleOf(tc).contains(QLatin1String("Asked you 3 questions")), qPrintable(titleOf(tc)));
+    QVERIFY(!titleOf(tc).contains(QLatin1String("mcp__")));
+
+    tc.rawInput.insert(QStringLiteral("title"), QStringLiteral("Round 2"));
+    QVERIFY(titleOf(tc).contains(QLatin1String("Asked you: Round 2")));
+}
 
 void TestAcpToolCallCard::collapsed_card_defers_body_render_until_expanded()
 {

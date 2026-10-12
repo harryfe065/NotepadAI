@@ -1012,6 +1012,8 @@ target_sources(test_acp_tool_call_card PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpToolCallCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpToolCallCard.h
 )
 add_test(NAME AcpToolCallCard COMMAND test_acp_tool_call_card)

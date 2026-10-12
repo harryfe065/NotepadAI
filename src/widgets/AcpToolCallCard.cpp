@@ -18,6 +18,8 @@
 
 #include "AcpToolCallCard.h"
 
+#include "AskUserForm.h"
+
 #include <QAbstractTextDocumentLayout>
 #include <QFont>
 #include <QFontMetrics>
@@ -1109,6 +1111,21 @@ QString AcpToolCallCard::statusGlyph() const
 
 QString AcpToolCallCard::computeEnrichedTitle() const
 {
+    // notepadai's ask_user: name it by what it did, not mcp__notepadai__ask_user.
+    if (AskUserForm::isAskUserToolCall(m_name, m_title, m_rawInput)) {
+        const QJsonObject askArgs = AskUserForm::askUserArguments(m_rawInput);
+        const QString formTitle = askArgs.value(QStringLiteral("title")).toString().trimmed();
+        if (!formTitle.isEmpty())
+            return tr("Asked you: %1").arg(formTitle);
+        QJsonValue questions = askArgs.value(QStringLiteral("questions"));
+        if (questions.isString())
+            questions = QJsonDocument::fromJson(questions.toString().toUtf8()).array();
+        const qsizetype count = questions.toArray().size();
+        if (count == 0)
+            return tr("Asking you");
+        return count == 1 ? tr("Asked you a question") : tr("Asked you %1 questions").arg(count);
+    }
+
     if (m_title == QLatin1String("TaskOutput")) {
         return AcpProtocol::toolCallStatusForUi(m_status) == QLatin1String("running")
             ? tr("Waiting for background jobs...")
