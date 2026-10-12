@@ -13,7 +13,10 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleValidator>
+#include <QFileInfo>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QKeyEvent>
@@ -24,6 +27,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -71,6 +76,33 @@ QColor mix(const QColor &a, const QColor &b, qreal t)
 QString css(const QColor &c)
 {
     return QStringLiteral("rgb(%1,%2,%3)").arg(c.red()).arg(c.green()).arg(c.blue());
+}
+
+// A checkmark SVG in `color` for QCheckBox::indicator:checked. Style sheets
+// cannot tint an image, so one file per colour is written to the cache dir
+// once per process (a few hundred bytes) and reused by every form.
+QString checkmarkImage(const QColor &color)
+{
+    static QHash<QRgb, QString> cache;
+    const QRgb key = color.rgb();
+    if (const auto it = cache.constFind(key); it != cache.constEnd())
+        return it.value();
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (dir.isEmpty() || !QDir().mkpath(dir))
+        dir = QDir::tempPath();
+    const QString path = dir + QStringLiteral("/ask-user-check-") + color.name().mid(1) + QStringLiteral(".svg");
+    if (!QFileInfo::exists(path)) {
+        QSaveFile file(path);
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write(QStringLiteral(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 12 12\">"
+                "<path d=\"M2.5 6.3 L5 8.8 L9.6 3.4\" fill=\"none\" stroke=\"%1\" stroke-width=\"1.9\""
+                " stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>").arg(color.name()).toUtf8());
+            file.commit();
+        }
+    }
+    cache.insert(key, path);
+    return path;
 }
 
 // One choice as a rounded, clickable row: the indicator button and the
@@ -244,14 +276,15 @@ void AskUserFormWidget::applyTheme()
         "QFrame#auOption:hover { background: %HOVER%; }"
         "QFrame#auOption[checked=\"true\"] { background: %ACCENTTINT%; border-color: %ACCENTLINE%; }"
         "QFrame#auOption QRadioButton, QFrame#auOption QCheckBox { background: transparent; spacing: 10px; }"
-        "QRadioButton::indicator, QCheckBox::indicator { width: 14px; height: 14px; background: %INPUT%;"
+        "QRadioButton::indicator, QCheckBox::indicator { width: 12px; height: 12px; background: %INPUT%;"
         " border: 2px solid %BORDERSTRONG%; }"
-        "QRadioButton::indicator { border-radius: 9px; }"
-        "QCheckBox::indicator { border-radius: 4px; }"
+        "QRadioButton::indicator { border-radius: 8px; }"
+        "QCheckBox::indicator { border-radius: 3px; }"
         "QRadioButton::indicator:hover, QCheckBox::indicator:hover { border-color: %ACCENT%; }"
         "QRadioButton::indicator:checked { background: %ONACCENT%; border: 5px solid %ACCENT%;"
-        " width: 8px; height: 8px; }"
-        "QCheckBox::indicator:checked { background: %ACCENT%; border-color: %ACCENT%; }"
+        " width: 6px; height: 6px; }"
+        "QCheckBox::indicator:checked { background: %ACCENT%; border-color: %ACCENT%;"
+        " image: url(\"%CHECKMARK%\"); }"
         "QPushButton#auSeg { background: transparent; color: %TEXT%; border: 1px solid %BORDER%;"
         " border-radius: 6px; padding: 5px 16px; }"
         "QPushButton#auSeg:hover { background: %HOVER%; }"
@@ -279,6 +312,7 @@ void AskUserFormWidget::applyTheme()
     };
     for (const auto &[key, color] : vars)
         sheet.replace(QLatin1String(key), css(color));
+    sheet.replace(QLatin1String("%CHECKMARK%"), checkmarkImage(onAccent));
     setStyleSheet(sheet);
 }
 
