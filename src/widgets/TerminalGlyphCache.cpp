@@ -57,6 +57,7 @@ void TerminalGlyphCache::setFont(const QFont &font)
         }
     }
     m_map.clear();
+    m_clusters.clear();
 }
 
 uint16_t TerminalGlyphCache::slotFor(const QRawFont &raw)
@@ -161,8 +162,28 @@ void TerminalGlyphCache::drawCluster(QPainter &p, const TerminalRowLayout::Clust
     int n = 0;
     while (n < VTERM_MAX_CHARS_PER_CELL && cluster.chars[n]) ++n;
     if (n == 0) return;
+    const uint8_t style = cluster.font & 3;
+    // Key: the font variant, then the cluster's codepoints.
+    QString key = QString::fromUcs4(cluster.chars, n);
+    key.prepend(QChar(u'0' + style));
+    auto it = m_clusters.constFind(key);
+    if (it == m_clusters.constEnd()) {
+        QTextLayout layout(key.mid(1), m_fonts[style]);
+        layout.setCacheEnabled(false);
+        layout.beginLayout();
+        QTextLine line = layout.createLine();
+        layout.endLayout();
+        ShapedCluster shaped;
+        shaped.runs = layout.glyphRuns();
+        shaped.ascent = line.isValid() ? line.ascent() : 0;
+        if (m_clusters.size() >= kMaxCachedCodepoints) {
+            m_clusters.clear();
+        }
+        it = m_clusters.insert(key, shaped);
+    }
     p.setPen(QColor::fromRgb(cluster.fg));
-    p.setFont(m_fonts[cluster.font & 3]);
-    p.drawText(QPointF(originX + cluster.col * cellW, baselineY),
-               QString::fromUcs4(cluster.chars, n));
+    const QPointF origin(originX + cluster.col * cellW, baselineY - it->ascent);
+    for (const QGlyphRun &run : it->runs) {
+        p.drawGlyphRun(origin, run);
+    }
 }

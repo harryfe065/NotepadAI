@@ -18,8 +18,10 @@
 
 #include "TerminalBoxDrawing.h"
 
+#include <QHash>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
 
 #include <algorithm>
 #include <cmath>
@@ -29,7 +31,7 @@ namespace TerminalBoxDrawing {
 
 namespace {
 
-constexpr uint8_t A(int l, int r, int u, int d)
+constexpr uint8_t packArms(int l, int r, int u, int d)
 {
     return static_cast<uint8_t>(l | (r << 2) | (u << 4) | (d << 6));
 }
@@ -37,29 +39,29 @@ constexpr uint8_t A(int l, int r, int u, int d)
 // Arms for U+2500..U+257F; 0 marks dashes, arcs and diagonals.
 constexpr uint8_t kArms[128] = {
     // 2500
-    A(1,1,0,0), A(2,2,0,0), A(0,0,1,1), A(0,0,2,2), 0, 0, 0, 0,
-    0, 0, 0, 0, A(0,1,0,1), A(0,2,0,1), A(0,1,0,2), A(0,2,0,2),
+    packArms(1,1,0,0), packArms(2,2,0,0), packArms(0,0,1,1), packArms(0,0,2,2), 0, 0, 0, 0,
+    0, 0, 0, 0, packArms(0,1,0,1), packArms(0,2,0,1), packArms(0,1,0,2), packArms(0,2,0,2),
     // 2510
-    A(1,0,0,1), A(2,0,0,1), A(1,0,0,2), A(2,0,0,2), A(0,1,1,0), A(0,2,1,0), A(0,1,2,0), A(0,2,2,0),
-    A(1,0,1,0), A(2,0,1,0), A(1,0,2,0), A(2,0,2,0), A(0,1,1,1), A(0,2,1,1), A(0,1,2,1), A(0,1,1,2),
+    packArms(1,0,0,1), packArms(2,0,0,1), packArms(1,0,0,2), packArms(2,0,0,2), packArms(0,1,1,0), packArms(0,2,1,0), packArms(0,1,2,0), packArms(0,2,2,0),
+    packArms(1,0,1,0), packArms(2,0,1,0), packArms(1,0,2,0), packArms(2,0,2,0), packArms(0,1,1,1), packArms(0,2,1,1), packArms(0,1,2,1), packArms(0,1,1,2),
     // 2520
-    A(0,1,2,2), A(0,2,2,1), A(0,2,1,2), A(0,2,2,2), A(1,0,1,1), A(2,0,1,1), A(1,0,2,1), A(1,0,1,2),
-    A(1,0,2,2), A(2,0,2,1), A(2,0,1,2), A(2,0,2,2), A(1,1,0,1), A(2,1,0,1), A(1,2,0,1), A(2,2,0,1),
+    packArms(0,1,2,2), packArms(0,2,2,1), packArms(0,2,1,2), packArms(0,2,2,2), packArms(1,0,1,1), packArms(2,0,1,1), packArms(1,0,2,1), packArms(1,0,1,2),
+    packArms(1,0,2,2), packArms(2,0,2,1), packArms(2,0,1,2), packArms(2,0,2,2), packArms(1,1,0,1), packArms(2,1,0,1), packArms(1,2,0,1), packArms(2,2,0,1),
     // 2530
-    A(1,1,0,2), A(2,1,0,2), A(1,2,0,2), A(2,2,0,2), A(1,1,1,0), A(2,1,1,0), A(1,2,1,0), A(2,2,1,0),
-    A(1,1,2,0), A(2,1,2,0), A(1,2,2,0), A(2,2,2,0), A(1,1,1,1), A(2,1,1,1), A(1,2,1,1), A(2,2,1,1),
+    packArms(1,1,0,2), packArms(2,1,0,2), packArms(1,2,0,2), packArms(2,2,0,2), packArms(1,1,1,0), packArms(2,1,1,0), packArms(1,2,1,0), packArms(2,2,1,0),
+    packArms(1,1,2,0), packArms(2,1,2,0), packArms(1,2,2,0), packArms(2,2,2,0), packArms(1,1,1,1), packArms(2,1,1,1), packArms(1,2,1,1), packArms(2,2,1,1),
     // 2540
-    A(1,1,2,1), A(1,1,1,2), A(1,1,2,2), A(2,1,2,1), A(1,2,2,1), A(2,1,1,2), A(1,2,1,2), A(2,2,2,1),
-    A(2,2,1,2), A(2,1,2,2), A(1,2,2,2), A(2,2,2,2), 0, 0, 0, 0,
+    packArms(1,1,2,1), packArms(1,1,1,2), packArms(1,1,2,2), packArms(2,1,2,1), packArms(1,2,2,1), packArms(2,1,1,2), packArms(1,2,1,2), packArms(2,2,2,1),
+    packArms(2,2,1,2), packArms(2,1,2,2), packArms(1,2,2,2), packArms(2,2,2,2), 0, 0, 0, 0,
     // 2550
-    A(3,3,0,0), A(0,0,3,3), A(0,3,0,1), A(0,1,0,3), A(0,3,0,3), A(3,0,0,1), A(1,0,0,3), A(3,0,0,3),
-    A(0,3,1,0), A(0,1,3,0), A(0,3,3,0), A(3,0,1,0), A(1,0,3,0), A(3,0,3,0), A(0,3,1,1), A(0,1,3,3),
+    packArms(3,3,0,0), packArms(0,0,3,3), packArms(0,3,0,1), packArms(0,1,0,3), packArms(0,3,0,3), packArms(3,0,0,1), packArms(1,0,0,3), packArms(3,0,0,3),
+    packArms(0,3,1,0), packArms(0,1,3,0), packArms(0,3,3,0), packArms(3,0,1,0), packArms(1,0,3,0), packArms(3,0,3,0), packArms(0,3,1,1), packArms(0,1,3,3),
     // 2560
-    A(0,3,3,3), A(3,0,1,1), A(1,0,3,3), A(3,0,3,3), A(3,3,0,1), A(1,1,0,3), A(3,3,0,3), A(3,3,1,0),
-    A(1,1,3,0), A(3,3,3,0), A(3,3,1,1), A(1,1,3,3), A(3,3,3,3), 0, 0, 0,
+    packArms(0,3,3,3), packArms(3,0,1,1), packArms(1,0,3,3), packArms(3,0,3,3), packArms(3,3,0,1), packArms(1,1,0,3), packArms(3,3,0,3), packArms(3,3,1,0),
+    packArms(1,1,3,0), packArms(3,3,3,0), packArms(3,3,1,1), packArms(1,1,3,3), packArms(3,3,3,3), 0, 0, 0,
     // 2570
-    0, 0, 0, 0, A(1,0,0,0), A(0,0,1,0), A(0,1,0,0), A(0,0,0,1),
-    A(2,0,0,0), A(0,0,2,0), A(0,2,0,0), A(0,0,0,2), A(1,2,0,0), A(0,0,1,2), A(2,1,0,0), A(0,0,2,1),
+    0, 0, 0, 0, packArms(1,0,0,0), packArms(0,0,1,0), packArms(0,1,0,0), packArms(0,0,0,1),
+    packArms(2,0,0,0), packArms(0,0,2,0), packArms(0,2,0,0), packArms(0,0,0,2), packArms(1,2,0,0), packArms(0,0,1,2), packArms(2,1,0,0), packArms(0,0,2,1),
 };
 
 struct Grid {
@@ -418,6 +420,38 @@ void paint(QPainter &p, const QRectF &cell, char32_t cp, QColor color,
     g.t1 = std::max(1.0 / dpr, std::round(lightStroke * dpr) / dpr);
     g.t2 = g.t1 * 2;
 
+    // Arcs, diagonals and Powerline shapes are antialiased paths; prompts draw
+    // them on every row, so each (glyph, size, colour) is rasterised once and
+    // blitted afterwards.
+    const bool shaped = (cp >= 0x256D && cp <= 0x2573) || (cp >= 0xE0B0 && cp <= 0xE0B7);
+    if (shaped) {
+        static QHash<QPair<quint64, QRgb>, QPixmap> cache;
+        const auto wpx = static_cast<quint64>(std::lround(g.w * dpr));
+        const auto hpx = static_cast<quint64>(std::lround(g.h * dpr));
+        const auto tpx = static_cast<quint64>(std::lround(g.t1 * dpr));
+        if (wpx == 0 || hpx == 0) return;
+        const quint64 shape = static_cast<quint64>(cp) | (wpx << 21) | (hpx << 35) | (tpx << 49);
+        const QPair<quint64, QRgb> key(shape, color.rgba());
+        auto it = cache.constFind(key);
+        if (it == cache.constEnd()) {
+            QPixmap pm(static_cast<int>(wpx), static_cast<int>(hpx));
+            pm.setDevicePixelRatio(dpr);
+            pm.fill(Qt::transparent);
+            QPainter pp(&pm);
+            Grid local = g;
+            local.x = 0;
+            local.y = 0;
+            if (cp <= 0x2570) paintArc(pp, local, cp, color);
+            else if (cp <= 0x2573) paintDiagonal(pp, local, cp, color);
+            else paintPowerline(pp, local, cp, color);
+            pp.end();
+            if (cache.size() >= 256) cache.clear();
+            it = cache.insert(key, pm);
+        }
+        p.drawPixmap(QPointF(g.x, g.y), it.value());
+        return;
+    }
+
     const bool aa = p.testRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::Antialiasing, false);
 
@@ -431,14 +465,8 @@ void paint(QPainter &p, const QRectF &cell, char32_t cp, QColor color,
     } else if (cp >= 0x254C && cp <= 0x254F) {
         const int idx = static_cast<int>(cp - 0x254C);
         paintDashes(p, g, idx < 2, 2, (idx % 2) ? 2 : 1, color);
-    } else if (cp >= 0x256D && cp <= 0x2570) {
-        paintArc(p, g, cp, color);
-    } else if (cp >= 0x2571 && cp <= 0x2573) {
-        paintDiagonal(p, g, cp, color);
     } else if (cp >= 0x2580 && cp <= 0x259F) {
         paintBlock(p, g, cp, color);
-    } else if (cp >= 0xE0B0 && cp <= 0xE0B7) {
-        paintPowerline(p, g, cp, color);
     }
 
     p.setRenderHint(QPainter::Antialiasing, aa);

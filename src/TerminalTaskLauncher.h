@@ -51,6 +51,12 @@ TerminalTaskLaunch terminalTaskLaunch(const QString &shellPath, const QString &c
 // CommandLineToArgvW-compatible quoting of one argument.
 QString quoteWindowsArgument(const QString &arg);
 
+// Text about to be pasted into a terminal with everything that could act as
+// a control sequence removed: ESC (so a paste cannot end bracketed paste and
+// run the rest), other C0 controls except tab, and C1 controls. Line breaks
+// become CR, as a typed Enter would be.
+QString sanitizeTerminalPaste(const QString &text);
+
 // A path typed into an interactive shell of `kind` as one word: PowerShell
 // single quotes, cmd double quotes, POSIX/fish single quotes. Plain paths
 // (no spaces or shell metacharacters) stay bare.

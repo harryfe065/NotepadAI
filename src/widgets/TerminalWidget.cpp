@@ -23,6 +23,7 @@
 #include "TerminalTaskLauncher.h"
 #include "TerminalCellSource.h"
 #include "TerminalLinkDetector.h"
+#include "TerminalIcons.h"
 #include "TerminalSearchBar.h"
 #include "ProfileScope.h"
 
@@ -69,9 +70,13 @@
 
 namespace {
 
-constexpr uint32_t kWideSpacer = 0xFFFFFFFFu;
-// Resizes are applied at most once per this interval while a splitter drags.
-constexpr int kResizeThrottleMs = 16;
+// A resize is applied once the size has been stable this long, so a splitter
+// drag reflows and signals the shell once, not per mouse move.
+constexpr int kResizeSettleMs = 24;
+// A missing file seen on hover is re-checked after this long (it may be built).
+constexpr qint64 kMissingPathRecheckMs = 3000;
+// Search slices on the UI thread stay under this budget per event-loop pass.
+constexpr auto kSearchSliceBudget = std::chrono::milliseconds(4);
 constexpr int kCursorBlinkMs = 500;
 // Wheel: three lines per notch, as on every platform default.
 constexpr int kWheelLines = 3;
@@ -209,8 +214,11 @@ TerminalWidget::TerminalWidget(QWidget *parent)
     m_searchFollow->setSingleShot(true);
     m_searchFollow->setInterval(kSearchFollowMs);
     connect(m_searchFollow, &QTimer::timeout, this, &TerminalWidget::searchNewOutput);
-    m_searchWatcher = new QFutureWatcher<std::vector<TerminalSearchMatch>>(this);
-    connect(m_searchWatcher, &QFutureWatcherBase::finished, this, &TerminalWidget::onSearchFinished);
+    m_searchSlice = new QTimer(this);
+    m_searchSlice->setSingleShot(true);
+    m_searchSlice->setInterval(0);
+    connect(m_searchSlice, &QTimer::timeout, this, &TerminalWidget::searchSlice);
+    m_clock.start();
 
     m_pathWatcher = new QFutureWatcher<QString>(this);
     connect(m_pathWatcher, &QFutureWatcherBase::finished, this, [this]() {
@@ -219,7 +227,7 @@ TerminalWidget::TerminalWidget(QWidget *parent)
         if (m_pathCache.size() >= kMaxPathCache) {
             m_pathCache.clear();
         }
-        m_pathCache.insert(key, resolved);
+        m_pathCache.insert(key, PathProbe{resolved, m_clock.elapsed()});
         // Only apply if the pointer still rests on the same candidate.
         if (key != m_hoverPendingKey) return;
         m_hoverPendingKey.clear();
@@ -245,7 +253,7 @@ TerminalWidget::TerminalWidget(QWidget *parent)
 
     m_resizeTimer = new QTimer(this);
     m_resizeTimer->setSingleShot(true);
-    m_resizeTimer->setInterval(kResizeThrottleMs);
+    m_resizeTimer->setInterval(kResizeSettleMs);
     connect(m_resizeTimer, &QTimer::timeout, this, &TerminalWidget::applyPendingResize);
 
     recomputeMetrics();
@@ -253,11 +261,6 @@ TerminalWidget::TerminalWidget(QWidget *parent)
 
 TerminalWidget::~TerminalWidget()
 {
-    if (m_searchCancel) {
-        m_searchCancel->store(true);
-    }
-    m_searchWatcher->waitForFinished();
-    m_pathWatcher->waitForFinished();
     if (m_pty) {
         m_pty->kill();
         delete m_pty;
@@ -321,6 +324,12 @@ int TerminalWidget::vtermSetTermProp(VTermProp prop, VTermValue *val, void *user
     }
     if (prop == VTERM_PROP_ALTSCREEN && val) {
         w->m_altScreen = val->boolean != 0;
+        // The screen buffer swapped: hyperlinks recorded on live rows no
+        // longer describe what is shown there.
+        const qint64 liveStart = w->m_linesDropped + w->m_scrollback.size();
+        for (Osc8Span &span : w->m_osc8Spans) {
+            if (span.endLine >= liveStart) span.dead = true;
+        }
         // Full-screen apps own the whole grid; history is not shown under them.
         w->m_scrollOffset = 0;
         w->m_scrollbarDirty = true;
@@ -416,13 +425,17 @@ void TerminalWidget::handleOsc(int command, const QByteArray &payload)
         }
         const qint64 line = m_linesDropped + m_scrollback.size() + pos.row;
         if (m_osc8Open && (line > m_osc8StartLine || (line == m_osc8StartLine && pos.col > m_osc8StartCol))) {
-            m_osc8Spans.push_back({m_osc8StartLine, m_osc8StartCol, line, pos.col, m_osc8Uri});
+            m_osc8Spans.push_back({m_osc8StartLine, m_osc8StartCol, line, pos.col, m_osc8Uri,
+                                   textBetween(m_osc8StartLine, m_osc8StartCol, line, pos.col)});
             if (m_osc8Spans.size() > kMaxOsc8Spans) {
                 m_osc8Spans.pop_front();
             }
             markAllDirty();
         }
-        m_osc8Open = !uri.isEmpty();
+        // Schemes that would launch arbitrary OS handlers are not links.
+        const QString scheme = QUrl(uri).scheme().toLower();
+        m_osc8Open = scheme == QLatin1String("http") || scheme == QLatin1String("https")
+            || scheme == QLatin1String("mailto") || scheme == QLatin1String("file");
         if (m_osc8Open) {
             m_osc8StartLine = line;
             m_osc8StartCol = pos.col;
@@ -471,18 +484,7 @@ int TerminalWidget::vtermSbPushLine(int cols, const VTermScreenCell *cells, void
     const int evicted = w->m_scrollback.pushLine(cols, cells, wraps);
     w->noteLinesDropped(evicted);
 
-    // Eviction shifts absolute history-row indices down; keep selection anchored
-    // to content and trim the part that fell off the top.
-    if (evicted > 0 && w->m_hasSelection) {
-        w->m_selStart.ry() -= evicted;
-        w->m_selEnd.ry()   -= evicted;
-        if (w->m_selStart.y() < 0 && w->m_selEnd.y() < 0) {
-            w->m_hasSelection = false;
-        } else {
-            if (w->m_selStart.y() < 0) w->m_selStart = QPoint(0, 0);
-            if (w->m_selEnd.y()   < 0) w->m_selEnd = QPoint(0, 0);
-        }
-    }
+    w->shiftSelectionForEviction(evicted);
 
     // Sticky bottom: only follow new content if the user was already there;
     // otherwise keep the viewed lines in place.
@@ -503,6 +505,10 @@ int TerminalWidget::vtermSbPopLine(int cols, VTermScreenCell *cells, void *user)
         return 0;
     }
     w->m_scrollOffset = std::min(w->m_scrollOffset, w->m_scrollback.size());
+    // The popped line is live again: searched history ends before it.
+    const qint64 historyEnd = w->m_linesDropped + w->m_scrollback.size();
+    w->m_searchedHistoryEnd = std::min(w->m_searchedHistoryEnd, historyEnd);
+    w->m_searchScanNext = std::min(w->m_searchScanNext, historyEnd);
     w->m_scrollbarDirty = true;
     w->markAllDirty();
     return 1;
@@ -689,7 +695,7 @@ void TerminalWidget::toggleCursorBlink()
 {
     m_blinkPhaseOn = !m_blinkPhaseOn;
     // Only the cursor cell changes; repaint just that rect.
-    viewport()->update(cursorRect().toAlignedRect().adjusted(-1, -1, 1, 1));
+    viewport()->update(cursorRect().toAlignedRect());
 }
 
 // --- lifecycle ----------------------------------------------------------------
@@ -856,16 +862,7 @@ void TerminalWidget::setScrollbackLines(int lines)
     if (lines == m_scrollback.maxLines()) return;
     const int evicted = m_scrollback.setMaxLines(lines);
     noteLinesDropped(evicted);
-    if (evicted > 0 && m_hasSelection) {
-        m_selStart.ry() -= evicted;
-        m_selEnd.ry() -= evicted;
-        if (m_selStart.y() < 0 && m_selEnd.y() < 0) {
-            m_hasSelection = false;
-        } else {
-            if (m_selStart.y() < 0) m_selStart = QPoint(0, 0);
-            if (m_selEnd.y() < 0) m_selEnd = QPoint(0, 0);
-        }
-    }
+    shiftSelectionForEviction(evicted);
     m_scrollOffset = std::min(m_scrollOffset, m_scrollback.size());
     m_scrollbarDirty = true;
     markAllDirty();
@@ -1109,9 +1106,9 @@ void TerminalWidget::resizeEvent(QResizeEvent *event)
                              TerminalScrollBar::kWidth, viewport()->height());
     positionSearchBar();
     markAllDirty();
-    // Splitter drags fire a resize per mouse move; apply the latest size at
-    // most once per kResizeThrottleMs so the shell is not flooded with SIGWINCH.
-    if (m_vt && !m_resizeTimer->isActive()) {
+    // Splitter drags fire a resize per mouse move; only the size that holds
+    // for kResizeSettleMs is applied (restarting the timer drops the rest).
+    if (m_vt) {
         m_resizeTimer->start();
     }
 }
@@ -1272,13 +1269,23 @@ void TerminalWidget::paintRow(QPainter &p, int viewportRow)
         faint.setAlpha(90);
         int scanned = 0;
         for (auto it = m_osc8Spans.rbegin(); it != m_osc8Spans.rend() && scanned < 256; ++it, ++scanned) {
-            if (it->endLine < lineId || it->startLine > lineId) continue;
+            if (it->endLine < lineId || it->startLine > lineId || !osc8SpanAlive(*it)) continue;
             const int from = it->startLine == lineId ? it->startCol : 0;
             const int to = it->endLine == lineId ? it->endCol : m_cols;
             if (to > from) {
                 p.fillRect(QRectF(columnX(from), y + m_underlineY, (to - from) * m_cellW, m_lineWidth), faint);
             }
         }
+    }
+    // The current search hit is also outlined, so it does not rely on colour.
+    if (m_rowActiveFrom >= 0 && m_rowActiveTo > m_rowActiveFrom) {
+        p.save();
+        p.setPen(QPen(QColor::fromRgb(m_palette.defaultFg), m_lineWidth));
+        p.setBrush(Qt::NoBrush);
+        const qreal h = m_lineWidth / 2;
+        p.drawRect(QRectF(columnX(m_rowActiveFrom), y, (m_rowActiveTo - m_rowActiveFrom) * m_cellW, m_cellH)
+                       .adjusted(h, h, -h, -h));
+        p.restore();
     }
     // The Ctrl-hovered link.
     if (m_hover.valid && lineId >= m_hover.startLine && lineId <= m_hover.endLine) {
@@ -1371,7 +1378,7 @@ void TerminalWidget::paintCursor(QPainter &p)
     VTermScreenCell cell;
     if (!vterm_screen_get_cell(m_screen, VTermPos{m_cursor.y(), m_cursor.x()}, &cell)) return;
     const uint32_t ch = cell.chars[0];
-    if (ch == 0 || ch == U' ' || ch == kWideSpacer || cell.attrs.conceal) return;
+    if (ch == 0 || ch == U' ' || ch == kTerminalWideSpacer || cell.attrs.conceal) return;
     const TerminalCellColors colors = resolveTerminalCellColors(cell, m_palette);
     const auto font = static_cast<uint8_t>((cell.attrs.bold ? TerminalFontBold : 0)
                                          | (cell.attrs.italic ? TerminalFontItalic : 0));
@@ -1448,8 +1455,11 @@ void TerminalWidget::wheelEvent(QWheelEvent *event)
 
     // Ctrl+wheel zooms every terminal (the owner persists the size).
     if (event->modifiers() & Qt::ControlModifier) {
-        const int notches = event->angleDelta().y() / 120;
+        // Accumulate: smooth wheels and touchpads send deltas below a notch.
+        m_zoomAccum += event->angleDelta().y();
+        const int notches = m_zoomAccum / 120;
         if (notches != 0) {
+            m_zoomAccum -= notches * 120;
             emit zoomRequested(notches);
         }
         return;
@@ -2032,13 +2042,31 @@ void TerminalWidget::pasteClipboard()
 // pasted lines one by one.
 void TerminalWidget::pasteText(const QString &text)
 {
-    if (text.isEmpty() || !m_vt) return;
+    // Control characters are dropped so pasted text can never end bracketed
+    // paste early or smuggle escape sequences to the program.
+    const QString clean = sanitizeTerminalPaste(text);
+    if (clean.isEmpty() || !m_vt) return;
     scrollToBottom();
     vterm_keyboard_start_paste(m_vt);
-    for (uint cp : text.toUcs4()) {
+    for (uint cp : clean.toUcs4()) {
         vterm_keyboard_unichar(m_vt, static_cast<uint32_t>(cp), VTERM_MOD_NONE);
     }
     vterm_keyboard_end_paste(m_vt);
+}
+
+void TerminalWidget::shiftSelectionForEviction(int evicted)
+{
+    // Eviction shifts absolute history rows down; keep the selection on its
+    // content and trim the part that fell off the top.
+    if (evicted <= 0 || !m_hasSelection) return;
+    m_selStart.ry() -= evicted;
+    m_selEnd.ry() -= evicted;
+    if (m_selStart.y() < 0 && m_selEnd.y() < 0) {
+        m_hasSelection = false;
+    } else {
+        if (m_selStart.y() < 0) m_selStart = QPoint(0, 0);
+        if (m_selEnd.y() < 0) m_selEnd = QPoint(0, 0);
+    }
 }
 
 void TerminalWidget::noteLinesDropped(int count)
@@ -2053,11 +2081,96 @@ void TerminalWidget::noteLinesDropped(int count)
                                            [](const TerminalSearchMatch &m, qint64 line) { return m.line < line; });
         const int removed = static_cast<int>(keep - m_matches.begin());
         m_matches.erase(m_matches.begin(), keep);
-        m_activeMatch = m_matches.empty() ? -1 : std::max(0, m_activeMatch - removed);
+        // An evicted current match leaves none current.
+        m_activeMatch = m_activeMatch < removed ? -1 : m_activeMatch - removed;
     }
     if (m_hover.valid && m_hover.startLine < m_linesDropped) {
         clearHoverLink();
     }
+}
+
+// Absolute candidates for a path written in the output: as written when
+// absolute (with ~ expanded), else against the shell's reported cwd and then
+// the base directories (spawn directory, workspace root).
+QStringList TerminalWidget::pathCandidates(const QString &written) const
+{
+    QString path = written;
+    if (path == QLatin1String("~") || path.startsWith(QLatin1String("~/")) || path.startsWith(QLatin1String("~\\"))) {
+        path = QDir::home().filePath(path.mid(2));
+    }
+    if (QDir::isAbsolutePath(path)) {
+        return {QDir::cleanPath(path)};
+    }
+    QStringList out;
+    if (!m_reportedCwd.isEmpty()) {
+        out << QDir(m_reportedCwd).filePath(path);
+    }
+    for (const QString &base : m_linkBaseDirs) {
+        const QString candidate = QDir(base).filePath(path);
+        if (!out.contains(candidate)) out << candidate;
+    }
+    return out;
+}
+
+// Web and mail links go to the OS; file URLs are opened like paths (never
+// executed) and only on this machine; anything else is not followed.
+void TerminalWidget::openUrlTarget(const QString &target)
+{
+    const QUrl url(target);
+    const QString scheme = url.scheme().toLower();
+    if (scheme == QLatin1String("http") || scheme == QLatin1String("https") || scheme == QLatin1String("mailto")) {
+        QDesktopServices::openUrl(url);
+        return;
+    }
+    if (scheme != QLatin1String("file") || !m_localPathLinks) return;
+    const QString path = url.toLocalFile();
+    // A UNC target would reach out to another machine.
+    if (path.isEmpty() || path.startsWith(QLatin1String("//")) || path.startsWith(QLatin1String("\\\\"))) return;
+    const QFileInfo fi(path);
+    if (fi.isDir()) {
+        emit revealPathRequested(fi.absoluteFilePath());
+    } else if (fi.exists()) {
+        emit openFileRequested(fi.absoluteFilePath(), 0, 0);
+    }
+}
+
+// The text between two absolute positions, or a null string when part of it
+// is no longer in history.
+QString TerminalWidget::textBetween(qint64 startLine, int startCol, qint64 endLine, int endCol) const
+{
+    if (!m_screen) return QString();
+    WidgetCellSource src(m_scrollback, m_screen, vterm_obtain_state(m_vt), m_rows, m_cols);
+    QString out;
+    for (qint64 line = startLine; line <= endLine; ++line) {
+        const qint64 row = line - m_linesDropped;
+        if (row < 0 || row >= src.rowCount()) return QString();
+        const int from = line == startLine ? startCol : 0;
+        const int to = line == endLine ? endCol : m_cols;
+        for (int col = from; col < to && col < m_cols; ++col) {
+            const VTermScreenCell cell = src.cellAt(static_cast<int>(row), col);
+            if (cell.chars[0] == kTerminalWideSpacer) continue;
+            if (cell.chars[0] == 0) {
+                out.append(QLatin1Char(' '));
+                continue;
+            }
+            for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; ++i) {
+                const char32_t cp = cell.chars[i];
+                out.append(QString::fromUcs4(&cp, 1));
+            }
+        }
+    }
+    return out;
+}
+
+// An OSC 8 span is only a link while its text is still what it covered;
+// output that overwrites it (clear, a redraw) kills it for good.
+bool TerminalWidget::osc8SpanAlive(Osc8Span &span) const
+{
+    if (span.dead) return false;
+    if (textBetween(span.startLine, span.startCol, span.endLine, span.endCol) != span.text) {
+        span.dead = true;
+    }
+    return !span.dead;
 }
 
 // --- context menu ----------------------------------------------------------------
@@ -2092,6 +2205,9 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
     clearAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L));
     connect(clearAct, &QAction::triggered, this, [this]() { emit clearRequested(); });
 
+    // Owner section: Send to AI.
+    emit contextMenuAboutToShow(&menu);
+
     // Link under the pointer.
     const QPoint local = viewport()->mapFromGlobal(event->globalPos());
     const QPoint cell = pixelToCell(local);
@@ -2112,22 +2228,15 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
             menu.addSeparator();
             const QString url = link.target;
             connect(menu.addAction(tr("Open Link")), &QAction::triggered, this,
-                    [url]() { QDesktopServices::openUrl(QUrl(url)); });
+                    [this, url]() { openUrlTarget(url); });
             connect(menu.addAction(tr("Copy Link")), &QAction::triggered, this,
                     [url]() { QApplication::clipboard()->setText(url); });
         } else if (link.kind == TerminalLink::Path && m_localPathLinks) {
             menu.addSeparator();
-            const QString path = link.target;
+            const QStringList candidates = pathCandidates(link.target);
             const int line = link.line;
             const int column = link.column;
-            connect(menu.addAction(tr("Open File")), &QAction::triggered, this, [this, path, line, column]() {
-                QStringList candidates;
-                if (QDir::isAbsolutePath(path)) {
-                    candidates << path;
-                } else {
-                    if (!m_reportedCwd.isEmpty()) candidates << QDir(m_reportedCwd).filePath(path);
-                    for (const QString &base : m_linkBaseDirs) candidates << QDir(base).filePath(path);
-                }
+            connect(menu.addAction(tr("Open File")), &QAction::triggered, this, [this, candidates, line, column]() {
                 for (const QString &c : candidates) {
                     const QFileInfo fi(c);
                     if (fi.isDir()) {
@@ -2140,12 +2249,14 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
                     }
                 }
             });
+            const QString path = link.target;
             connect(menu.addAction(tr("Copy Path")), &QAction::triggered, this,
                     [path]() { QApplication::clipboard()->setText(path); });
         }
     }
 
-    emit contextMenuAboutToShow(&menu);
+    // Owner section: Rename / New Terminal / Close.
+    emit contextMenuTailAboutToShow(&menu);
     menu.exec(event->globalPos());
 }
 
@@ -2173,7 +2284,7 @@ bool TerminalWidget::logicalLineAt(int absoluteRow, QString *text, std::vector<q
         for (int col = 0; col < m_cols; ++col) {
             const VTermScreenCell cell = src.cellAt(row, col);
             const uint32_t ch = cell.chars[0];
-            if (ch == kWideSpacer) continue;
+            if (ch == kTerminalWideSpacer) continue;
             if (ch == 0) {
                 text->append(QLatin1Char(' '));
                 lineOf->push_back(id);
@@ -2216,7 +2327,7 @@ void TerminalWidget::updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers 
     for (auto it = m_osc8Spans.rbegin(); it != m_osc8Spans.rend(); ++it) {
         const bool after = lineId > it->startLine || (lineId == it->startLine && cell.x() >= it->startCol);
         const bool before = lineId < it->endLine || (lineId == it->endLine && cell.x() < it->endCol);
-        if (after && before) {
+        if (after && before && osc8SpanAlive(*it)) {
             HoverLink link;
             link.valid = true;
             link.url = true;
@@ -2273,29 +2384,21 @@ void TerminalWidget::updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers 
     }
 
     // Paths: the file must exist, checked off the UI thread and cached.
-    QStringList candidates;
-    QString path = found.target;
-    if (path.startsWith(QLatin1String("~/"))) {
-        path = QDir::home().filePath(path.mid(2));
-    }
-    if (QDir::isAbsolutePath(path)) {
-        candidates << path;
-    } else {
-        if (!m_reportedCwd.isEmpty()) candidates << QDir(m_reportedCwd).filePath(path);
-        for (const QString &base : m_linkBaseDirs) candidates << QDir(base).filePath(path);
-    }
+    const QStringList candidates = pathCandidates(found.target);
     if (candidates.isEmpty()) {
         clearHoverLink();
         return;
     }
     const QString key = candidates.join(QLatin1Char('\n'));
     const auto cached = m_pathCache.constFind(key);
-    if (cached != m_pathCache.constEnd()) {
-        if (cached->isEmpty()) {
+    // A missing file is re-probed after a while: it may have been created.
+    if (cached != m_pathCache.constEnd()
+        && (!cached->resolved.isEmpty() || m_clock.elapsed() - cached->checkedMs < kMissingPathRecheckMs)) {
+        if (cached->resolved.isEmpty()) {
             clearHoverLink();
         } else {
             link.valid = true;
-            link.target = *cached;
+            link.target = cached->resolved;
             setHoverLink(link);
         }
         return;
@@ -2357,7 +2460,7 @@ bool TerminalWidget::openHoverLink()
     const HoverLink link = m_hover;
     clearHoverLink();
     if (link.url) {
-        QDesktopServices::openUrl(QUrl(link.target));
+        openUrlTarget(link.target);
     } else if (QFileInfo(link.target).isDir()) {
         emit revealPathRequested(link.target);
     } else {
@@ -2418,11 +2521,10 @@ void TerminalWidget::openSearch()
 
 void TerminalWidget::closeSearch()
 {
-    if (m_searchCancel) {
-        m_searchCancel->store(true);
-    }
     m_searchDebounce->stop();
     m_searchFollow->stop();
+    m_searchSlice->stop();
+    m_searchScanning = false;
     if (m_searchBar) {
         m_searchBar->hide();
     }
@@ -2441,14 +2543,13 @@ void TerminalWidget::runSearch()
 {
     if (!m_searchBar) return;
     m_searchOptions = m_searchBar->options();
-    if (m_searchCancel) {
-        m_searchCancel->store(true);
-    }
     m_searchFollow->stop();
+    m_searchSlice->stop();
+    m_searchScanning = false;
+    m_matches.clear();
+    m_activeMatch = -1;
     if (m_searchOptions.query.isEmpty()) {
         m_searchRe = QRegularExpression();
-        m_matches.clear();
-        m_activeMatch = -1;
         m_searchBar->setInvalid(false);
         m_searchBar->setCount(-1, 0);
         syncSearchMarks();
@@ -2459,8 +2560,6 @@ void TerminalWidget::runSearch()
     QRegularExpression re = terminalSearchRegex(m_searchOptions);
     if (!re.isValid()) {
         m_searchRe = QRegularExpression();
-        m_matches.clear();
-        m_activeMatch = -1;
         m_searchBar->setInvalid(true);
         syncSearchMarks();
         markAllDirty();
@@ -2469,34 +2568,56 @@ void TerminalWidget::runSearch()
     }
     m_searchBar->setInvalid(false);
     m_searchRe = re;
-
-    auto snapshot = std::make_shared<const ScrollbackBuffer>(m_scrollback);
-    const qint64 first = m_linesDropped;
-    const int cols = m_cols;
-    m_searchSnapshotEnd = first + snapshot->size();
-    auto cancel = std::make_shared<std::atomic<bool>>(false);
-    m_searchCancel = cancel;
-    m_searchWatcher->setFuture(QtConcurrent::run([snapshot, first, cols, re, cancel]() {
-        return searchScrollback(*snapshot, first, 0, cols, re, cancel.get());
-    }));
+    // Blank rows cannot hold a literal match without spaces; regexes might.
+    m_searchSkipBlank = !m_searchOptions.regex && !m_searchOptions.query.contains(QLatin1Char(' '));
+    m_searchScanNext = m_linesDropped;
+    m_searchedHistoryEnd = m_linesDropped;
+    m_searchScanning = true;
+    m_searchRevealPending = true;
+    searchSlice();
 }
 
-void TerminalWidget::onSearchFinished()
+// History is searched in slices of at most kSearchSliceBudget per event-loop
+// pass, oldest to newest, straight from the compact buffer: no copy of the
+// scrollback, no locking, and the UI stays responsive on 100k lines.
+void TerminalWidget::searchSlice()
 {
-    if (!m_searchCancel || m_searchCancel->load() || !m_searchRe.isValid()) return;
-    std::vector<TerminalSearchMatch> found = m_searchWatcher->result();
-    // Lines evicted while the worker ran are gone.
-    found.erase(std::remove_if(found.begin(), found.end(),
-                               [this](const TerminalSearchMatch &m) { return m.line < m_linesDropped; }),
-                found.end());
-    m_matches = std::move(found);
-    m_searchedHistoryEnd = m_searchSnapshotEnd;
-    m_activeMatch = -1;
+    if (!m_searchScanning || !m_searchRe.isValid()) return;
+    const auto start = std::chrono::steady_clock::now();
+    const qint64 historyEnd = m_linesDropped + m_scrollback.size();
+    m_searchScanNext = std::max(m_searchScanNext, m_linesDropped);
+    if (static_cast<int>(m_rowCells.size()) < m_cols) {
+        m_rowCells.resize(static_cast<std::size_t>(m_cols));
+    }
+    QString text;
+    std::vector<int> colOf;
+    int scanned = 0;
+    while (m_searchScanNext < historyEnd) {
+        if (m_scrollback.lineAt(absoluteRowForLineId(m_searchScanNext), m_cols, m_rowCells.data())) {
+            searchTerminalRow(m_searchRe, m_searchScanNext, m_rowCells.data(), m_cols, m_matches, text, colOf,
+                              m_searchSkipBlank);
+        }
+        ++m_searchScanNext;
+        if ((++scanned & 63) == 0 && std::chrono::steady_clock::now() - start > kSearchSliceBudget) {
+            break;
+        }
+    }
+    m_searchedHistoryEnd = m_searchScanNext;
+    if (m_searchScanNext < historyEnd) {
+        if (m_searchBar) m_searchBar->setCount(m_activeMatch, static_cast<int>(m_matches.size()));
+        m_searchSlice->start();
+        return;
+    }
+
+    m_searchScanning = false;
     searchNewOutput();
     // Start from the most recent hit, like a terminal search from the prompt.
-    if (!m_matches.empty()) {
-        m_activeMatch = static_cast<int>(m_matches.size()) - 1;
-        revealMatch(m_matches.back());
+    if (m_searchRevealPending) {
+        m_searchRevealPending = false;
+        if (!m_matches.empty()) {
+            m_activeMatch = static_cast<int>(m_matches.size()) - 1;
+            revealMatch(m_matches.back());
+        }
     }
     if (m_searchBar) m_searchBar->setCount(m_activeMatch, static_cast<int>(m_matches.size()));
     syncSearchMarks();
@@ -2504,17 +2625,19 @@ void TerminalWidget::onSearchFinished()
     scheduleFrame();
 }
 
+
+
+// Incremental pass: history pushed since the last search plus the live rows.
+// Old matches on rows that were live (they may have changed) are replaced.
 // Incremental pass: history pushed since the last search plus the live rows.
 // Old matches on rows that were live (they may have changed) are replaced.
 void TerminalWidget::searchNewOutput()
 {
-    if (!m_searchRe.isValid() || m_searchWatcher->isRunning()) return;
+    // While history is still being sliced, the slice reaches the new lines.
+    if (!m_searchRe.isValid() || m_searchScanning) return;
     const qint64 historyEnd = m_linesDropped + m_scrollback.size();
-    const qint64 from = std::max(m_searchedHistoryEnd, m_linesDropped);
-    if (historyEnd - from > kSearchSyncLines) {
-        runSearch();
-        return;
-    }
+    // History can shrink (a taller window pops lines back): clamp.
+    const qint64 from = std::clamp(m_searchedHistoryEnd, m_linesDropped, historyEnd);
 
     TerminalSearchMatch active{};
     const bool hadActive = m_activeMatch >= 0 && m_activeMatch < static_cast<int>(m_matches.size());
@@ -2526,6 +2649,15 @@ void TerminalWidget::searchNewOutput()
                                    }),
                     m_matches.end());
 
+    if (historyEnd - from > kSearchSyncLines) {
+        // Too much to do in one pass: continue in slices.
+        m_activeMatch = -1;
+        m_searchScanNext = from;
+        m_searchScanning = true;
+        m_searchSlice->start();
+        return;
+    }
+
     if (static_cast<int>(m_rowCells.size()) < m_cols) {
         m_rowCells.resize(static_cast<std::size_t>(m_cols));
     }
@@ -2533,7 +2665,7 @@ void TerminalWidget::searchNewOutput()
     std::vector<int> colOf;
     for (qint64 id = from; id < historyEnd; ++id) {
         if (m_scrollback.lineAt(absoluteRowForLineId(id), m_cols, m_rowCells.data())) {
-            searchTerminalRow(m_searchRe, id, m_rowCells.data(), m_cols, m_matches, text, colOf);
+            searchTerminalRow(m_searchRe, id, m_rowCells.data(), m_cols, m_matches, text, colOf, m_searchSkipBlank);
         }
     }
     m_searchedHistoryEnd = historyEnd;
@@ -2544,7 +2676,8 @@ void TerminalWidget::searchNewOutput()
             ok = vterm_screen_get_cell(m_screen, pos, &m_rowCells[static_cast<std::size_t>(pos.col)]) != 0;
         }
         if (ok) {
-            searchTerminalRow(m_searchRe, historyEnd + pos.row, m_rowCells.data(), m_cols, m_matches, text, colOf);
+            searchTerminalRow(m_searchRe, historyEnd + pos.row, m_rowCells.data(), m_cols, m_matches, text, colOf,
+                              m_searchSkipBlank);
         }
     }
 
@@ -2612,23 +2745,30 @@ void TerminalWidget::syncSearchMarks()
             lastRow = row;
         }
     }
-    const QRgb mark = blendRgb(m_palette.defaultBg, qRgb(0xE0, 0xB0, 0x40), 75);
-    const QRgb activeMark = blendRgb(m_palette.defaultBg, qRgb(0xF0, 0x80, 0x20), 95);
+    // The scheme's yellows, so marks match the terminal's palette.
+    const QRgb mark = blendRgb(m_palette.defaultBg, m_palette.indexed[3], 80);
+    const QRgb activeMark = m_palette.indexed[11];
     m_scrollBar->setMarks(std::move(rows), active, mark, activeMark);
 }
 
 int TerminalWidget::collectHighlights(qint64 lineId)
 {
     m_rowHighlights.clear();
+    m_rowActiveFrom = -1;
+    m_rowActiveTo = -1;
     if (m_matches.empty()) return 0;
     auto it = std::lower_bound(m_matches.begin(), m_matches.end(), lineId,
                                [](const TerminalSearchMatch &m, qint64 line) { return m.line < line; });
-    // Search hits read as amber; the current one stronger, per the theme.
-    const QRgb normal = blendRgb(m_palette.defaultBg, qRgb(0xE0, 0xB0, 0x40), 35);
-    const QRgb strong = blendRgb(m_palette.defaultBg, qRgb(0xF0, 0x80, 0x20), 65);
+    // Hits use the scheme's yellow; the current one is stronger and outlined.
+    const QRgb normal = blendRgb(m_palette.defaultBg, m_palette.indexed[3], 35);
+    const QRgb strong = blendRgb(m_palette.defaultBg, m_palette.indexed[11], 60);
     for (; it != m_matches.end() && it->line == lineId; ++it) {
         const bool isActive = (it - m_matches.begin()) == m_activeMatch;
         m_rowHighlights.push_back({it->col, it->col + it->width, isActive ? strong : normal});
+        if (isActive) {
+            m_rowActiveFrom = it->col;
+            m_rowActiveTo = it->col + it->width;
+        }
     }
     return static_cast<int>(m_rowHighlights.size());
 }
@@ -2666,6 +2806,8 @@ void TerminalWidget::dropEvent(QDropEvent *event)
 
 void TerminalWidget::pasteDroppedPaths(const QStringList &paths)
 {
+    // Local paths mean nothing to a remote shell.
+    if (!m_localPathLinks) return;
     QStringList words;
     for (QString path : paths) {
         if (path.isEmpty()) continue;

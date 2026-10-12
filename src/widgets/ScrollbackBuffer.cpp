@@ -27,7 +27,6 @@ namespace {
 
 constexpr uint32_t kInitialArenaCells = 4096;
 constexpr uint32_t kNoIndex = std::numeric_limits<uint32_t>::max();
-constexpr uint32_t kWideSpacer = 0xFFFFFFFFu; // libvterm's right half of a wide char
 
 uint32_t packAttrs(const VTermScreenCellAttrs &a)
 {
@@ -162,6 +161,10 @@ int ScrollbackBuffer::setMaxLines(int maxLines)
     // A linear ring keeps the "push_back until full" invariant valid for the
     // new cap.
     relinearize(m_count);
+    // A much smaller cap should give the memory back, not keep the old arena.
+    if (m_cells.size() > std::max<std::size_t>(kInitialArenaCells, static_cast<std::size_t>(m_used) * 2)) {
+        compactArena();
+    }
     return evicted;
 }
 
@@ -209,6 +212,23 @@ void ScrollbackBuffer::relinearize(int newCapacity)
     }
     m_lines.swap(lines);
     m_head = 0;
+}
+
+void ScrollbackBuffer::compactArena()
+{
+    const auto target = std::max<uint64_t>(kInitialArenaCells, m_used + m_used / 2);
+    std::vector<Cell> cells(static_cast<std::size_t>(target));
+    uint32_t write = 0;
+    for (int i = 0; i < m_count; ++i) {
+        Line &line = m_lines[static_cast<std::size_t>((m_head + i) % static_cast<int>(m_lines.size()))];
+        if (line.length > 0) {
+            std::memcpy(&cells[write], &m_cells[line.offset], line.length * sizeof(Cell));
+        }
+        line.offset = write;
+        write += line.length;
+    }
+    m_cells.swap(cells);
+    m_tail = write;
 }
 
 void ScrollbackBuffer::growArena(uint32_t needed)
@@ -410,7 +430,7 @@ int ScrollbackBuffer::pushLine(int cols, const VTermScreenCell *cells, bool wrap
         uint32_t meta = styleIndex
                       | (static_cast<uint32_t>(src.width & 3) << kWidthShift);
         uint32_t ch = src.chars[0];
-        if (ch != 0 && ch != kWideSpacer && src.chars[1] != 0) {
+        if (ch != 0 && ch != kTerminalWideSpacer && src.chars[1] != 0) {
             ch = internCluster(src.chars);
             meta |= kCluster;
         }

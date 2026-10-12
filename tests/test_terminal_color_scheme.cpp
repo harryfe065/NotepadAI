@@ -41,6 +41,8 @@ private slots:
     void palette_flattensSchemeAndFixedColours();
     void presets_areCompleteAndReadable();
     void forSetting_unknownFollowsApp();
+    void isPreset_onlyNamedPresets();
+    void followingEditor_takesEditorColours();
 };
 
 void TestTerminalColorScheme::lightScheme_hasSixteenValidAnsiColors()
@@ -151,6 +153,30 @@ void TestTerminalColorScheme::forSetting_unknownFollowsApp()
              TerminalColorScheme::lightScheme().defaultBg);
     QCOMPARE(TerminalColorScheme::forSetting(QStringLiteral("dracula"), false).defaultBg,
              QColor(0x28, 0x2A, 0x36));
+}
+
+void TestTerminalColorScheme::isPreset_onlyNamedPresets()
+{
+    for (const QString &id : TerminalColorScheme::presetIds()) {
+        QVERIFY(TerminalColorScheme::isPreset(id));
+    }
+    QVERIFY(!TerminalColorScheme::isPreset(QStringLiteral("app")));
+    QVERIFY(!TerminalColorScheme::isPreset(QString()));
+    QVERIFY(!TerminalColorScheme::isPreset(QStringLiteral("no-such-scheme")));
+}
+
+void TestTerminalColorScheme::followingEditor_takesEditorColours()
+{
+    const TerminalColorScheme s = TerminalColorScheme::followingEditor(true, 0xFF101010u, 0xFFEEEEEEu, 0xFF334455u);
+    QCOMPARE(s.defaultBg.rgb(), 0xFF101010u);
+    QCOMPARE(s.defaultFg.rgb(), 0xFFEEEEEEu);
+    QCOMPARE(s.cursor.rgb(), 0xFFEEEEEEu);
+    QCOMPARE(s.selection.rgb(), 0xFF334455u);
+    // ANSI colours stay the theme's.
+    const TerminalColorScheme dark = TerminalColorScheme::darkScheme();
+    for (int i = 0; i < 16; ++i) {
+        QCOMPARE(s.ansi[i], dark.ansi[i]);
+    }
 }
 
 QTEST_MAIN(TestTerminalColorScheme)

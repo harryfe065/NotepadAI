@@ -132,7 +132,10 @@ signals:
     void processExited(int exitCode);
     void spawnFailed(const QString &message);
     void firstOutputReceived();
+    // Context menu hooks: after the Find/Clear section (owner adds Send to AI)
+    // and at the end (owner adds Rename / New Terminal / Close).
     void contextMenuAboutToShow(QMenu *menu);
+    void contextMenuTailAboutToShow(QMenu *menu);
     // BEL arrived; the owner marks the tab (the sound is optional).
     void bellRung();
     // Ctrl+wheel / Ctrl+=/-: change the shared terminal font size by `steps`;
@@ -180,7 +183,7 @@ private slots:
     void applyPendingResize();
     void toggleCursorBlink();
     void runSearch();
-    void onSearchFinished();
+    void searchSlice();
 
 private:
     // Geometry. Cell sizes are whole device pixels so every row and column
@@ -212,6 +215,10 @@ private:
     qint64 lineIdForAbsoluteRow(int absoluteRow) const { return m_linesDropped + absoluteRow; }
     int absoluteRowForLineId(qint64 id) const { return static_cast<int>(id - m_linesDropped); }
     void noteLinesDropped(int count);
+    void shiftSelectionForEviction(int evicted);
+    QStringList pathCandidates(const QString &written) const;
+    void openUrlTarget(const QString &target);
+    QString textBetween(qint64 startLine, int startCol, qint64 endLine, int endCol) const;
 
     // Links (Ctrl+hover / Ctrl+click).
     struct HoverLink {
@@ -231,7 +238,10 @@ private:
         qint64 endLine;
         int endCol;
         QString uri;
+        QString text;       // what the span covered; differs once overwritten
+        bool dead = false;
     };
+    bool osc8SpanAlive(Osc8Span &span) const;
     void updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers mods);
     void setHoverLink(const HoverLink &link);
     void clearHoverLink();
@@ -356,7 +366,12 @@ private:
     QElapsedTimer m_hoverThrottle;
     QString m_hoverPendingKey;
     QFutureWatcher<QString> *m_pathWatcher = nullptr;
-    QHash<QString, QString> m_pathCache;   // candidate -> resolved ("" = none)
+    struct PathProbe {
+        QString resolved;   // empty: no such file
+        qint64 checkedMs = 0;
+    };
+    QHash<QString, PathProbe> m_pathCache;
+    QElapsedTimer m_clock;
     std::deque<Osc8Span> m_osc8Spans;
     bool m_osc8Open = false;
     qint64 m_osc8StartLine = 0;
@@ -373,10 +388,15 @@ private:
     qint64 m_searchedHistoryEnd = 0;
     QTimer *m_searchDebounce = nullptr;
     QTimer *m_searchFollow = nullptr;
-    QFutureWatcher<std::vector<TerminalSearchMatch>> *m_searchWatcher = nullptr;
-    std::shared_ptr<std::atomic<bool>> m_searchCancel;
-    qint64 m_searchSnapshotEnd = 0;
+    QTimer *m_searchSlice = nullptr;
+    qint64 m_searchScanNext = 0;
+    bool m_searchScanning = false;
+    bool m_searchRevealPending = false;
+    bool m_searchSkipBlank = false;
     std::vector<TerminalRowLayout::Highlight> m_rowHighlights;
+    int m_rowActiveFrom = -1;
+    int m_rowActiveTo = -1;
+    int m_zoomAccum = 0;
 
     ScrollbackBuffer m_scrollback{10000};
     int m_scrollOffset = 0;   // lines scrolled up from the live bottom

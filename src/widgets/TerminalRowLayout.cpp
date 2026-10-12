@@ -20,12 +20,11 @@
 
 #include "TerminalBoxDrawing.h"
 #include "TerminalContrast.h"
+#include "ScrollbackBuffer.h"
 
 #include <algorithm>
 
 namespace {
-
-constexpr uint32_t kWideSpacer = 0xFFFFFFFFu;
 
 QRgb paletteColor(const VTermColor &c, const TerminalPalette &palette, QRgb fallback)
 {
@@ -67,6 +66,7 @@ TerminalCellColors resolveTerminalCellColors(const VTermScreenCell &cell,
         out.defaultBg = false;
         out.exactFg = exact(cell.bg, defBg);
     }
+    out.baseFg = out.fg;
     if (cell.attrs.dim) {
         out.fg = faint(out.fg, out.bg);
     }
@@ -107,7 +107,7 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
     while (col < cols) {
         const VTermScreenCell &cell = cells[col];
         const uint32_t ch = cell.chars[0];
-        if (ch == kWideSpacer) {
+        if (ch == kTerminalWideSpacer) {
             // Right half of a wide character; its left half already covered it.
             ++col;
             continue;
@@ -125,15 +125,20 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
             }
         }
         const QRgb bg = selected ? palette.selection : (hit ? hit->color : colors.bg);
-        QRgb textFg = colors.fg;
+        // Faint is applied after the contrast floor, so dim text stays dimmer
+        // than normal text instead of being lifted back to it.
+        QRgb textFg = colors.baseFg;
         if (contrastOn && (selected || hit || !colors.exactFg)) {
-            if (!haveLast || lastFg != colors.fg || lastBg != bg) {
-                lastFg = colors.fg;
+            if (!haveLast || lastFg != colors.baseFg || lastBg != bg) {
+                lastFg = colors.baseFg;
                 lastBg = bg;
-                lastAdjusted = contrast->adjust(colors.fg, bg);
+                lastAdjusted = contrast->adjust(colors.baseFg, bg);
                 haveLast = true;
             }
             textFg = lastAdjusted;
+        }
+        if (cell.attrs.dim) {
+            textFg = faint(textFg, bg);
         }
         if (selected || hit || !colors.defaultBg) {
             TerminalRowLayout::Background *last = out.backgrounds.empty() ? nullptr : &out.backgrounds.back();

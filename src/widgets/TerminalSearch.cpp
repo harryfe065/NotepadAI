@@ -18,10 +18,6 @@
 
 #include "TerminalSearch.h"
 
-namespace {
-constexpr uint32_t kWideSpacer = 0xFFFFFFFFu;
-} // namespace
-
 QRegularExpression terminalSearchRegex(const TerminalSearchOptions &options)
 {
     if (options.query.isEmpty()) {
@@ -47,7 +43,7 @@ void terminalRowText(const VTermScreenCell *cells, int cols, QString &text, std:
     for (int col = 0; col < cols; ++col) {
         const VTermScreenCell &cell = cells[col];
         const uint32_t ch = cell.chars[0];
-        if (ch == kWideSpacer) continue;
+        if (ch == kTerminalWideSpacer) continue;
         if (ch == 0) {
             text.append(QLatin1Char(' '));
             colOf.push_back(col);
@@ -69,15 +65,17 @@ void terminalRowText(const VTermScreenCell *cells, int cols, QString &text, std:
 }
 
 void searchTerminalRow(const QRegularExpression &re, qint64 line, const VTermScreenCell *cells, int cols,
-                       std::vector<TerminalSearchMatch> &out, QString &text, std::vector<int> &colOf)
+                       std::vector<TerminalSearchMatch> &out, QString &text, std::vector<int> &colOf,
+                       bool skipBlankRows)
 {
     terminalRowText(cells, cols, text, colOf);
-    // Rows that are all blank cannot match a non-blank query; skip the engine.
-    bool blank = true;
-    for (const QChar c : text) {
-        if (c != QLatin1Char(' ')) { blank = false; break; }
+    if (skipBlankRows) {
+        bool blank = true;
+        for (const QChar c : text) {
+            if (c != QLatin1Char(' ')) { blank = false; break; }
+        }
+        if (blank) return;
     }
-    if (blank) return;
 
     auto it = re.globalMatch(text);
     while (it.hasNext()) {
@@ -107,7 +105,7 @@ std::vector<TerminalSearchMatch> searchScrollback(const ScrollbackBuffer &buffer
             return out;
         }
         if (buffer.lineAt(i, cols, row.data())) {
-            searchTerminalRow(re, firstLineId + i, row.data(), cols, out, text, colOf);
+            searchTerminalRow(re, firstLineId + i, row.data(), cols, out, text, colOf, false);
         }
     }
     return out;

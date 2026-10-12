@@ -47,7 +47,14 @@ int nonToolTabCount(ads::CDockManager *manager);
 
 ads::CDockAreaWidget *findToolDockArea(ads::CDockManager *manager);
 
-// True when `area` fills (almost) all of its parent splitter.
+class QSplitter;
+
+// The vertical splitter that divides `area`'s column from the editor above it
+// (the first vertical ancestor; side-by-side tool areas share it).
+QSplitter *toolAreaSplitter(ads::CDockAreaWidget *area);
+
+// True after toggleToolAreaMaximized grew the area and no one has dragged the
+// splitter since.
 bool isToolAreaMaximized(ads::CDockAreaWidget *area);
 
 // Grows `area` to fill its splitter, or puts the previous sizes back (3:1 if

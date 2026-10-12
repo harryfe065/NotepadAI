@@ -231,7 +231,10 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
         c = ';';
       }
       if(c == ';') {
-        vt->parser.v.csi.argi++;
+        /* NotepadAI patch: never write past args[]; surplus arguments are
+         * folded into the last slot (upstream overflowed into the VTerm). */
+        if(vt->parser.v.csi.argi < CSI_ARGS_MAX - 1)
+          vt->parser.v.csi.argi++;
         vt->parser.v.csi.args[vt->parser.v.csi.argi] = CSI_ARG_MISSING;
         break;
       }

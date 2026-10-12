@@ -61,6 +61,7 @@ private slots:
     void wholeWordOption();
     void regexOption();
     void matchColumnsSkipWideSpacer();
+    void skipBlankRowsOnlySkipsBlankRows();
     void scrollbackSearchUsesStableLineIds();
     void cancelStopsEarly();
 };
@@ -153,6 +154,28 @@ void TestTerminalSearch::matchColumnsSkipWideSpacer()
     QCOMPARE(out.size(), std::size_t(1));
     QCOMPARE(out[0].col, 0);
     QCOMPARE(out[0].width, 2);
+}
+
+void TestTerminalSearch::skipBlankRowsOnlySkipsBlankRows()
+{
+    // A regex that matches empty text must not report every blank row.
+    const QRegularExpression re = terminalSearchRegex([] {
+        TerminalSearchOptions o;
+        o.query = QStringLiteral("x*");
+        o.regex = true;
+        return o;
+    }());
+    QVERIFY(re.isValid());
+    std::vector<TerminalSearchMatch> out;
+    QString text;
+    std::vector<int> colOf;
+    const auto blank = row(QString(), 4);
+    searchTerminalRow(re, 0, blank.data(), 4, out, text, colOf, true);
+    QVERIFY(out.empty());
+
+    const auto hit = row(QStringLiteral("axx"), 4);
+    searchTerminalRow(re, 1, hit.data(), 4, out, text, colOf, true);
+    QVERIFY(!out.empty());
 }
 
 void TestTerminalSearch::scrollbackSearchUsesStableLineIds()

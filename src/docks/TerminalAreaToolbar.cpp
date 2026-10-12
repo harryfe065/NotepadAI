@@ -20,6 +20,7 @@
 
 #include "DockBottomToolTab.h"
 #include "TerminalDock.h"
+#include "TerminalIcons.h"
 #include "TerminalProcessStats.h"
 
 #include "DockAreaTabBar.h"
@@ -37,39 +38,14 @@
 #include <QToolButton>
 #include <QToolTip>
 
-QIcon terminalTintedIcon(const QString &svgPath, const QColor &color, const QColor &dotColor)
-{
-    const QIcon source(svgPath);
-    if (source.isNull()) return source;
-    QIcon out;
-    for (int size : {16, 20, 24, 32, 48, 64}) {
-        QPixmap pm = source.pixmap(size, size);
-        if (pm.isNull()) continue;
-        QPainter p(&pm);
-        p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-        p.fillRect(pm.rect(), color);
-        if (dotColor.isValid()) {
-            p.setCompositionMode(QPainter::CompositionMode_SourceOver);
-            p.setRenderHint(QPainter::Antialiasing, true);
-            const qreal d = size * 0.42;
-            p.setPen(Qt::NoPen);
-            p.setBrush(dotColor);
-            p.drawEllipse(QRectF(size - d, 0, d, d));
-        }
-        p.end();
-        out.addPixmap(pm);
-    }
-    return out;
-}
-
 TerminalAreaToolbar::TerminalAreaToolbar(ads::CDockAreaWidget *area)
     : QWidget(area->titleBar())
     , m_area(area)
 {
     setObjectName(QStringLiteral("TerminalAreaToolbar"));
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(6, 0, 4, 0);
-    layout->setSpacing(2);
+    layout->setContentsMargins(8, 0, 4, 0);
+    layout->setSpacing(4);
 
     m_stats = new QLabel(this);
     m_stats->setTextFormat(Qt::PlainText);
@@ -123,7 +99,8 @@ QToolButton *TerminalAreaToolbar::makeButton(const QString &toolTip)
     b->setAutoRaise(true);
     b->setToolTip(toolTip);
     b->setIconSize(QSize(14, 14));
-    b->setFocusPolicy(Qt::NoFocus);
+    // Keyboard-reachable, but a click does not pull focus out of the terminal.
+    b->setFocusPolicy(Qt::TabFocus);
     return b;
 }
 

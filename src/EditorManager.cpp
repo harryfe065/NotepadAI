@@ -26,6 +26,7 @@
 
 #include "DarkPalette.h"
 #include "EditorManager.h"
+#include "EditorThemeColors.h"
 #include "ScintillaNext.h"
 #include "Scintilla.h"
 
@@ -555,8 +556,9 @@ void EditorManager::applyTheme(bool dark)
 void EditorManager::applyThemeToEditor(ScintillaNext *editor, bool dark, bool initialSetup)
 {
     // Scintilla colors are 0xBBGGRR; setElementColour takes 0xAABBGGRR.
-    const int defaultFore     = dark ? 0xD4D4D4 : 0x000000;
-    const int defaultBack     = dark ? 0x1E1E1E : 0xFFFFFF;
+    const EditorThemeColors base = EditorThemeColors::forTheme(dark);
+    const int defaultFore     = toScintillaColour(base.foreground);
+    const int defaultBack     = toScintillaColour(base.background);
     const int lineNumberFore  = dark ? 0x858585 : 0x808080;
     const int lineNumberBack  = dark ? 0x252526 : 0xE4E4E4;
     const int braceLightFore  = dark ? 0x00A5FF : 0x0000FF;
@@ -582,7 +584,7 @@ void EditorManager::applyThemeToEditor(ScintillaNext *editor, bool dark, bool in
     // that buries text under it. Use VSCode's dark-selection blue (#264F78)
     // so highlighted text stays readable; light mode gets the pale blue we
     // already use elsewhere (#ADD6FF). Format is 0xAABBGGRR.
-    const unsigned int selectionBack           = dark ? 0xFF784F26U : 0xFFFFD6ADU;
+    const unsigned int selectionBack           = 0xFF000000U | static_cast<unsigned int>(toScintillaColour(base.selection));
     const unsigned int selectionAdditionalBack = dark ? 0xFF6A4520U : 0xFFEFCBA3U;
 
     editor->styleSetFore(STYLE_DEFAULT, defaultFore);

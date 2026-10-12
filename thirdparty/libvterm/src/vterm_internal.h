@@ -21,7 +21,9 @@
 
 #define INTERMED_MAX 16
 
-#define CSI_ARGS_MAX 16
+/* NotepadAI patch: 32 so real-world SGR runs (attrs + two RGB colours with
+ * sub-parameters) fit; the parser now also stops at the bound. */
+#define CSI_ARGS_MAX 32
 #define CSI_LEADER_MAX 16
 
 #define BUFIDX_PRIMARY   0
@@ -275,6 +277,9 @@ void vterm_state_free(VTermState *state);
 void vterm_state_newpen(VTermState *state);
 void vterm_state_resetpen(VTermState *state);
 void vterm_state_setpen(VTermState *state, const long args[], int argcount);
+/* Worst case SGR report: bold, dim, italic, curly underline (2), blink, reverse,
+ * conceal, strike, font, RGB fg (5), RGB bg (5), small/baseline (NotepadAI patch). */
+#define VTERM_PEN_MAX_ARGS 24
 int  vterm_state_getpen(VTermState *state, long args[], int argcount);
 void vterm_state_savepen(VTermState *state, int save);
 

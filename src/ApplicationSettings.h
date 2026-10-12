@@ -64,6 +64,13 @@ Q_SIGNAL\
     void lname##Changed(type lname);\
 
 
+// Default terminal font size; also what Ctrl+0 in a terminal resets to.
+#ifdef Q_OS_MACOS
+inline constexpr int kDefaultTerminalPointSize = 12;
+#else
+inline constexpr int kDefaultTerminalPointSize = 10;
+#endif
+
 class ApplicationSettings : public QSettings
 {
     Q_OBJECT

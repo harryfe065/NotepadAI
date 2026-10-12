@@ -34,7 +34,8 @@ class TerminalContrastCache;
 // conceal. `defaultBg` cells need no background fill (the row is pre-filled).
 struct TerminalCellColors
 {
-    QRgb fg = 0;
+    QRgb fg = 0;        // final text colour (faint applied)
+    QRgb baseFg = 0;    // text colour before faint
     QRgb bg = 0;
     bool defaultBg = true;
     bool invisible = false;

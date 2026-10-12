@@ -22,6 +22,8 @@
 #include "TerminalRowLayout.h"
 
 #include <QFont>
+#include <QGlyphRun>
+#include <QList>
 #include <QHash>
 #include <QPointF>
 #include <QRawFont>
@@ -68,6 +70,12 @@ private:
     std::vector<QRawFont> m_raw;   // [0..3] primary variants, then fallbacks
     Ref m_ascii[4][128] = {};
     QHash<quint64, Ref> m_map;
+    // Multi-codepoint clusters are shaped once (QTextLayout) and replayed.
+    struct ShapedCluster {
+        QList<QGlyphRun> runs;
+        qreal ascent = 0;
+    };
+    QHash<QString, ShapedCluster> m_clusters;
 
     std::vector<quint32> m_indexes;
     std::vector<QPointF> m_positions;

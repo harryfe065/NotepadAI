@@ -17,12 +17,9 @@
  */
 
 #include "TerminalCellSource.h"
+#include "ScrollbackBuffer.h"
 
 #include <algorithm>
-
-namespace {
-constexpr uint32_t kWideSpacer = 0xFFFFFFFFu;
-} // namespace
 
 QString extractSelectionText(const TerminalCellSource &src,
                              QPoint start, QPoint end)
@@ -58,7 +55,7 @@ QString extractSelectionText(const TerminalCellSource &src,
         const qsizetype lineStart = out.size();
         for (int col = startCol; col <= endCol; ++col) {
             const VTermScreenCell cell = src.cellAt(row, col);
-            if (cell.chars[0] == kWideSpacer) {
+            if (cell.chars[0] == kTerminalWideSpacer) {
                 continue;
             }
             if (cell.chars[0] == 0) {

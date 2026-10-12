@@ -1828,8 +1828,8 @@ static void request_status_string(VTermState *state, VTermStringFragment frag)
 
   switch(tmp[0] | tmp[1]<<8 | tmp[2]<<16) {
     case 'm': {
-      // Query SGR
-      long args[20];
+      // Query SGR. vterm_state_getpen emits at most VTERM_PEN_MAX_ARGS.
+      long args[VTERM_PEN_MAX_ARGS];
       int argc = vterm_state_getpen(state, args, sizeof(args)/sizeof(args[0]));
       size_t cur = 0;
 

@@ -26,6 +26,9 @@
 #include <cstdint>
 #include <vector>
 
+// chars[0] of the right half of a wide character, as libvterm reports it.
+constexpr uint32_t kTerminalWideSpacer = 0xFFFFFFFFu;
+
 // Bounded history of terminal lines; sb_pushline writes here, sb_popline reads.
 //
 // Storage is compact and contiguous: every cell is 8 bytes (codepoint + interned
@@ -101,6 +104,7 @@ private:
     void evictOldest();
     uint32_t reserveCells(uint32_t length);
     void growArena(uint32_t needed);
+    void compactArena();
     uint32_t internStyle(const Style &style);
     uint32_t internCluster(const uint32_t *chars);
     void rehashStyles(std::size_t buckets);

@@ -55,8 +55,11 @@ QRegularExpression terminalSearchRegex(const TerminalSearchOptions &options);
 void terminalRowText(const VTermScreenCell *cells, int cols, QString &text, std::vector<int> &colOf);
 
 // Appends every match of `re` in one row. Scratch buffers are reused.
+// `skipBlankRows` skips all-blank rows without running the engine; pass it
+// only when the query cannot match spaces (a literal without one).
 void searchTerminalRow(const QRegularExpression &re, qint64 line, const VTermScreenCell *cells, int cols,
-                       std::vector<TerminalSearchMatch> &out, QString &text, std::vector<int> &colOf);
+                       std::vector<TerminalSearchMatch> &out, QString &text, std::vector<int> &colOf,
+                       bool skipBlankRows = false);
 
 // Searches history lines [fromIndex, size) of `buffer` (a snapshot, so it can
 // run on a worker thread). `firstLineId` is the id of history index 0.

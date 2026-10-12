@@ -27,6 +27,7 @@
 #include <QChildEvent>
 #include <QEvent>
 #include <QMouseEvent>
+#include <QSplitter>
 #include <QSplitterHandle>
 
 namespace {
@@ -129,37 +130,59 @@ ads::CDockAreaWidget *findToolDockArea(ads::CDockManager *manager)
     return nullptr;
 }
 
+namespace {
+
+// The splitter child that contains `area` within `splitter`.
+QWidget *childContaining(QSplitter *splitter, QWidget *area)
+{
+    for (QWidget *w = area; w; w = w->parentWidget()) {
+        if (w->parentWidget() == splitter)
+            return w;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+QSplitter *toolAreaSplitter(ads::CDockAreaWidget *area)
+{
+    for (QWidget *w = area ? area->parentWidget() : nullptr; w; w = w->parentWidget()) {
+        auto *splitter = qobject_cast<QSplitter *>(w);
+        if (splitter && splitter->orientation() == Qt::Vertical && splitter->count() >= 2)
+            return splitter;
+    }
+    return nullptr;
+}
+
 bool isToolAreaMaximized(ads::CDockAreaWidget *area)
 {
-    ads::CDockSplitter *splitter = area ? area->parentSplitter() : nullptr;
-    if (!splitter || splitter->count() < 2)
-        return false;
-    const int index = splitter->indexOf(area);
-    const QList<int> sizes = splitter->sizes();
-    if (index < 0 || index >= sizes.size())
-        return false;
-    int total = 0;
-    for (int s : sizes)
-        total += s;
-    return total > 0 && sizes.at(index) * 10 >= total * 9;
+    QSplitter *splitter = toolAreaSplitter(area);
+    return splitter && splitter->property("nn_toolMaximized").toBool();
 }
 
 bool toggleToolAreaMaximized(ads::CDockAreaWidget *area)
 {
-    ads::CDockSplitter *splitter = area ? area->parentSplitter() : nullptr;
-    if (!splitter || splitter->count() < 2)
-        return false;
-    const int index = splitter->indexOf(area);
+    QSplitter *splitter = toolAreaSplitter(area);
+    QWidget *child = splitter ? childContaining(splitter, area) : nullptr;
+    const int index = child ? splitter->indexOf(child) : -1;
     if (index < 0)
         return false;
 
-    if (isToolAreaMaximized(area)) {
+    if (!splitter->property("nn_toolMaxHooked").toBool()) {
+        splitter->setProperty("nn_toolMaxHooked", true);
+        // splitterMoved fires only for user drags, never for setSizes().
+        QObject::connect(splitter, &QSplitter::splitterMoved, splitter, [splitter]() {
+            splitter->setProperty("nn_toolMaximized", false);
+        });
+    }
+
+    if (splitter->property("nn_toolMaximized").toBool()) {
         const QList<int> saved = splitter->property("nn_toolRestoreSizes").value<QList<int>>();
-        splitter->setProperty("nn_toolRestoreSizes", QVariant());
+        splitter->setProperty("nn_toolMaximized", false);
         if (saved.size() == splitter->count()) {
             splitter->setSizes(saved);
-        } else {
-            pinToolPaneQuarter(splitter);
+        } else if (auto *dockSplitter = qobject_cast<ads::CDockSplitter *>(splitter)) {
+            pinToolPaneQuarter(dockSplitter);
         }
         return false;
     }
@@ -172,8 +195,9 @@ bool toggleToolAreaMaximized(ads::CDockAreaWidget *area)
         s = 0;
     }
     sizes[index] = total;
-    // Non-collapsible neighbours keep their minimum; the area takes the rest.
+    // Non-collapsible neighbours keep their minimum; the column takes the rest.
     splitter->setSizes(sizes);
+    splitter->setProperty("nn_toolMaximized", true);
     return true;
 }
 

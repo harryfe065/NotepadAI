@@ -36,7 +36,8 @@ struct TerminalLink
 };
 
 // The URL or file path covering `index` in `text`, as the terminal shows them
-// on Ctrl+hover. Understands URLs (http, https, file, mailto, ssh, git, ...),
+// on Ctrl+hover. Understands http, https, mailto and file URLs (schemes that
+// would launch arbitrary OS handlers are deliberately not links),
 // `path:line:col`, `path(line,col)` (MSVC), `path:line` and Python's
 // `File "path", line N`. Paths must look like paths (a separator or a file
 // extension) so plain words never light up; whether the file exists is the

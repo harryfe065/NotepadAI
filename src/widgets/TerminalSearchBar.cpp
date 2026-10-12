@@ -17,6 +17,7 @@
  */
 
 #include "TerminalSearchBar.h"
+#include "TerminalIcons.h"
 
 #include <QEvent>
 #include <QFontMetrics>
@@ -28,26 +29,6 @@
 #include <QPainter>
 #include <QToolButton>
 
-namespace {
-
-QIcon tinted(const QString &path, const QColor &color)
-{
-    const QIcon source(path);
-    QIcon out;
-    for (int size : {16, 24, 32, 48}) {
-        QPixmap pm = source.pixmap(size, size);
-        if (pm.isNull()) continue;
-        QPainter p(&pm);
-        p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-        p.fillRect(pm.rect(), color);
-        p.end();
-        out.addPixmap(pm);
-    }
-    return out;
-}
-
-} // namespace
-
 TerminalSearchBar::TerminalSearchBar(QWidget *parent)
     : QFrame(parent)
 {
@@ -56,12 +37,12 @@ TerminalSearchBar::TerminalSearchBar(QWidget *parent)
     setFrameShape(QFrame::NoFrame);
     // Chrome colours from the palette (ui-dna): a raised panel with a 1px rim.
     setStyleSheet(QStringLiteral(
-        "#TerminalSearchBar { background: palette(window); border: 1px solid palette(mid); border-radius: 6px; }"));
+        "#TerminalSearchBar { background: palette(window); border: 1px solid palette(mid); border-radius: 4px; }"));
     setCursor(Qt::ArrowCursor);
 
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(6, 4, 4, 4);
-    layout->setSpacing(2);
+    layout->setContentsMargins(8, 4, 4, 4);
+    layout->setSpacing(4);
 
     m_edit = new QLineEdit(this);
     m_edit->setPlaceholderText(tr("Find"));
@@ -84,7 +65,7 @@ TerminalSearchBar::TerminalSearchBar(QWidget *parent)
     m_count->setAlignment(Qt::AlignCenter);
     layout->addSpacing(4);
     layout->addWidget(m_count);
-    layout->addSpacing(2);
+    layout->addSpacing(4);
 
     m_prev = makeButton(tr("Previous match (Shift+Enter)"));
     m_next = makeButton(tr("Next match (Enter)"));
@@ -114,7 +95,8 @@ QToolButton *TerminalSearchBar::makeToggle(const QString &text, const QString &t
     b->setToolTip(toolTip);
     b->setCheckable(true);
     b->setAutoRaise(true);
-    b->setFocusPolicy(Qt::NoFocus);
+    // Reachable with Tab; clicking keeps the caret in the query.
+    b->setFocusPolicy(Qt::TabFocus);
     QFont f = b->font();
     f.setPointSizeF(f.pointSizeF() * 0.9);
     b->setFont(f);
@@ -127,7 +109,7 @@ QToolButton *TerminalSearchBar::makeButton(const QString &toolTip)
     b->setToolTip(toolTip);
     b->setAutoRaise(true);
     b->setIconSize(QSize(14, 14));
-    b->setFocusPolicy(Qt::NoFocus);
+    b->setFocusPolicy(Qt::TabFocus);
     return b;
 }
 
@@ -224,7 +206,7 @@ void TerminalSearchBar::changeEvent(QEvent *event)
 void TerminalSearchBar::retint()
 {
     const QColor c = palette().color(QPalette::ButtonText);
-    m_prev->setIcon(tinted(QStringLiteral(":/icons/chevron-up.svg"), c));
-    m_next->setIcon(tinted(QStringLiteral(":/icons/chevron-down.svg"), c));
-    m_close->setIcon(tinted(QStringLiteral(":/icons/cross.svg"), c));
+    m_prev->setIcon(terminalTintedIcon(QStringLiteral(":/icons/chevron-up.svg"), c));
+    m_next->setIcon(terminalTintedIcon(QStringLiteral(":/icons/chevron-down.svg"), c));
+    m_close->setIcon(terminalTintedIcon(QStringLiteral(":/icons/cross.svg"), c));
 }

@@ -42,6 +42,10 @@ struct TerminalColorScheme
     // `id` is the Terminal/ColorScheme setting; unknown ids and "app" follow
     // the app theme.
     static TerminalColorScheme forSetting(const QString &id, bool appIsDark);
+    static bool isPreset(const QString &id);
+    // The "follow app" scheme on the editor's own background, foreground and
+    // selection (cursor = foreground).
+    static TerminalColorScheme followingEditor(bool appIsDark, QRgb background, QRgb foreground, QRgb selection);
 };
 
 // xterm's fixed palette for indices 16..255: a 6x6x6 colour cube followed by a

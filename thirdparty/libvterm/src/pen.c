@@ -514,6 +514,10 @@ INTERNAL int vterm_state_getpen(VTermState *state, long args[], int argcount)
 {
   int argi = 0;
 
+  /* The writes below are unchecked; refuse a buffer that could overflow. */
+  if(argcount < VTERM_PEN_MAX_ARGS)
+    return 0;
+
   if(state->pen.bold)
     args[argi++] = 1;
 

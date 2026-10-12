@@ -378,6 +378,8 @@ target_sources(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearch.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchBar.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchBar.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.h
     ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.cpp
     ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.h
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp

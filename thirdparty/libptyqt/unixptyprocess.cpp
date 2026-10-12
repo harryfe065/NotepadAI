@@ -62,6 +62,24 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, const QString &worki
     winp.ws_xpixel = 0;
     winp.ws_ypixel = 0;
 
+    // Everything exec needs is built before forking: allocating in the child of
+    // a multithreaded process can deadlock on the allocator lock.
+    const QByteArray shellPathBytes = m_shellPath.toLocal8Bit();
+    QList<QByteArray> argStorage;
+    std::vector<char *> argv;
+    if (!m_arguments.isEmpty()) {
+        argStorage.reserve(m_arguments.size());
+        argv.reserve(static_cast<size_t>(m_arguments.size()) + 2);
+        argv.push_back(const_cast<char *>(shellPathBytes.constData()));
+        for (const QString &arg : m_arguments) {
+            argStorage.append(arg.toLocal8Bit());
+        }
+        for (QByteArray &arg : argStorage) {
+            argv.push_back(arg.data());
+        }
+        argv.push_back(nullptr);
+    }
+
     int master = -1;
     pid_t pid = forkpty(&master, nullptr, nullptr, &winp);
     if (pid < 0) {
@@ -97,18 +115,8 @@ bool UnixPtyProcess::startProcess(const QString &shellPath, const QString &worki
         }
 
         const QByteArray shellPath = m_shellPath.toLocal8Bit();
-        if (!m_arguments.isEmpty()) {
-            QList<QByteArray> storage;
-            storage.reserve(m_arguments.size());
-            std::vector<char *> argv;
-            argv.reserve(static_cast<size_t>(m_arguments.size()) + 2);
-            argv.push_back(const_cast<char *>(shellPath.constData()));
-            for (const QString &arg : m_arguments) {
-                storage.append(arg.toLocal8Bit());
-                argv.push_back(storage.last().data());
-            }
-            argv.push_back(nullptr);
-            execv(shellPath.constData(), argv.data());
+        if (!argv.empty()) {
+            execv(shellPathBytes.constData(), argv.data());
             _exit(127);
         }
         const QString base = QFileInfo(m_shellPath).fileName();

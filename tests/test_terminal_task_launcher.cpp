@@ -33,6 +33,10 @@ private slots:
     void unknownShell_fallsBackToTyping();
     void windowsQuoting();
     void dropQuoting();
+    void dropQuoting_powerShellSmartQuotes();
+    void dropQuoting_posixBackslashIsQuoted();
+    void paste_stripsControlSequences();
+    void paste_normalisesLineBreaks();
 };
 
 void TestTerminalTaskLauncher::shellKinds()
@@ -130,6 +134,36 @@ void TestTerminalTaskLauncher::dropQuoting()
     QCOMPARE(quotePathForShell(QStringLiteral("C:/o'k"), TerminalShellKind::PowerShell), QStringLiteral("'C:/o''k'"));
     QCOMPARE(quotePathForShell(QStringLiteral("C:/a b"), TerminalShellKind::Cmd), QStringLiteral("\"C:/a b\""));
     QCOMPARE(quotePathForShell(QStringLiteral("C:/plain"), TerminalShellKind::Cmd), QStringLiteral("C:/plain"));
+}
+
+void TestTerminalTaskLauncher::dropQuoting_powerShellSmartQuotes()
+{
+    // PowerShell ends a single-quoted string on U+2018..U+201B as well as on
+    // ', so each one is doubled.
+    const QString path = QStringLiteral("C:/a") + QChar(0x2019) + QStringLiteral("b");
+    const QString expected = QStringLiteral("'C:/a") + QChar(0x2019) + QChar(0x2019) + QStringLiteral("b'");
+    QCOMPARE(quotePathForShell(path, TerminalShellKind::PowerShell), expected);
+}
+
+void TestTerminalTaskLauncher::dropQuoting_posixBackslashIsQuoted()
+{
+    // A bare backslash escapes the next character in POSIX shells.
+    QCOMPARE(quotePathForShell(QStringLiteral("a\\b"), TerminalShellKind::Posix), QStringLiteral("'a\\b'"));
+    QCOMPARE(quotePathForShell(QStringLiteral("C:\\x"), TerminalShellKind::Cmd), QStringLiteral("C:\\x"));
+}
+
+void TestTerminalTaskLauncher::paste_stripsControlSequences()
+{
+    // ESC [201~ would end bracketed paste and run the rest as typed input.
+    const QString evil = QStringLiteral("ls\x1b[201~rm -rf /\x07\x7f") + QChar(0x9B) + QStringLiteral("x");
+    QCOMPARE(sanitizeTerminalPaste(evil), QStringLiteral("ls[201~rm -rf /x"));
+    QCOMPARE(sanitizeTerminalPaste(QStringLiteral("a\tb")), QStringLiteral("a\tb"));
+    QCOMPARE(sanitizeTerminalPaste(QStringLiteral("caf") + QChar(0xE9)), QStringLiteral("caf") + QChar(0xE9));
+}
+
+void TestTerminalTaskLauncher::paste_normalisesLineBreaks()
+{
+    QCOMPARE(sanitizeTerminalPaste(QStringLiteral("a\r\nb\nc\rd")), QStringLiteral("a\rb\rc\rd"));
 }
 
 QTEST_APPLESS_MAIN(TestTerminalTaskLauncher)

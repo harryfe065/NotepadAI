@@ -130,6 +130,28 @@ QString quoteWindowsArgument(const QString &arg)
     return out;
 }
 
+QString sanitizeTerminalPaste(const QString &text)
+{
+    QString out;
+    out.reserve(text.size());
+    for (qsizetype i = 0; i < text.size(); ++i) {
+        const char16_t c = text.at(i).unicode();
+        if (c == u'\r') {
+            out.append(QLatin1Char('\r'));
+            if (i + 1 < text.size() && text.at(i + 1) == QLatin1Char('\n')) ++i;
+            continue;
+        }
+        if (c == u'\n') {
+            out.append(QLatin1Char('\r'));
+            continue;
+        }
+        if (c == u'\t' || (c >= 0x20 && c != 0x7F && (c < 0x80 || c > 0x9F))) {
+            out.append(text.at(i));
+        }
+    }
+    return out;
+}
+
 QString quotePathForShell(const QString &path, TerminalShellKind kind)
 {
     static const QString kPlain = QStringLiteral(
@@ -149,8 +171,16 @@ QString quotePathForShell(const QString &path, TerminalShellKind kind)
     }
     switch (kind) {
     case TerminalShellKind::PowerShell: {
-        QString s = path;
-        s.replace(QLatin1Char('\''), QStringLiteral("''"));
+        // PowerShell also closes single-quoted strings on the typographic
+        // quotes U+2018-U+201B; double every one of them.
+        QString s;
+        s.reserve(path.size() + 2);
+        for (const QChar c : path) {
+            s.append(c);
+            if (c == QLatin1Char('\'') || (c.unicode() >= 0x2018 && c.unicode() <= 0x201B)) {
+                s.append(c);
+            }
+        }
         return QLatin1Char('\'') + s + QLatin1Char('\'');
     }
     case TerminalShellKind::Cmd:

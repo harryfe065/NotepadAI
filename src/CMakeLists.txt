@@ -540,6 +540,7 @@ qt_add_executable(NotepadAI
 	TerminalProcessStats.h
 	TerminalProcessStats.cpp
 
+	EditorThemeColors.h
 	TerminalManager.h
 	TerminalManager.cpp
 	TerminalTaskRegistry.h
@@ -586,6 +587,8 @@ qt_add_executable(NotepadAI
 	widgets/TerminalSearch.cpp
 	widgets/TerminalSearchBar.h
 	widgets/TerminalSearchBar.cpp
+	widgets/TerminalIcons.h
+	widgets/TerminalIcons.cpp
 	widgets/TerminalWidget.h
 	widgets/TerminalWidget.cpp
 	docks/TerminalDock.h

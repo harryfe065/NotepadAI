@@ -39,6 +39,7 @@ private slots:
     void url_trailingPunctuationTrimmed();
     void url_balancedParensKept();
     void url_otherSchemes();
+    void url_unsafeSchemesAreNotLinks();
     void path_lineAndColumn();
     void path_msvcParens();
     void path_windowsDrive();
@@ -74,6 +75,15 @@ void TestTerminalLinks::url_otherSchemes()
 {
     QCOMPARE(at(QStringLiteral("mailto:me@example.com"), QStringLiteral("me")).kind, TerminalLink::Url);
     QCOMPARE(at(QStringLiteral("file:///tmp/x.txt"), QStringLiteral("tmp")).kind, TerminalLink::Url);
+}
+
+void TestTerminalLinks::url_unsafeSchemesAreNotLinks()
+{
+    // Only http(s), mailto and file open from plain text; anything else could
+    // hand a crafted URL to an arbitrary protocol handler.
+    QVERIFY(findTerminalLinkAt(QStringLiteral("javascript:alert(1)"), 12).kind != TerminalLink::Url);
+    QVERIFY(findTerminalLinkAt(QStringLiteral("ssh://host/x"), 6).kind != TerminalLink::Url);
+    QVERIFY(findTerminalLinkAt(QStringLiteral("ms-settings:privacy"), 4).kind != TerminalLink::Url);
 }
 
 void TestTerminalLinks::path_lineAndColumn()

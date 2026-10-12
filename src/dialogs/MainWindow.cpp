@@ -1666,14 +1666,8 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
     // exact ones the gating in tabBarRightClicked uses, so gate == handler.
     connect(ui->actionShowInWorkspace, &QAction::triggered, this, [this]() {
         ScintillaNext *editor = currentEditor();
-        if (!editor) return;
-        const QString filePath = editor->isFile() ? editor->getFilePath() : QString();
-        FolderAsWorkspaceDock *dock = resolveShowInWorkspaceDock(filePath, editor->isFile());
-        if (!dock) return;            // no silent fallback
-        dock->setVisible(true);
-        dock->raise();
-        setActiveWorkspace(dock);
-        dock->revealAndSelectPath(filePath);
+        if (!editor || !editor->isFile()) return;   // nothing saved to locate
+        revealInWorkspace(editor->getFilePath());    // no silent fallback
     });
 
     } // MainWindow::ctor.actionWiring
@@ -5656,7 +5650,8 @@ void MainWindow::openAiAgentAt(const QString &agentId, const QString &cwd, remot
 
 bool MainWindow::revealInWorkspace(const QString &path)
 {
-    FolderAsWorkspaceDock *dock = resolveShowInWorkspaceDock(path, /*isFile=*/!path.isEmpty());
+    // resolveShowInWorkspaceDock's flag means "has a saved path"; a directory has one.
+    FolderAsWorkspaceDock *dock = resolveShowInWorkspaceDock(path, /*hasSavedPath=*/!path.isEmpty());
     if (!dock)
         return false;
     dock->setVisible(true);

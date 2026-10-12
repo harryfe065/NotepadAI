@@ -31,6 +31,10 @@
 #include "TerminalWidget.h"
 #include "TerminalColorScheme.h"
 #include "TerminalAreaToolbar.h"
+#include "TerminalIcons.h"
+#include "EditorThemeColors.h"
+#include "AcpAgentManager.h"
+#include "AiDockGroup.h"
 #include "DockBottomToolTab.h"
 
 #include "DockAreaWidget.h"
@@ -61,6 +65,7 @@
 #include <QDesktopServices>
 #include <QInputDialog>
 #include <QUrl>
+#include <QSplitter>
 #include <QStatusBar>
 #include <QMouseEvent>
 
@@ -80,7 +85,13 @@ TerminalManager::TerminalManager(NotepadNextApplication *app, MainWindow *mainWi
     connect(m_statsTimer, &QTimer::timeout, this, &TerminalManager::refreshProcessStats);
     // Started by updateStatsTimer() once a local terminal is on screen.
 
-    qApp->installEventFilter(this);
+    // Editor tabs dropped on a terminal type their path: watch just those tabs.
+    if (DockedEditor *editor = mainWindow->getDockedEditor()) {
+        for (ScintillaNext *e : mainWindow->editors()) {
+            watchEditorTab(e);
+        }
+        connect(editor, &DockedEditor::editorAdded, this, &TerminalManager::watchEditorTab);
+    }
 
     if (ApplicationSettings *s = app ? app->getSettings() : nullptr) {
         connect(s, &ApplicationSettings::terminalLineHeightPctChanged, this, &TerminalManager::applyAppearance);
@@ -327,12 +338,6 @@ private:
     std::function<void()> m_onDoubleClick;
 };
 
-#ifdef Q_OS_MACOS
-constexpr qreal kDefaultTerminalPointSize = 12;
-#else
-constexpr qreal kDefaultTerminalPointSize = 10;
-#endif
-
 TerminalCursorShape cursorShapeFromSetting(const QString &value)
 {
     if (value == QLatin1String("bar")) return TerminalCursorShape::Bar;
@@ -349,6 +354,16 @@ TerminalCursorBlink cursorBlinkFromSetting(const QString &value)
 
 } // namespace
 
+TerminalColorScheme TerminalManager::currentScheme() const
+{
+    const bool dark = m_app ? m_app->isEffectiveThemeDark() : true;
+    const QString id = (m_app && m_app->getSettings()) ? m_app->getSettings()->terminalColorScheme() : QString();
+    if (TerminalColorScheme::isPreset(id))
+        return TerminalColorScheme::forSetting(id, dark);
+    const EditorThemeColors editor = EditorThemeColors::forTheme(dark);
+    return TerminalColorScheme::followingEditor(dark, editor.background, editor.foreground, editor.selection);
+}
+
 QFont TerminalManager::terminalFont() const
 {
     QFont f;
@@ -364,7 +379,8 @@ TerminalAppearance TerminalManager::appearance() const
     TerminalAppearance a;
     ApplicationSettings *s = m_app ? m_app->getSettings() : nullptr;
     const bool dark = m_app ? m_app->isEffectiveThemeDark() : true;
-    a.scheme = TerminalColorScheme::forSetting(s ? s->terminalColorScheme() : QString(), dark);
+    Q_UNUSED(dark);
+    a.scheme = currentScheme();
     a.font = terminalFont();
     if (s) {
         a.lineHeight = std::clamp(s->terminalLineHeightPct(), 100, 200) / 100.0;
@@ -396,6 +412,31 @@ void TerminalManager::configureDock(TerminalDock *dock)
 {
     applyAppearanceTo(dock, appearance());
     wireWidget(dock);
+    updateLinkBaseDirs(dock);
+}
+
+// Relative paths printed by a terminal resolve against its spawn directory,
+// then the workspace that contains it (else the active workspace).
+void TerminalManager::updateLinkBaseDirs(TerminalDock *dock)
+{
+    TerminalWidget *w = dock ? dock->terminalWidget() : nullptr;
+    if (!w || dock->isRemoteSession())
+        return;
+    QStringList dirs{dock->initialCwd()};
+    const QString cwd = QDir::cleanPath(dock->initialCwd());
+    QString root;
+    for (const QString &candidate : m_filterOpenRoots) {
+        const QString clean = QDir::cleanPath(candidate);
+        if (cwd == clean || cwd.startsWith(clean + QLatin1Char('/'))) {
+            root = clean;
+            break;
+        }
+    }
+    if (root.isEmpty())
+        root = m_filterActiveRoot;
+    if (!root.isEmpty() && !dirs.contains(root))
+        dirs << root;
+    w->setLinkBaseDirs(dirs);
 }
 
 void TerminalManager::applyAppearance()
@@ -423,7 +464,7 @@ void TerminalManager::zoomTerminals(int steps)
 {
     if (!m_app || !m_app->getSettings()) return;
     QFont f = terminalFont();
-    const qreal size = steps == 0 ? kDefaultTerminalPointSize
+    const qreal size = steps == 0 ? qreal(kDefaultTerminalPointSize)
                                   : std::clamp(f.pointSizeF() + steps, 6.0, 48.0);
     if (qFuzzyCompare(size, f.pointSizeF())) return;
     f.setPointSizeF(size);
@@ -531,8 +572,7 @@ void TerminalManager::refreshProcessStats()
         TerminalProcessStats::TreeCpuState out{};
         const TerminalProcessStats::TreeStats stats = TerminalProcessStats::aggregateTree(
             samples, n, pid, prev, now, cpus, &out);
-        d->setProcessStats(stats);
-        d->setCoreLoad(coreLoad);
+        d->setStats(stats, coreLoad);
         if (stats.valid)
             nextState.insert(pid, out);
     }
@@ -664,8 +704,15 @@ void TerminalManager::installToolbar(ads::CDockAreaWidget *area)
         existing->syncToCurrent();
         return;
     }
+    m_toolbars.removeIf([](const QPointer<TerminalAreaToolbar> &tb) { return tb.isNull(); });
     auto *toolbar = new TerminalAreaToolbar(area);
     m_toolbars.append(toolbar);
+    if (QSplitter *splitter = toolAreaSplitter(area)) {
+        // A manual drag ends "maximized"; keep the button honest.
+        connect(splitter, &QSplitter::splitterMoved, toolbar, [toolbar]() {
+            toolbar->setMaximized(isToolAreaMaximized(toolbar->area()));
+        });
+    }
     connect(toolbar, &TerminalAreaToolbar::findRequested, this, [](TerminalDock *dock) {
         if (TerminalWidget *w = dock->terminalWidget())
             w->openSearch();
@@ -707,20 +754,23 @@ void TerminalManager::renameTerminal(TerminalDock *dock)
 {
     if (!dock || dock->isTask())
         return;
+    // Guard taken before the dialog: its nested event loop can delete the tab.
+    const QPointer<TerminalDock> guard(dock);
     bool ok = false;
     const QString current = dock->customName().isEmpty() ? dock->windowTitle() : dock->customName();
     const QString name = QInputDialog::getText(m_mainWindow, tr("Rename Terminal"),
                                                tr("Name (empty restores the automatic title):"),
                                                QLineEdit::Normal, current, &ok);
-    // The dialog ran a nested event loop; the tab may be gone.
-    if (ok && m_docks.contains(QPointer<TerminalDock>(dock)))
-        dock->setCustomName(name);
+    if (ok && guard)
+        guard->setCustomName(name);
 }
 
 QIcon TerminalManager::tabIcon(const TerminalDock *dock) const
 {
     const QPalette pal = m_mainWindow->palette();
-    const bool dark = m_app ? m_app->isEffectiveThemeDark() : true;
+    // Status colours are the active scheme's own green and red, so they fit
+    // the theme instead of being fixed hex values.
+    const TerminalColorScheme scheme = currentScheme();
     QString svg = QStringLiteral(":/icons/square-terminal.svg");
     QColor color = pal.color(QPalette::PlaceholderText);
     switch (dock->taskState()) {
@@ -730,11 +780,11 @@ QIcon TerminalManager::tabIcon(const TerminalDock *dock) const
         break;
     case TerminalDock::TaskState::Succeeded:
         svg = QStringLiteral(":/icons/check.svg");
-        color = dark ? QColor(0x3F, 0xB9, 0x50) : QColor(0x1A, 0x7F, 0x37);
+        color = scheme.ansi[2];
         break;
     case TerminalDock::TaskState::Failed:
         svg = QStringLiteral(":/icons/circle-x.svg");
-        color = dark ? QColor(0xF8, 0x51, 0x49) : QColor(0xCF, 0x22, 0x2E);
+        color = scheme.ansi[1];
         break;
     case TerminalDock::TaskState::None:
         if (dock->isTask())
@@ -773,6 +823,11 @@ void TerminalManager::wireContextMenu(TerminalDock *dock)
                     sendSelectionToAi(dock.data());
             });
         }
+    });
+    connect(tw, &TerminalWidget::contextMenuTailAboutToShow,
+            this, [this, dock = QPointer<TerminalDock>(dock)](QMenu *menu) {
+        if (!dock)
+            return;
         menu->addSeparator();
         if (!dock->isTask()) {
             connect(menu->addAction(tr("Rename...")), &QAction::triggered, this, [this, dock]() {
@@ -786,9 +841,11 @@ void TerminalManager::wireContextMenu(TerminalDock *dock)
         connect(menu->addAction(tr("Close")), &QAction::triggered, this, [dock]() {
             if (!dock)
                 return;
-            // Same path as the tab's close button (confirmation included).
+            // Same path as the tab's close button (confirmation included),
+            // after the menu's exec() returns: closing deletes the widget
+            // whose contextMenuEvent is still on the stack.
             if (ads::CDockWidget *dw = dock->hostDockWidget())
-                dw->requestCloseDockWidget();
+                QTimer::singleShot(0, dw, [dw]() { dw->requestCloseDockWidget(); });
         });
     });
 }
@@ -826,12 +883,21 @@ TerminalDock *TerminalManager::terminalAt(const QPoint &globalPos) const
     return nullptr;
 }
 
+void TerminalManager::watchEditorTab(ScintillaNext *editor)
+{
+    for (QWidget *w = editor; w; w = w->parentWidget()) {
+        if (auto *dw = qobject_cast<ads::CDockWidget *>(w)) {
+            dw->tabWidget()->installEventFilter(this);
+            return;
+        }
+    }
+}
+
 bool TerminalManager::eventFilter(QObject *watched, QEvent *event)
 {
     // ADS drags tabs itself (no MIME drag), but the tab still receives the
     // release before ADS finishes the drag, so a file tab let go over a
-    // terminal can type its path there. Only releases on dock tabs reach the
-    // rest of this function.
+    // terminal can type its path there. Only editor tabs are watched.
     if (event->type() != QEvent::MouseButtonRelease)
         return QObject::eventFilter(watched, event);
     auto *tab = qobject_cast<ads::CDockWidgetTab *>(watched);
@@ -850,7 +916,8 @@ bool TerminalManager::eventFilter(QObject *watched, QEvent *event)
 
     const QPoint global = me->globalPosition().toPoint();
     TerminalDock *target = terminalAt(global);
-    if (!target)
+    // A local path means nothing to a remote shell.
+    if (!target || target->isRemoteSession())
         return QObject::eventFilter(watched, event);
     // When ADS offers a dock target under the pointer the user is docking.
     if (ads::CDockManager *manager = dw->dockManager()) {
@@ -886,29 +953,29 @@ void TerminalManager::openFileAt(const QString &path, int line, int column)
 
 // The AI tab of the terminal's own project (deepest working directory that
 // contains its cwd), else the active one.
+// The AI tab of the terminal's own project: the aiDockGroupKey (directory +
+// SSH profile) of the terminal's cwd or its nearest ancestor that has one,
+// else the active AI tab.
 AiAgentDock *TerminalManager::aiDockFor(TerminalDock *dock) const
 {
-#ifdef Q_OS_WIN
-    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
-#else
-    const Qt::CaseSensitivity cs = Qt::CaseSensitive;
-#endif
-    const QString cwd = QDir::cleanPath(dock->currentCwd());
-    AiAgentDock *best = nullptr;
-    qsizetype bestLength = -1;
-    const auto docks = m_mainWindow->findChildren<AiAgentDock *>();
-    for (AiAgentDock *candidate : docks) {
-        const QString wd = QDir::cleanPath(candidate->workingDirectory());
-        if (wd.isEmpty() || cwd.isEmpty())
-            continue;
-        const bool contains = cwd.compare(wd, cs) == 0
-            || cwd.startsWith(wd.endsWith(QLatin1Char('/')) ? wd : wd + QLatin1Char('/'), cs);
-        if (contains && wd.size() > bestLength) {
-            best = candidate;
-            bestLength = wd.size();
+    AcpAgentManager *agents = m_app ? m_app->getAiAgentManager() : nullptr;
+    if (agents) {
+        const remote::ExecutionContext *ctx = dock->executionContext();
+        const QString profile = (ctx && ctx->isRemote()) ? ctx->sshProfileId() : QString();
+        QString dir = QDir::cleanPath(dock->currentCwd());
+        while (!dir.isEmpty()) {
+            if (AiAgentDock *found = agents->dockForGroup(aiDockGroupKey(dir, profile)))
+                return found;
+            const qsizetype slash = dir.lastIndexOf(QLatin1Char('/'));
+            if (slash <= 0 || dir.endsWith(QLatin1String(":/")))
+                break;
+            dir = dir.left(slash);
+            // "C:" -> "C:/" so the drive root is tried too.
+            if (dir.size() == 2 && dir.at(1) == QLatin1Char(':'))
+                dir += QLatin1Char('/');
         }
     }
-    return best ? best : m_mainWindow->activeAiDock();
+    return m_mainWindow->activeAiDock();
 }
 
 void TerminalManager::sendSelectionToAi(TerminalDock *dock)
@@ -1009,6 +1076,10 @@ void TerminalManager::applyWorkspaceFilter(const QString &activeWorkspaceRoot,
         return;
     m_filterActiveRoot = activeWorkspaceRoot;
     m_filterOpenRoots = openWorkspaceRoots;
+    for (const auto &d : m_docks) {
+        if (d)
+            updateLinkBaseDirs(d.data());
+    }
 
 
     // Two linear passes over live docks. No cwd/space/index scratch lists —

@@ -141,6 +141,8 @@ void TerminalDock::connectTerminal()
         QMessageBox::critical(this, tr("Terminal"), msg);
     });
     connect(m_terminal, &TerminalWidget::titleChanged, this, [this](const QString &title) {
+        // Progress bars re-send the same title many times a second.
+        if (title == m_programTitle) return;
         m_programTitle = title;
         refreshTitle();
     });
@@ -233,6 +235,9 @@ void TerminalDock::refreshTitle()
     } else {
         title = terminalDisplayTitle(m_customName, m_programTitle, m_shell, currentCwd());
     }
+    const QString toolTip = tabToolTip();
+    if (title == windowTitle() && toolTip == m_lastToolTip) return;
+    m_lastToolTip = toolTip;
     setWindowTitle(title);
     emit presentationChanged();
 }
@@ -303,6 +308,13 @@ void TerminalDock::setProcessStats(const TerminalProcessStats::TreeStats &stats)
     emit statsChanged();
 }
 
+void TerminalDock::setStats(const TerminalProcessStats::TreeStats &stats, const QString &coreLoad)
+{
+    m_stats = stats;
+    m_coreLoad = stats.valid ? coreLoad : QString();
+    emit statsChanged();
+}
+
 void TerminalDock::setCoreLoad(const QString &label)
 {
     if (label == m_coreLoad) return;
@@ -352,8 +364,9 @@ bool TerminalDock::confirmClose()
     if (m_terminal && m_terminal->isProcessRunning()) {
         // A local shell idle at its prompt closes silently; only a running
         // command (a child of the shell) is worth asking about. Remote shells
-        // cannot be inspected, so they always ask.
-        if (!m_remoteSession) {
+        // cannot be inspected, and a running task may be pure shell work (a
+        // PowerShell cmdlet has no child process), so both always ask.
+        if (!m_remoteSession && m_taskState != TaskState::Running) {
             QVector<TerminalProcessStats::ProcessSample> samples;
             const auto shellPid = static_cast<quint32>(m_terminal->ptyPid());
             if (TerminalProcessStats::enumerateProcesses(samples)

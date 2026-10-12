@@ -74,7 +74,7 @@ constexpr PresetDef kAppLight = {
     "light", "Light",
     {0x000000, 0xCD3131, 0x00BC00, 0x949800, 0x0451A5, 0xBC05BC, 0x0598BC, 0x555555,
      0x666666, 0xCD3131, 0x14CE14, 0xB5BA00, 0x0451A5, 0xBC05BC, 0x0598BC, 0xA5A5A5},
-    0xFFFFFF, 0x1E1E1E, 0x1E1E1E, 0xADD6FF};
+    0xFFFFFF, 0x000000, 0x000000, 0xADD6FF};
 
 // "Follow app" dark: VS Code Dark+ terminal ANSI on the editor's background
 // (#1E1E1E), foreground (#D4D4D4) and selection (#264F78).
@@ -137,6 +137,25 @@ TerminalColorScheme TerminalColorScheme::forSetting(const QString &id, bool appI
         }
     }
     return appIsDark ? darkScheme() : lightScheme();
+}
+
+bool TerminalColorScheme::isPreset(const QString &id)
+{
+    for (const PresetDef &d : kPresets) {
+        if (id == QLatin1String(d.id)) return true;
+    }
+    return false;
+}
+
+TerminalColorScheme TerminalColorScheme::followingEditor(bool appIsDark, QRgb background, QRgb foreground,
+                                                         QRgb selection)
+{
+    TerminalColorScheme s = appIsDark ? darkScheme() : lightScheme();
+    s.defaultBg = QColor::fromRgb(background);
+    s.defaultFg = QColor::fromRgb(foreground);
+    s.cursor = QColor::fromRgb(foreground);
+    s.selection = QColor::fromRgb(selection);
+    return s;
 }
 
 QRgb xtermIndexedColor(int index)

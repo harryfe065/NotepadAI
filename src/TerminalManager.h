@@ -42,6 +42,8 @@ class AiAgentDock;
 // Not included: TerminalWidget.h pulls in vterm.h, whose `small` bit-field
 // collides with the Windows `small` macro in files that include windows.h.
 struct TerminalAppearance;
+struct TerminalColorScheme;
+class ScintillaNext;
 namespace ads { class CDockAreaWidget; }
 namespace remote { class ExecutionContext; }
 
@@ -107,6 +109,9 @@ private:
     TerminalDock *terminalAt(const QPoint &globalPos) const;
 
     QFont terminalFont() const;
+    TerminalColorScheme currentScheme() const;
+    void updateLinkBaseDirs(TerminalDock *dock);
+    void watchEditorTab(ScintillaNext *editor);
     TerminalAppearance appearance() const;
     void applyAppearanceTo(TerminalDock *dock, const TerminalAppearance &appearance);
     // Appearance + signal wiring for a dock's current TerminalWidget.

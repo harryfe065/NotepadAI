@@ -132,26 +132,29 @@ static QString defaultShellCommand()
 CREATE_SETTING(Terminal, ShellCommand, shellCommand, QString, []() { return defaultShellCommand(); })
 // First installed of the usual terminal faces; Courier New (the Windows
 // system fixed font) only as a last resort.
-static QString defaultTerminalFont()
+static QString findDefaultTerminalFont()
 {
     static const char *const families[] = {
         "Cascadia Mono", "Consolas", "SF Mono", "Menlo", "DejaVu Sans Mono", "Liberation Mono",
     };
-#ifdef Q_OS_MACOS
-    constexpr int pointSize = 12;
-#else
-    constexpr int pointSize = 10;
-#endif
     const QStringList installed = QFontDatabase::families();
     for (const char *name : families) {
         const QString family = QString::fromLatin1(name);
         if (installed.contains(family)) {
-            QFont f(family, pointSize);
+            QFont f(family, kDefaultTerminalPointSize);
             f.setStyleHint(QFont::Monospace);
             return f.toString();
         }
     }
     return QFontDatabase::systemFont(QFontDatabase::FixedFont).toString();
+}
+
+// The settings layer evaluates defaults on every read; enumerating installed
+// fonts is not free, so it happens once per process.
+static QString defaultTerminalFont()
+{
+    static const QString font = findDefaultTerminalFont();
+    return font;
 }
 
 CREATE_SETTING(Terminal, TerminalFont, terminalFont, QString, []() { return defaultTerminalFont(); })

@@ -77,7 +77,7 @@ void trimSpan(const QString &text, int start, int *end)
 TerminalLink urlAt(const QString &text, int index)
 {
     static const QRegularExpression re(QStringLiteral(
-        "\\b(?:https?|ftp|file|mailto|ssh|git|ipfs|ipns|magnet|gemini|gopher|news):"
+        "\\b(?:https?|mailto|file):"
         "[^\\s<>\"'`\\x{2500}-\\x{259F}]+"));
     auto it = re.globalMatch(text);
     while (it.hasNext()) {

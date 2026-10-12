@@ -29,10 +29,6 @@ class QToolButton;
 class TerminalDock;
 namespace ads { class CDockAreaWidget; }
 
-// SVG with stroke="currentColor" rendered in `color` at every device pixel
-// ratio Qt asks for; `dotColor` (if valid) adds a small badge dot top-right.
-QIcon terminalTintedIcon(const QString &svgPath, const QColor &color, const QColor &dotColor = QColor());
-
 // Lives in an ADS dock area's title bar (Zed-style tab-bar controls). Shows
 // the CPU/RAM of the area's current terminal and its actions, and hides itself
 // whenever the current tab is not a terminal. One per area, created lazily.

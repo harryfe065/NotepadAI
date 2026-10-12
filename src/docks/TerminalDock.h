@@ -80,6 +80,8 @@ public:
     void setProcessStats(const TerminalProcessStats::TreeStats &stats);
     TerminalProcessStats::TreeStats processStats() const { return m_stats; }
     void setCoreLoad(const QString &label);
+    // One update (one repaint of the tab-bar readout) per sampling tick.
+    void setStats(const TerminalProcessStats::TreeStats &stats, const QString &coreLoad);
     QString coreLoad() const { return m_coreLoad; }
 
 signals:
@@ -110,6 +112,7 @@ private:
     QString m_customName;
     QString m_programTitle;
     QString m_remoteLabel;
+    QString m_lastToolTip;
     TaskState m_taskState = TaskState::None;
     bool m_taskReportsExit = false;
     bool m_bellPending = false;

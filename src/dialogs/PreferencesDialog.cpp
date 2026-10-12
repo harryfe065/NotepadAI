@@ -375,7 +375,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
 
     m_pendingTerminalFont = settings->terminalFont();
     // The button names the font it would change, e.g. "Cascadia Mono, 10 pt".
-    auto showTerminalFont = [=]() {
+    auto showTerminalFont = [=, this]() {
         QFont f;
         if (!m_pendingTerminalFont.isEmpty() && f.fromString(m_pendingTerminalFont)) {
             ui->btnChooseTerminalFont->setText(tr("%1, %2 pt").arg(f.family()).arg(f.pointSizeF()));
@@ -410,7 +410,10 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
     // Rows go between the font and the memory limit: shell + limit frame the
     // look-and-feel settings, which apply to every open terminal on Apply.
     QFormLayout *terminalForm = ui->formLayoutTerminal;
-    int terminalRow = 3;
+    // New rows go right after the font row, before the memory limit.
+    int terminalRow = 0;
+    terminalForm->getWidgetPosition(ui->btnChooseTerminalFont, &terminalRow, nullptr);
+    ++terminalRow;
     auto addTerminalRow = [&](const QString &label, QWidget *field, const QString &toolTip) {
         auto *labelWidget = new QLabel(label, ui->groupBoxTerminal);
         labelWidget->setBuddy(field);
@@ -476,7 +479,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
         const int i = combo->findData(value);
         combo->setCurrentIndex(i < 0 ? 0 : i);
     };
-    auto loadTerminalAppearance = [=]() {
+    auto loadTerminalAppearance = [=, this]() {
         const QSignalBlocker b1(lineHeight), b2(colorScheme), b3(contrast), b4(cursorShape),
             b5(cursorBlink), b6(scrollback), b7(copyOnSelect), b8(bellSound);
         lineHeight->setValue(settings->terminalLineHeightPct());
@@ -490,7 +493,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
     };
     loadTerminalAppearance();
 
-    auto markDirty = [=]() { m_pending.markDirty(); };
+    auto markDirty = [=, this]() { m_pending.markDirty(); };
     connect(lineHeight, QOverload<int>::of(&QSpinBox::valueChanged), this, markDirty);
     connect(contrast, QOverload<int>::of(&QSpinBox::valueChanged), this, markDirty);
     connect(scrollback, QOverload<int>::of(&QSpinBox::valueChanged), this, markDirty);
@@ -500,7 +503,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
     connect(copyOnSelect, &QCheckBox::toggled, this, markDirty);
     connect(bellSound, &QCheckBox::toggled, this, markDirty);
 
-    m_pending.addApply([=]() {
+    m_pending.addApply([=, this]() {
         settings->setTerminalLineHeightPct(lineHeight->value());
         settings->setTerminalColorScheme(colorScheme->currentData().toString());
         settings->setTerminalMinimumContrast(contrast->value());
