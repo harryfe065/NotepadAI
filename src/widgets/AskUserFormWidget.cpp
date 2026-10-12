@@ -29,6 +29,8 @@
 #include <QRadioButton>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStyledItemDelegate>
+#include <QWheelEvent>
 #include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -78,32 +80,44 @@ QString css(const QColor &c)
     return QStringLiteral("rgb(%1,%2,%3)").arg(c.red()).arg(c.green()).arg(c.blue());
 }
 
-// A checkmark SVG in `color` for QCheckBox::indicator:checked. Style sheets
-// cannot tint an image, so one file per colour is written to the cache dir
-// once per process (a few hundred bytes) and reused by every form.
-QString checkmarkImage(const QColor &color)
+// A 12x12 stroked SVG glyph in `color` for style-sheet `image:` rules. Style
+// sheets cannot tint an image, so one file per glyph and colour is written to
+// the cache dir once per process (a few hundred bytes) and reused.
+QString glyphImage(const char *name, const char *pathData, const QColor &color)
 {
-    static QHash<QRgb, QString> cache;
-    const QRgb key = color.rgb();
+    static QHash<QString, QString> cache;
+    const QString key = QLatin1String(name) + color.name();
     if (const auto it = cache.constFind(key); it != cache.constEnd())
         return it.value();
     QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     if (dir.isEmpty() || !QDir().mkpath(dir))
         dir = QDir::tempPath();
-    const QString path = dir + QStringLiteral("/ask-user-check-") + color.name().mid(1) + QStringLiteral(".svg");
+    const QString path = dir + QStringLiteral("/ask-user-%1-%2.svg").arg(QLatin1String(name), color.name().mid(1));
     if (!QFileInfo::exists(path)) {
         QSaveFile file(path);
         if (file.open(QIODevice::WriteOnly)) {
             file.write(QStringLiteral(
                 "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 12 12\">"
-                "<path d=\"M2.5 6.3 L5 8.8 L9.6 3.4\" fill=\"none\" stroke=\"%1\" stroke-width=\"1.9\""
-                " stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>").arg(color.name()).toUtf8());
+                "<path d=\"%1\" fill=\"none\" stroke=\"%2\" stroke-width=\"1.9\""
+                " stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>")
+                           .arg(QLatin1String(pathData), color.name())
+                           .toUtf8());
             file.commit();
         }
     }
     cache.insert(key, path);
     return path;
 }
+
+// Scrolling the transcript over a dropdown must scroll, not change the pick.
+class NoWheelComboBox : public QComboBox
+{
+public:
+    using QComboBox::QComboBox;
+
+protected:
+    void wheelEvent(QWheelEvent *event) override { event->ignore(); }
+};
 
 // One choice as a rounded, clickable row: the indicator button and the
 // description underneath. A click anywhere on the
@@ -312,7 +326,21 @@ void AskUserFormWidget::applyTheme()
         "QToolButton#auToggle:hover { color: %TEXT%; }"
         "QFrame#askUserForm QLineEdit, QFrame#askUserForm QPlainTextEdit { background: %INPUT%;"
         " color: %TEXT%; border: 1px solid %BORDER%; border-radius: 6px; padding: 4px 6px; }"
-        "QFrame#askUserForm QLineEdit:focus, QFrame#askUserForm QPlainTextEdit:focus { border-color: %ACCENT%; }");
+        "QFrame#askUserForm QLineEdit:focus, QFrame#askUserForm QPlainTextEdit:focus { border-color: %ACCENT%; }"
+        "QFrame#askUserForm QComboBox { background: %INPUT%; color: %TEXT%; border: 1px solid %BORDER%;"
+        " border-radius: 6px; padding: 5px 28px 5px 8px; }"
+        "QFrame#askUserForm QComboBox:hover { border-color: %BORDERSTRONG%; }"
+        "QFrame#askUserForm QComboBox:focus, QFrame#askUserForm QComboBox:on { border-color: %ACCENT%; }"
+        "QFrame#askUserForm QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right;"
+        " width: 24px; border: none; background: transparent; }"
+        "QFrame#askUserForm QComboBox::down-arrow { image: url(\"%CHEVRON%\"); width: 12px; height: 12px; }"
+        "QFrame#askUserForm QComboBox QAbstractItemView { background: %BASE%; color: %TEXT%;"
+        " border: 1px solid %BORDER%; padding: 4px; outline: 0; }"
+        "QFrame#askUserForm QComboBox QAbstractItemView::item { min-height: 26px; padding: 0px 8px;"
+        " border-radius: 4px; }"
+        "QFrame#askUserForm QComboBox QAbstractItemView::item:hover,"
+        " QFrame#askUserForm QComboBox QAbstractItemView::item:selected { background: %ACCENTTINT%;"
+        " color: %TEXT%; }");
     const std::pair<const char *, QColor> vars[] = {
         {"%BASE%", base},           {"%BORDERSTRONG%", borderStrong}, {"%BORDER%", border},
         {"%HOVER%", hover},
@@ -322,7 +350,8 @@ void AskUserFormWidget::applyTheme()
     };
     for (const auto &[key, color] : vars)
         sheet.replace(QLatin1String(key), css(color));
-    sheet.replace(QLatin1String("%CHECKMARK%"), checkmarkImage(onAccent));
+    sheet.replace(QLatin1String("%CHECKMARK%"), glyphImage("check", "M2.5 6.3 L5 8.8 L9.6 3.4", onAccent));
+    sheet.replace(QLatin1String("%CHEVRON%"), glyphImage("chevron", "M3 4.6 L6 7.6 L9 4.6", muted));
     setStyleSheet(sheet);
 }
 
@@ -615,7 +644,9 @@ void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
 void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
 {
     const Question &q = m_spec.questions.at(index);
-    row.combo = new QComboBox(row.container);
+    row.combo = new NoWheelComboBox(row.container);
+    // Item rules in the style sheet apply only with a styled delegate.
+    row.combo->setItemDelegate(new QStyledItemDelegate(row.combo));
     row.combo->addItem(tr("Choose…"), QString()); // index 0 = no answer
     for (const AskUserForm::Option &opt : q.options) {
         const bool recommended = q.recommended.toString() == opt.value;
