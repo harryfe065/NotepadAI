@@ -83,8 +83,6 @@ constexpr int kWheelLines = 3;
 // Search: re-run after typing settles; follow new output in small batches.
 constexpr int kSearchDebounceMs = 100;
 constexpr int kSearchFollowMs = 150;
-// Hyperlinks remembered per terminal (oldest dropped first).
-constexpr std::size_t kMaxOsc8Spans = 2048;
 constexpr int kMaxLogicalLineRows = 16;
 constexpr int kMaxPathCache = 512;
 
@@ -227,6 +225,9 @@ TerminalWidget::TerminalWidget(QWidget *parent)
     m_searchFollow->setSingleShot(true);
     m_searchFollow->setInterval(kSearchFollowMs);
     connect(m_searchFollow, &QTimer::timeout, this, &TerminalWidget::searchNewOutput);
+    m_linkText = [this](qint64 startLine, int startCol, qint64 endLine, int endCol) {
+        return textBetween(startLine, startCol, endLine, endCol);
+    };
     m_searchWatcher = new QFutureWatcher<TerminalSearchSession::HistoryResult>(this);
     connect(m_searchWatcher, &QFutureWatcherBase::finished, this, &TerminalWidget::onHistoryScanned);
     m_clock.start();
@@ -344,10 +345,7 @@ int TerminalWidget::vtermSetTermProp(VTermProp prop, VTermValue *val, void *user
         w->m_altScreen = val->boolean != 0;
         // The screen buffer swapped: hyperlinks recorded on live rows no
         // longer describe what is shown there.
-        const qint64 liveStart = w->m_linesDropped + w->m_scrollback.size();
-        for (Osc8Span &span : w->m_osc8Spans) {
-            if (span.endLine >= liveStart) span.dead = true;
-        }
+        w->m_links.killFrom(w->m_linesDropped + w->m_scrollback.size());
         // Full-screen apps own the whole grid; history is not shown under them.
         w->m_scrollOffset = 0;
         w->m_scrollbarDirty = true;
@@ -441,26 +439,12 @@ void TerminalWidget::handleOsc(int command, const QByteArray &payload)
         if (m_vt) {
             vterm_state_get_cursorpos(vterm_obtain_state(m_vt), &pos);
         }
-        const qint64 line = m_linesDropped + m_scrollback.size() + pos.row;
-        if (m_osc8Open && (line > m_osc8StartLine || (line == m_osc8StartLine && pos.col > m_osc8StartCol))) {
-            m_osc8Spans.push_back({m_osc8StartLine, m_osc8StartCol, line, pos.col, m_osc8Uri,
-                                   textBetween(m_osc8StartLine, m_osc8StartCol, line, pos.col)});
-            if (m_osc8Spans.size() > kMaxOsc8Spans) {
-                m_osc8Spans.pop_front();
-            }
+        const qint64 liveStart = m_linesDropped + m_scrollback.size();
+        const qint64 line = liveStart + pos.row;
+        if (const TerminalHyperlinks::Span *span = m_links.handle(uri, line, pos.col, m_linkText)) {
             // Its faint underline: just the rows it covers.
-            const qint64 liveStart = m_linesDropped + m_scrollback.size();
-            markLiveRowsDirty(static_cast<int>(std::max<qint64>(0, m_osc8StartLine - liveStart)),
+            markLiveRowsDirty(static_cast<int>(std::max<qint64>(0, span->startLine - liveStart)),
                               static_cast<int>(line - liveStart) + 1);
-        }
-        // Schemes that would launch arbitrary OS handlers are not links.
-        const QString scheme = QUrl(uri).scheme().toLower();
-        m_osc8Open = scheme == QLatin1String("http") || scheme == QLatin1String("https")
-            || scheme == QLatin1String("mailto") || scheme == QLatin1String("file");
-        if (m_osc8Open) {
-            m_osc8StartLine = line;
-            m_osc8StartCol = pos.col;
-            m_osc8Uri = uri;
         }
         return;
     }
@@ -1274,15 +1258,8 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         m_touchedRow.assign(touchedSize, 0);
         m_touchedBelow.assign(touchedSize, 0);
         // Hyperlinks reaching the painted rows, found once for the whole paint.
-        m_paintOsc8.clear();
-        if (!m_osc8Spans.empty() && first <= last) {
-            const qint64 firstLine = lineIdForAbsoluteRow(viewportToAbsoluteRow(first));
-            const qint64 lastLine = lineIdForAbsoluteRow(viewportToAbsoluteRow(last));
-            for (std::size_t i = 0; i < m_osc8Spans.size(); ++i) {
-                const Osc8Span &span = m_osc8Spans[i];
-                if (span.endLine >= firstLine && span.startLine <= lastLine) m_paintOsc8.push_back(i);
-            }
-        }
+        m_links.gatherVisible(lineIdForAbsoluteRow(viewportToAbsoluteRow(first)),
+                              lineIdForAbsoluteRow(viewportToAbsoluteRow(last)));
         // Rows fill their own cells (paintRow); the space above and below the
         // grid is filled here.
         const QRgb bg = m_palette.defaultBg;
@@ -1457,19 +1434,13 @@ void TerminalWidget::paintRow(QPainter &p, QPainter &devicePainter, const Termin
     paintDecorations(p, y);
 
     // OSC 8 hyperlinks: a faint underline marks them without Ctrl.
-    if (!m_paintOsc8.empty()) {
+    m_links.forEachOnLine(lineId, m_linkText, [&](int from, int to) {
+        if (to < 0) to = m_cols;
+        if (to <= from) return;
         QColor faint = QColor::fromRgb(m_palette.defaultFg);
         faint.setAlpha(90);
-        for (const std::size_t index : m_paintOsc8) {
-            Osc8Span &span = m_osc8Spans[index];
-            if (span.endLine < lineId || span.startLine > lineId || !osc8SpanAlive(span)) continue;
-            const int from = span.startLine == lineId ? span.startCol : 0;
-            const int to = span.endLine == lineId ? span.endCol : m_cols;
-            if (to > from) {
-                p.fillRect(QRectF(columnX(from), y + m_underlineY, (to - from) * m_cellW, m_lineWidth), faint);
-            }
-        }
-    }
+        p.fillRect(QRectF(columnX(from), y + m_underlineY, (to - from) * m_cellW, m_lineWidth), faint);
+    });
     // The current search hit is also outlined, so it does not rely on colour.
     if (m_rowActiveFrom >= 0 && m_rowActiveTo > m_rowActiveFrom) {
         p.save();
@@ -2273,9 +2244,7 @@ void TerminalWidget::noteLinesDropped(int count)
 {
     if (count <= 0) return;
     m_linesDropped += count;
-    while (!m_osc8Spans.empty() && m_osc8Spans.front().endLine < m_linesDropped) {
-        m_osc8Spans.pop_front();
-    }
+    m_links.dropBefore(m_linesDropped);
     m_search.linesDropped(m_linesDropped);
     if (m_hover.valid && m_hover.startLine < m_linesDropped) {
         clearHoverLink();
@@ -2332,62 +2301,18 @@ void TerminalWidget::openUrlTarget(const QString &target)
 QString TerminalWidget::textBetween(qint64 startLine, int startCol, qint64 endLine, int endCol) const
 {
     if (!m_screen) return QString();
-    WidgetCellSource src(m_scrollback, m_screen, vterm_obtain_state(m_vt), m_rows, m_cols);
-    QString out;
-    for (qint64 line = startLine; line <= endLine; ++line) {
-        const qint64 row = line - m_linesDropped;
-        if (row < 0 || row >= src.rowCount()) return QString();
-        const int from = line == startLine ? startCol : 0;
-        const int to = line == endLine ? endCol : m_cols;
-        for (int col = from; col < to && col < m_cols; ++col) {
-            const VTermScreenCell cell = src.cellAt(static_cast<int>(row), col);
-            if (cell.chars[0] == kTerminalWideSpacer) continue;
-            if (cell.chars[0] == 0) {
-                out.append(QLatin1Char(' '));
-                continue;
-            }
-            for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; ++i) {
-                const char32_t cp = cell.chars[i];
-                out.append(QString::fromUcs4(&cp, 1));
-            }
-        }
-    }
-    return out;
-}
-
-// An OSC 8 span is only a link while its text is still what it covered;
-// output that overwrites it (clear, a redraw) kills it for good.
-bool TerminalWidget::osc8SpanAlive(Osc8Span &span) const
-{
-    if (span.dead) return false;
-    if (span.stale) {
-        span.stale = false;
-        span.dead = textBetween(span.startLine, span.startCol, span.endLine, span.endCol) != span.text;
-    }
-    return !span.dead;
+    const WidgetCellSource src(m_scrollback, m_screen, vterm_obtain_state(m_vt), m_rows, m_cols);
+    return cellTextBetween(src, static_cast<int>(startLine - m_linesDropped), startCol,
+                           static_cast<int>(endLine - m_linesDropped), endCol);
 }
 
 // Called from libvterm's damage callbacks, which arrive merged once per input
 // batch: a link is re-checked only after output touched its rows.
 void TerminalWidget::markOsc8Stale(int firstLiveRow, int endLiveRow)
 {
-    if (m_osc8Spans.empty()) return;
+    if (m_links.isEmpty()) return;
     const qint64 liveStart = m_linesDropped + m_scrollback.size();
-    const qint64 from = liveStart + firstLiveRow;
-    const qint64 to = liveStart + endLiveRow;   // exclusive
-    for (Osc8Span &span : m_osc8Spans) {
-        if (span.endLine >= from && span.startLine < to) span.stale = true;
-    }
-}
-
-const TerminalWidget::Osc8Span *TerminalWidget::osc8SpanAt(qint64 lineId, int col)
-{
-    for (auto it = m_osc8Spans.rbegin(); it != m_osc8Spans.rend(); ++it) {
-        const bool after = lineId > it->startLine || (lineId == it->startLine && col >= it->startCol);
-        const bool before = lineId < it->endLine || (lineId == it->endLine && col < it->endCol);
-        if (after && before && osc8SpanAlive(*it)) return &*it;
-    }
-    return nullptr;
+    m_links.markStale(liveStart + firstLiveRow, liveStart + endLiveRow);
 }
 
 // --- context menu ----------------------------------------------------------------
@@ -2431,7 +2356,7 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
     const qint64 lineId = lineIdForAbsoluteRow(absRow);
     QString url;
     TerminalLink link;
-    if (const Osc8Span *span = osc8SpanAt(lineId, cell.x())) {
+    if (const TerminalHyperlinks::Span *span = m_links.at(lineId, cell.x(), m_linkText)) {
         url = span->uri;   // the program said exactly what it points at
     } else {
         QString text;
@@ -2501,40 +2426,14 @@ bool TerminalWidget::logicalLineAt(int absoluteRow, QString *text, std::vector<q
                                    std::vector<int> *colOf) const
 {
     if (!m_screen) return false;
-    WidgetCellSource src(m_scrollback, m_screen, vterm_obtain_state(m_vt), m_rows, m_cols);
-    const int total = src.rowCount();
-    if (absoluteRow < 0 || absoluteRow >= total) return false;
-    int first = absoluteRow;
-    while (first > 0 && absoluteRow - first < kMaxLogicalLineRows && src.rowWraps(first - 1)) --first;
-    int last = absoluteRow;
-    while (last + 1 < total && last - absoluteRow < kMaxLogicalLineRows && src.rowWraps(last)) ++last;
-
-    text->clear();
-    lineOf->clear();
-    colOf->clear();
-    for (int row = first; row <= last; ++row) {
-        const qint64 id = lineIdForAbsoluteRow(row);
-        for (int col = 0; col < m_cols; ++col) {
-            const VTermScreenCell cell = src.cellAt(row, col);
-            const uint32_t ch = cell.chars[0];
-            if (ch == kTerminalWideSpacer) continue;
-            if (ch == 0) {
-                text->append(QLatin1Char(' '));
-                lineOf->push_back(id);
-                colOf->push_back(col);
-                continue;
-            }
-            for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; ++i) {
-                const char32_t cp = cell.chars[i];
-                const QString s = QString::fromUcs4(&cp, 1);
-                for (const QChar c : s) {
-                    text->append(c);
-                    lineOf->push_back(id);
-                    colOf->push_back(col);
-                }
-            }
-        }
-    }
+    const WidgetCellSource src(m_scrollback, m_screen, vterm_obtain_state(m_vt), m_rows, m_cols);
+    TerminalLogicalLine line;
+    if (!::logicalLineAt(src, absoluteRow, kMaxLogicalLineRows, &line)) return false;
+    *text = std::move(line.text);
+    *colOf = std::move(line.colOf);
+    lineOf->resize(line.rowOf.size());
+    std::transform(line.rowOf.begin(), line.rowOf.end(), lineOf->begin(),
+                   [this](int row) { return lineIdForAbsoluteRow(row); });
     return true;
 }
 
@@ -2557,7 +2456,7 @@ void TerminalWidget::updateHoverLink(const QPoint &pixel, Qt::KeyboardModifiers 
     const qint64 lineId = lineIdForAbsoluteRow(absRow);
 
     // OSC 8 hyperlinks first: the program said exactly what they point at.
-    if (const Osc8Span *span = osc8SpanAt(lineId, cell.x())) {
+    if (const TerminalHyperlinks::Span *span = m_links.at(lineId, cell.x(), m_linkText)) {
         HoverLink link;
         link.valid = true;
         link.url = true;

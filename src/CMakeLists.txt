@@ -577,6 +577,8 @@ qt_add_executable(NotepadAI
 	widgets/TerminalBoxDrawing.cpp
 	widgets/TerminalGlyphCache.h
 	widgets/TerminalGlyphCache.cpp
+	widgets/TerminalHyperlinks.h
+	widgets/TerminalHyperlinks.cpp
 	widgets/TerminalContrast.h
 	widgets/TerminalContrast.cpp
 	widgets/TerminalScrollBar.h

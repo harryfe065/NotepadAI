@@ -145,6 +145,17 @@ target_sources(test_terminal_search_session PRIVATE
 add_test(NAME TerminalSearchSession COMMAND test_terminal_search_session)
 
 
+# --- TerminalHyperlinks: OSC 8 spans, safe schemes, re-check only after damage ---
+qt_add_executable(test_terminal_hyperlinks test_terminal_hyperlinks.cpp)
+target_include_directories(test_terminal_hyperlinks PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
+target_link_libraries(test_terminal_hyperlinks PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_terminal_hyperlinks PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalHyperlinks.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalHyperlinks.h
+)
+add_test(NAME TerminalHyperlinks COMMAND test_terminal_hyperlinks)
+
+
 # --- TerminalGlyphCache tiles: same pixels as drawing each glyph through Qt ---
 qt_add_executable(test_terminal_glyph_tiles test_terminal_glyph_tiles.cpp)
 target_include_directories(test_terminal_glyph_tiles PRIVATE
@@ -399,6 +410,8 @@ target_sources(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalBoxDrawing.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalHyperlinks.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalHyperlinks.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalScrollBar.cpp
