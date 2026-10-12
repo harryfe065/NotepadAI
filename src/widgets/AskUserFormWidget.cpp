@@ -20,9 +20,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -34,9 +36,9 @@ using AskUserForm::QuestionType;
 
 namespace {
 
-constexpr int kOptionIndent = 22; // description under a radio/checkbox label
 constexpr int kTextareaLines = 4;
 constexpr int kOtherButtonId = 1 << 20; // past any option index; never a Qt auto id
+
 // Dropdown item data of the "Other…" entry; never a valid option value.
 const QString &otherItemData()
 {
@@ -44,17 +46,89 @@ const QString &otherItemData()
     return kData;
 }
 
-QString optionText(const AskUserForm::Option &opt, bool recommended)
-{
-    return recommended ? AskUserFormWidget::tr("%1 (recommended)").arg(opt.label) : opt.label;
-}
-
 void fitLines(QPlainTextEdit *edit, int lines)
 {
     const QFontMetrics fm(edit->font());
     const int frame = 2 * edit->frameWidth();
     const int margins = qRound(2 * edit->document()->documentMargin());
-    edit->setFixedHeight(fm.lineSpacing() * lines + frame + margins);
+    edit->setFixedHeight(fm.lineSpacing() * lines + frame + margins + 8); // + stylesheet padding
+}
+
+void repolish(QWidget *w)
+{
+    w->style()->unpolish(w);
+    w->style()->polish(w);
+    w->update();
+}
+
+QColor mix(const QColor &a, const QColor &b, qreal t)
+{
+    return QColor::fromRgbF(static_cast<float>(a.redF() + (b.redF() - a.redF()) * t),
+                            static_cast<float>(a.greenF() + (b.greenF() - a.greenF()) * t),
+                            static_cast<float>(a.blueF() + (b.blueF() - a.blueF()) * t));
+}
+
+QString css(const QColor &c)
+{
+    return QStringLiteral("rgb(%1,%2,%3)").arg(c.red()).arg(c.green()).arg(c.blue());
+}
+
+// One choice as a rounded, clickable row: the indicator button, an optional
+// "Recommended" pill, and the description underneath. A click anywhere on the
+// row toggles the button; the row restyles itself from the button's state.
+class OptionRow : public QFrame
+{
+public:
+    OptionRow(QAbstractButton *button, QWidget *parent)
+        : QFrame(parent)
+        , m_button(button)
+    {
+        setObjectName(QStringLiteral("auOption"));
+        setCursor(Qt::PointingHandCursor);
+        m_layout = new QVBoxLayout(this);
+        m_layout->setContentsMargins(10, 7, 10, 7);
+        m_layout->setSpacing(2);
+        m_top = new QHBoxLayout;
+        m_top->setSpacing(8);
+        m_top->addWidget(button);
+        m_layout->addLayout(m_top);
+        QObject::connect(button, &QAbstractButton::toggled, this, [this](bool on) {
+            setProperty("checked", on);
+            repolish(this);
+        });
+    }
+
+    void addPill(QLabel *pill) { m_top->addWidget(pill); }
+    void addStretch() { m_top->addStretch(1); }
+    void addTopWidget(QWidget *w, int stretch = 0) { m_top->addWidget(w, stretch); }
+    void addBelow(QWidget *w) { m_layout->addWidget(w); }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && m_button->isEnabled()) {
+            if (m_button->isCheckable() && qobject_cast<QRadioButton *>(m_button))
+                m_button->setChecked(true);
+            else
+                m_button->toggle();
+            m_button->setFocus(Qt::MouseFocusReason);
+            event->accept();
+            return;
+        }
+        QFrame::mousePressEvent(event);
+    }
+
+private:
+    QAbstractButton *m_button;
+    QVBoxLayout *m_layout = nullptr;
+    QHBoxLayout *m_top = nullptr;
+};
+
+QLabel *pill(const QString &text, QWidget *parent)
+{
+    auto *label = new QLabel(text, parent);
+    label->setObjectName(QStringLiteral("auPill"));
+    return label;
 }
 
 } // namespace
@@ -65,8 +139,7 @@ AskUserFormWidget::AskUserFormWidget(AskUserForm::Spec spec, const QVector<Answe
     , m_spec(std::move(spec))
 {
     setObjectName(QStringLiteral("askUserForm"));
-    setStyleSheet(QStringLiteral(
-        "QFrame#askUserForm { border: 1px solid palette(mid); border-radius: 6px; }"));
+    setProperty("pending", true);
     buildUi();
     for (int i = 0; i < m_spec.questions.size(); ++i) {
         const QString &id = m_spec.questions.at(i).id;
@@ -77,59 +150,155 @@ AskUserFormWidget::AskUserFormWidget(AskUserForm::Spec spec, const QVector<Answe
             }
         }
     }
+    m_building = false;
+    applyTheme();
+    updateProgress();
 }
 
 QLabel *AskUserFormWidget::mutedLabel(const QString &text, Qt::TextFormat format, QWidget *parent) const
 {
     auto *label = new QLabel(parent);
+    label->setObjectName(QStringLiteral("auMuted"));
     label->setTextFormat(format);
     label->setText(text);
     label->setWordWrap(true);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     label->setOpenExternalLinks(true);
-    label->setStyleSheet(QStringLiteral("QLabel { color: palette(placeholder-text); }"));
     return label;
+}
+
+void AskUserFormWidget::applyTheme()
+{
+    // Computed from the live palette (light and dark), refreshed on
+    // PaletteChange: no single palette() role contrasts in both themes.
+    const QPalette pal = palette();
+    const QColor base = pal.color(QPalette::Base);
+    const QColor text = pal.color(QPalette::Text);
+    const QColor accent = pal.color(QPalette::Highlight);
+    const QColor onAccent = pal.color(QPalette::HighlightedText);
+    const QColor muted = pal.color(QPalette::PlaceholderText);
+    // setStyleSheet itself posts a PaletteChange: rebuild only on a real change.
+    const QString themeKey = base.name() + text.name() + accent.name() + onAccent.name() + muted.name();
+    if (themeKey == m_themeKey)
+        return;
+    m_themeKey = themeKey;
+    const QColor border = mix(base, text, 0.16);
+    const QColor borderStrong = mix(base, text, 0.42);
+    const QColor hover = mix(base, text, 0.06);
+    const QColor input = mix(base, text, 0.03);
+    const QColor accentTint = mix(base, accent, 0.18);
+    const QColor accentLine = mix(base, accent, 0.75);
+    const QColor accentText = mix(accent, text, 0.35); // readable on base and tint
+    const QColor accentHover = mix(accent, text, 0.12);
+
+    QString sheet = QStringLiteral(
+        "QFrame#askUserForm { background: %BASE%; border: 1px solid %BORDER%; border-radius: 8px; }"
+        "QFrame#askUserForm[pending=\"true\"] { border-color: %ACCENTLINE%; }"
+        "QLabel#auBadge { background: %ACCENT%; color: %ONACCENT%; border-radius: 9px;"
+        " min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px; font-weight: 600; }"
+        "QFrame#askUserForm[pending=\"false\"] QLabel#auBadge { background: %HOVER%; color: %MUTED%; }"
+        "QLabel#auNumber { background: %ACCENTTINT%; color: %ACCENTTEXT%; border-radius: 4px;"
+        " padding: 0px 6px; font-weight: 600; }"
+        "QLabel#auMuted, QLabel#auStatus { color: %MUTED%; }"
+        "QLabel#auRequired { color: %MUTED%; }"
+        "QWidget#auQuestion[invalid=\"true\"] QLabel#auRequired { color: %ACCENTTEXT%; font-weight: 600; }"
+        "QLabel#auPill { background: %ACCENTTINT%; color: %ACCENTTEXT%; border-radius: 8px; padding: 0px 7px; }"
+        "QLabel#auRecommendation { color: %MUTED%; border-left: 2px solid %ACCENTLINE%; padding-left: 8px; }"
+        "QFrame#auOption { background: transparent; border: 1px solid %BORDER%; border-radius: 6px; }"
+        "QFrame#auOption:hover { background: %HOVER%; }"
+        "QFrame#auOption[checked=\"true\"] { background: %ACCENTTINT%; border-color: %ACCENTLINE%; }"
+        "QFrame#auOption QRadioButton, QFrame#auOption QCheckBox { background: transparent; spacing: 10px; }"
+        "QRadioButton::indicator, QCheckBox::indicator { width: 14px; height: 14px; background: %INPUT%;"
+        " border: 2px solid %BORDERSTRONG%; }"
+        "QRadioButton::indicator { border-radius: 9px; }"
+        "QCheckBox::indicator { border-radius: 4px; }"
+        "QRadioButton::indicator:hover, QCheckBox::indicator:hover { border-color: %ACCENT%; }"
+        "QRadioButton::indicator:checked { background: %ONACCENT%; border: 5px solid %ACCENT%;"
+        " width: 8px; height: 8px; }"
+        "QCheckBox::indicator:checked { background: %ACCENT%; border-color: %ACCENT%; }"
+        "QPushButton#auSeg { background: transparent; color: %TEXT%; border: 1px solid %BORDER%;"
+        " border-radius: 6px; padding: 5px 16px; }"
+        "QPushButton#auSeg:hover { background: %HOVER%; }"
+        "QPushButton#auSeg:checked { background: %ACCENT%; color: %ONACCENT%; border-color: %ACCENT%; }"
+        "QPushButton#auPrimary { background: %ACCENT%; color: %ONACCENT%; border: none; border-radius: 6px;"
+        " padding: 6px 18px; font-weight: 600; }"
+        "QPushButton#auPrimary:hover { background: %ACCENTHOVER%; }"
+        "QPushButton#auGhost { background: transparent; color: %MUTED%; border: none; border-radius: 6px;"
+        " padding: 6px 12px; }"
+        "QPushButton#auGhost:hover { background: %HOVER%; color: %TEXT%; }"
+        "QToolButton#auLink { background: transparent; color: %MUTED%; border: none; border-radius: 4px;"
+        " padding: 1px 6px; }"
+        "QToolButton#auLink:hover, QToolButton#auLink:checked { background: %HOVER%; color: %ACCENTTEXT%; }"
+        "QToolButton#auToggle { background: transparent; color: %MUTED%; border: none; padding: 0px 4px; }"
+        "QToolButton#auToggle:hover { color: %TEXT%; }"
+        "QFrame#askUserForm QLineEdit, QFrame#askUserForm QPlainTextEdit { background: %INPUT%;"
+        " color: %TEXT%; border: 1px solid %BORDER%; border-radius: 6px; padding: 4px 6px; }"
+        "QFrame#askUserForm QLineEdit:focus, QFrame#askUserForm QPlainTextEdit:focus { border-color: %ACCENT%; }");
+    const std::pair<const char *, QColor> vars[] = {
+        {"%BASE%", base},           {"%BORDERSTRONG%", borderStrong}, {"%BORDER%", border},
+        {"%HOVER%", hover},
+        {"%INPUT%", input},         {"%ACCENTTINT%", accentTint}, {"%ACCENTLINE%", accentLine},
+        {"%ACCENTTEXT%", accentText}, {"%ACCENTHOVER%", accentHover}, {"%ACCENT%", accent},
+        {"%ONACCENT%", onAccent},   {"%MUTED%", muted},           {"%TEXT%", text},
+    };
+    for (const auto &[key, color] : vars)
+        sheet.replace(QLatin1String(key), css(color));
+    setStyleSheet(sheet);
+}
+
+void AskUserFormWidget::changeEvent(QEvent *event)
+{
+    QFrame::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange && !m_building)
+        applyTheme();
 }
 
 void AskUserFormWidget::buildUi()
 {
     auto *root = new QVBoxLayout(this);
-    root->setContentsMargins(8, 6, 8, 8);
-    root->setSpacing(6);
+    root->setContentsMargins(12, 10, 12, 12);
+    root->setSpacing(10);
 
+    // Header: badge, title, status / progress, collapse chevron.
     auto *header = new QHBoxLayout;
-    header->setSpacing(4);
-    m_toggle = new QToolButton(this);
-    m_toggle->setAutoRaise(true);
-    m_toggle->setCheckable(true);
-    m_toggle->setChecked(true);
-    m_toggle->setText(QStringLiteral("▾"));
-    m_toggle->setToolTip(tr("Show or hide the questions"));
-    connect(m_toggle, &QToolButton::toggled, this, &AskUserFormWidget::setExpanded);
-    header->addWidget(m_toggle);
+    header->setSpacing(8);
+    m_badge = new QLabel(QStringLiteral("?"), this);
+    m_badge->setObjectName(QStringLiteral("auBadge"));
+    m_badge->setAlignment(Qt::AlignCenter);
+    header->addWidget(m_badge);
 
     const qsizetype count = m_spec.questions.size();
     QString title = m_spec.title;
     if (title.isEmpty())
-        title = count <= 1 ? tr("Question") : tr("%1 questions").arg(count);
-    else if (count > 1)
-        title = tr("%1 · %2 questions").arg(title).arg(count);
+        title = count <= 1 ? tr("Question for you") : tr("%1 questions for you").arg(count);
     m_titleLabel = new QLabel(title, this);
     m_titleLabel->setWordWrap(true);
     QFont bold = m_titleLabel->font();
     bold.setWeight(QFont::DemiBold);
     m_titleLabel->setFont(bold);
     header->addWidget(m_titleLabel, 1);
-    m_statusLabel = mutedLabel(QString(), Qt::PlainText, this);
-    m_statusLabel->setWordWrap(false);
+
+    m_statusLabel = new QLabel(this);
+    m_statusLabel->setObjectName(QStringLiteral("auStatus"));
     m_statusLabel->hide();
     header->addWidget(m_statusLabel);
+
+    m_toggle = new QToolButton(this);
+    m_toggle->setObjectName(QStringLiteral("auToggle"));
+    m_toggle->setCheckable(true);
+    m_toggle->setChecked(true);
+    m_toggle->setText(QStringLiteral("▾"));
+    m_toggle->setToolTip(tr("Show or hide the questions"));
+    m_toggle->setCursor(Qt::PointingHandCursor);
+    m_toggle->hide(); // only settled forms collapse
+    connect(m_toggle, &QToolButton::toggled, this, &AskUserFormWidget::setExpanded);
+    header->addWidget(m_toggle);
     root->addLayout(header);
 
     m_body = new QWidget(this);
     auto *bodyLayout = new QVBoxLayout(m_body);
     bodyLayout->setContentsMargins(0, 0, 0, 0);
-    bodyLayout->setSpacing(8);
+    bodyLayout->setSpacing(16);
     m_rows.resize(m_spec.questions.size());
     for (int i = 0; i < m_spec.questions.size(); ++i)
         bodyLayout->addWidget(buildQuestion(i));
@@ -139,18 +308,24 @@ void AskUserFormWidget::buildUi()
     auto *footer = new QHBoxLayout(m_footer);
     footer->setContentsMargins(0, 2, 0, 0);
     footer->setSpacing(6);
-    footer->addWidget(mutedLabel(tr("Enter to submit · Shift+Enter for a new line"), Qt::PlainText,
-                                 m_footer), 1);
+    m_progressLabel = mutedLabel(QString(), Qt::PlainText, m_footer);
+    m_progressLabel->setWordWrap(false);
+    footer->addWidget(m_progressLabel, 1);
     m_dismissButton = new QPushButton(tr("Dismiss"), m_footer);
+    m_dismissButton->setObjectName(QStringLiteral("auGhost"));
     m_dismissButton->setAutoDefault(false);
+    m_dismissButton->setCursor(Qt::PointingHandCursor);
     m_dismissButton->setToolTip(tr("Tell the agent you will not answer this form"));
     connect(m_dismissButton, &QPushButton::clicked, this, [this]() {
         if (isPending())
             emit dismissed();
     });
     footer->addWidget(m_dismissButton);
-    m_submitButton = new QPushButton(tr("Submit"), m_footer);
+    m_submitButton = new QPushButton(tr("Submit  ↵"), m_footer);
+    m_submitButton->setObjectName(QStringLiteral("auPrimary"));
     m_submitButton->setAutoDefault(false);
+    m_submitButton->setCursor(Qt::PointingHandCursor);
+    m_submitButton->setToolTip(tr("Enter submits · Shift+Enter adds a new line"));
     connect(m_submitButton, &QPushButton::clicked, this, &AskUserFormWidget::trySubmit);
     footer->addWidget(m_submitButton);
     root->addWidget(m_footer);
@@ -161,16 +336,23 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     const Question &q = m_spec.questions.at(index);
     Row &row = m_rows[index];
     row.container = new QWidget(m_body);
+    row.container->setObjectName(QStringLiteral("auQuestion"));
     auto *layout = new QVBoxLayout(row.container);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(4);
+    layout->setSpacing(6);
 
-    // Title row: "Q1 · Title", Required, Note, Clarify.
+    // Title row: number chip, title, Required, Note, Clarify.
     auto *titleRow = new QHBoxLayout;
-    titleRow->setSpacing(4);
+    titleRow->setSpacing(8);
     const bool numbered = m_spec.source == AskUserForm::Source::AskUser || m_spec.questions.size() > 1;
-    const QString label = m_spec.source == AskUserForm::Source::AskUser ? q.id : QStringLiteral("Q%1").arg(index + 1);
-    auto *title = new QLabel(numbered ? QStringLiteral("%1 · %2").arg(label, q.title) : q.title, row.container);
+    if (numbered) {
+        const QString label = m_spec.source == AskUserForm::Source::AskUser
+            ? q.id : QStringLiteral("Q%1").arg(index + 1);
+        auto *number = new QLabel(label, row.container);
+        number->setObjectName(QStringLiteral("auNumber"));
+        titleRow->addWidget(number, 0, Qt::AlignVCenter);
+    }
+    auto *title = new QLabel(q.title, row.container);
     title->setWordWrap(true);
     title->setTextInteractionFlags(Qt::TextSelectableByMouse);
     QFont bold = title->font();
@@ -179,34 +361,36 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     titleRow->addWidget(title, 1);
 
     row.requiredLabel = new QLabel(tr("Required"), row.container);
+    row.requiredLabel->setObjectName(QStringLiteral("auRequired"));
     row.requiredLabel->setVisible(q.required);
-    row.requiredLabel->setStyleSheet(QStringLiteral("QLabel { color: palette(placeholder-text); }"));
-    titleRow->addWidget(row.requiredLabel);
+    titleRow->addWidget(row.requiredLabel, 0, Qt::AlignVCenter);
 
     row.noteButton = new QToolButton(row.container);
-    row.noteButton->setAutoRaise(true);
+    row.noteButton->setObjectName(QStringLiteral("auLink"));
     row.noteButton->setCheckable(true);
-    row.noteButton->setText(tr("Note"));
+    row.noteButton->setText(tr("+ Note"));
     row.noteButton->setToolTip(tr("Add a note to this answer"));
+    row.noteButton->setCursor(Qt::PointingHandCursor);
     // Elicitation without a free-text field cannot carry a note.
     const bool canNote = m_spec.source == AskUserForm::Source::AskUser
         || !q.noteFieldKey.isEmpty() || !q.otherFieldKey.isEmpty();
     row.noteButton->setVisible(canNote);
-    titleRow->addWidget(row.noteButton);
+    titleRow->addWidget(row.noteButton, 0, Qt::AlignVCenter);
 
     // Elicitation carries the request in a free-text companion field.
     const bool canClarify = m_spec.source == AskUserForm::Source::AskUser
         || !q.otherFieldKey.isEmpty() || !q.noteFieldKey.isEmpty();
     if (canClarify) {
         auto *clarify = new QToolButton(row.container);
-        clarify->setAutoRaise(true);
+        clarify->setObjectName(QStringLiteral("auLink"));
         clarify->setText(tr("Clarify"));
         clarify->setToolTip(tr("Ask the agent to explain this question"));
+        clarify->setCursor(Qt::PointingHandCursor);
         connect(clarify, &QToolButton::clicked, this, [this, index]() {
             if (isPending())
                 emit clarifyRequested(index);
         });
-        titleRow->addWidget(clarify);
+        titleRow->addWidget(clarify, 0, Qt::AlignVCenter);
     }
     layout->addLayout(titleRow);
 
@@ -232,40 +416,13 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         buildChoice(index, row, layout);
         break;
     case QuestionType::Confirm:
-    case QuestionType::Proposal: {
-        row.group = new QButtonGroup(row.container);
-        const bool proposal = q.type == QuestionType::Proposal;
-        const QString yes = proposal ? tr("Accept") : (q.yesLabel.isEmpty() ? tr("Yes") : q.yesLabel);
-        const QString no = proposal ? tr("Change…") : (q.noLabel.isEmpty() ? tr("No") : q.noLabel);
-        auto *buttons = new QHBoxLayout;
-        buttons->setSpacing(12);
-        for (const QString &text : {yes, no}) {
-            auto *rb = new QRadioButton(text, row.container);
-            row.group->addButton(rb, static_cast<int>(row.optionButtons.size()));
-            row.optionButtons.append(rb);
-            buttons->addWidget(rb);
-            watch(rb);
-        }
-        buttons->addStretch(1);
-        layout->addLayout(buttons);
-        if (proposal) {
-            row.textEdit = new QPlainTextEdit(row.container);
-            row.textEdit->setPlaceholderText(tr("What should change?"));
-            row.textEdit->setTabChangesFocus(true);
-            fitLines(row.textEdit, kTextareaLines);
-            row.textEdit->hide();
-            layout->addWidget(row.textEdit);
-            watch(row.textEdit);
-            connect(row.group, &QButtonGroup::idToggled, this, [this, index](int, bool) {
-                updateProposalEditor(index);
-            });
-        }
+    case QuestionType::Proposal:
+        buildSegmented(index, row, layout);
         break;
-    }
     case QuestionType::Text:
     case QuestionType::Number: {
         row.lineEdit = new QLineEdit(row.container);
-        row.lineEdit->setPlaceholderText(q.placeholder);
+        row.lineEdit->setPlaceholderText(q.placeholder.isEmpty() ? tr("Type your answer") : q.placeholder);
         if (q.type == QuestionType::Number) {
             auto *validator = new QDoubleValidator(row.lineEdit);
             // Answers go to the agent with a dot decimal, whatever the UI locale.
@@ -286,31 +443,37 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         }
         layout->addWidget(row.lineEdit);
         watch(row.lineEdit);
+        connect(row.lineEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
         break;
     }
     case QuestionType::Textarea:
         row.textEdit = new QPlainTextEdit(row.container);
-        row.textEdit->setPlaceholderText(q.placeholder);
+        row.textEdit->setPlaceholderText(q.placeholder.isEmpty() ? tr("Type your answer") : q.placeholder);
         row.textEdit->setTabChangesFocus(true);
         fitLines(row.textEdit, kTextareaLines);
         layout->addWidget(row.textEdit);
         watch(row.textEdit);
+        connect(row.textEdit, &QPlainTextEdit::textChanged, this, &AskUserFormWidget::updateProgress);
         break;
     }
 
     if (!q.recommendation.trimmed().isEmpty()) {
-        layout->addWidget(mutedLabel(tr("Recommended: %1").arg(q.recommendation), Qt::MarkdownText,
-                                     row.container));
+        QLabel *rec = mutedLabel(tr("**Recommended** — %1").arg(q.recommendation), Qt::MarkdownText,
+                                 row.container);
+        rec->setObjectName(QStringLiteral("auRecommendation"));
+        layout->addWidget(rec);
     }
 
     row.noteEdit = new QLineEdit(row.container);
-    row.noteEdit->setPlaceholderText(tr("Note"));
+    row.noteEdit->setPlaceholderText(tr("Note for the agent"));
     row.noteEdit->hide();
     layout->addWidget(row.noteEdit);
     watch(row.noteEdit);
     QLineEdit *noteEdit = row.noteEdit;
-    connect(row.noteButton, &QToolButton::toggled, this, [noteEdit](bool on) {
+    QToolButton *noteButton = row.noteButton;
+    connect(row.noteButton, &QToolButton::toggled, this, [noteEdit, noteButton](bool on) {
         noteEdit->setVisible(on);
+        noteButton->setText(on ? AskUserFormWidget::tr("− Note") : AskUserFormWidget::tr("+ Note"));
         if (on)
             noteEdit->setFocus();
     });
@@ -321,25 +484,38 @@ void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
 {
     const Question &q = m_spec.questions.at(index);
     const bool multi = q.type == QuestionType::Multi;
-    if (!multi)
+    if (!multi) {
         row.group = new QButtonGroup(row.container);
+        connect(row.group, &QButtonGroup::idToggled, this, &AskUserFormWidget::updateProgress);
+    }
     for (int i = 0; i < q.options.size(); ++i) {
         const AskUserForm::Option &opt = q.options.at(i);
         const bool recommended = multi ? q.recommended.toArray().contains(opt.value)
                                        : q.recommended.toString() == opt.value;
-        const QString text = optionText(opt, recommended);
-        QAbstractButton *button = multi ? static_cast<QAbstractButton *>(new QCheckBox(text, row.container))
-                                        : static_cast<QAbstractButton *>(new QRadioButton(text, row.container));
+        QAbstractButton *button = multi
+            ? static_cast<QAbstractButton *>(new QCheckBox(opt.label))
+            : static_cast<QAbstractButton *>(new QRadioButton(opt.label));
+        auto *option = new OptionRow(button, row.container);
+        if (recommended)
+            option->addPill(pill(tr("Recommended"), option));
+        option->addStretch();
+        if (!opt.description.trimmed().isEmpty()) {
+            auto *desc = new QLabel(option);
+            desc->setObjectName(QStringLiteral("auMuted"));
+            desc->setTextFormat(Qt::MarkdownText);
+            desc->setText(opt.description);
+            desc->setWordWrap(true);
+            // Not selectable: a click on the description selects the option.
+            desc->setContentsMargins(button->style()->pixelMetric(QStyle::PM_IndicatorWidth) + 8, 0, 0, 0);
+            option->addBelow(desc);
+        }
         if (row.group)
             row.group->addButton(button, i);
+        else
+            connect(button, &QAbstractButton::toggled, this, &AskUserFormWidget::updateProgress);
         row.optionButtons.append(button);
-        layout->addWidget(button);
+        layout->addWidget(option);
         watch(button);
-        if (!opt.description.trimmed().isEmpty()) {
-            QLabel *desc = mutedLabel(opt.description, Qt::MarkdownText, row.container);
-            desc->setContentsMargins(kOptionIndent, 0, 0, 0);
-            layout->addWidget(desc);
-        }
     }
     if (q.allowOther)
         buildOther(row, layout, multi);
@@ -351,7 +527,8 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
     row.combo = new QComboBox(row.container);
     row.combo->addItem(tr("Choose…"), QString()); // index 0 = no answer
     for (const AskUserForm::Option &opt : q.options) {
-        row.combo->addItem(optionText(opt, q.recommended.toString() == opt.value), opt.value);
+        const bool recommended = q.recommended.toString() == opt.value;
+        row.combo->addItem(recommended ? tr("%1  (recommended)").arg(opt.label) : opt.label, opt.value);
         if (!opt.description.isEmpty())
             row.combo->setItemData(row.combo->count() - 1, opt.description, Qt::ToolTipRole);
     }
@@ -359,12 +536,14 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
         row.combo->addItem(tr("Other…"), otherItemData());
     layout->addWidget(row.combo);
     watch(row.combo);
+    connect(row.combo, &QComboBox::currentIndexChanged, this, &AskUserFormWidget::updateProgress);
     if (q.allowOther) {
         row.otherEdit = new QLineEdit(row.container);
-        row.otherEdit->setPlaceholderText(tr("Other"));
+        row.otherEdit->setPlaceholderText(tr("Type your own answer"));
         row.otherEdit->hide();
         layout->addWidget(row.otherEdit);
         watch(row.otherEdit);
+        connect(row.otherEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
         QComboBox *combo = row.combo;
         QLineEdit *other = row.otherEdit;
         connect(combo, &QComboBox::currentIndexChanged, this, [combo, other](int i) {
@@ -376,19 +555,65 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
     }
 }
 
+void AskUserFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
+{
+    const Question &q = m_spec.questions.at(index);
+    const bool proposal = q.type == QuestionType::Proposal;
+    const QString yes = proposal ? tr("Accept") : (q.yesLabel.isEmpty() ? tr("Yes") : q.yesLabel);
+    const QString no = proposal ? tr("Change…") : (q.noLabel.isEmpty() ? tr("No") : q.noLabel);
+    row.group = new QButtonGroup(row.container);
+    auto *buttons = new QHBoxLayout;
+    buttons->setSpacing(6);
+    const bool hasRecommendation = q.recommended.isBool() || q.recommended.isString();
+    const bool recommendYes = proposal ? q.recommended.toString() != QLatin1String("change")
+                                       : q.recommended.toBool();
+    for (int i = 0; i < 2; ++i) {
+        auto *button = new QPushButton(i == 0 ? yes : no, row.container);
+        button->setObjectName(QStringLiteral("auSeg"));
+        button->setCheckable(true);
+        button->setAutoDefault(false);
+        button->setCursor(Qt::PointingHandCursor);
+        if (hasRecommendation && (i == 0) == recommendYes)
+            button->setToolTip(tr("Recommended"));
+        row.group->addButton(button, i);
+        row.optionButtons.append(button);
+        buttons->addWidget(button);
+        watch(button);
+    }
+    if (hasRecommendation)
+        buttons->addWidget(pill(recommendYes ? tr("Recommended: %1").arg(yes) : tr("Recommended: %1").arg(no),
+                                row.container));
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
+    connect(row.group, &QButtonGroup::idToggled, this, &AskUserFormWidget::updateProgress);
+    if (proposal) {
+        row.textEdit = new QPlainTextEdit(row.container);
+        row.textEdit->setPlaceholderText(tr("What should change?"));
+        row.textEdit->setTabChangesFocus(true);
+        fitLines(row.textEdit, kTextareaLines);
+        row.textEdit->hide();
+        layout->addWidget(row.textEdit);
+        watch(row.textEdit);
+        connect(row.textEdit, &QPlainTextEdit::textChanged, this, &AskUserFormWidget::updateProgress);
+        connect(row.group, &QButtonGroup::idToggled, this, [this, index](int, bool) {
+            updateProposalEditor(index);
+        });
+    }
+}
+
 void AskUserFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
 {
-    auto *line = new QHBoxLayout;
-    line->setSpacing(6);
-    row.otherButton = checkbox ? static_cast<QAbstractButton *>(new QCheckBox(tr("Other:"), row.container))
-                               : static_cast<QAbstractButton *>(new QRadioButton(tr("Other:"), row.container));
+    row.otherButton = checkbox ? static_cast<QAbstractButton *>(new QCheckBox(tr("Other")))
+                               : static_cast<QAbstractButton *>(new QRadioButton(tr("Other")));
+    auto *option = new OptionRow(row.otherButton, row.container);
+    row.otherEdit = new QLineEdit(option);
+    row.otherEdit->setPlaceholderText(tr("Type your own answer"));
+    option->addTopWidget(row.otherEdit, 1);
     if (row.group)
         row.group->addButton(row.otherButton, kOtherButtonId);
-    row.otherEdit = new QLineEdit(row.container);
-    row.otherEdit->setPlaceholderText(tr("Type your own answer"));
-    line->addWidget(row.otherButton);
-    line->addWidget(row.otherEdit, 1);
-    layout->addLayout(line);
+    else
+        connect(row.otherButton, &QAbstractButton::toggled, this, &AskUserFormWidget::updateProgress);
+    layout->addWidget(option);
     watch(row.otherButton);
     watch(row.otherEdit);
     QAbstractButton *button = row.otherButton;
@@ -397,6 +622,7 @@ void AskUserFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
         if (!text.isEmpty())
             button->setChecked(true);
     });
+    connect(row.otherEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
 }
 
 void AskUserFormWidget::watch(QWidget *w)
@@ -411,8 +637,22 @@ void AskUserFormWidget::updateProposalEditor(int index)
         return;
     const bool change = row.optionButtons.at(1)->isChecked();
     row.textEdit->setVisible(change);
-    if (change && isPending())
+    if (change && isPending() && !m_building)
         row.textEdit->setFocus();
+}
+
+void AskUserFormWidget::updateProgress()
+{
+    if (m_building || !m_progressLabel)
+        return;
+    int answered = 0;
+    for (int i = 0; i < m_spec.questions.size(); ++i) {
+        if (AskUserForm::hasAnswer(m_spec.questions.at(i), answerAt(i)))
+            ++answered;
+    }
+    const qsizetype total = m_spec.questions.size();
+    m_progressLabel->setText(total <= 1 ? tr("Enter to submit")
+                                        : tr("%1 of %2 answered · Enter to submit").arg(answered).arg(total));
 }
 
 void AskUserFormWidget::applyAnswer(int index, const Answer &a)
@@ -473,7 +713,7 @@ Answer AskUserFormWidget::answerAt(int index) const
     const Row &row = m_rows.at(index);
     Answer a;
     a.questionId = q.id;
-    a.note = row.noteEdit->text().trimmed();
+    a.note = row.noteEdit ? row.noteEdit->text().trimmed() : QString();
     switch (q.type) {
     case QuestionType::Single:
     case QuestionType::Select:
@@ -563,9 +803,9 @@ void AskUserFormWidget::trySubmit()
         const bool missing = missingChange || (q.required && !AskUserForm::hasAnswer(q, a));
         row.requiredLabel->setText(missingChange ? tr("Describe the change") : tr("Required"));
         row.requiredLabel->setVisible(q.required || missingChange);
-        QFont f = row.requiredLabel->font();
-        f.setBold(missing);
-        row.requiredLabel->setFont(f);
+        row.container->setProperty("invalid", missing);
+        repolish(row.container);
+        repolish(row.requiredLabel);
         if (missing && firstMissing < 0)
             firstMissing = i;
     }
@@ -632,8 +872,18 @@ void AskUserFormWidget::setState(State state, const QString &detail)
     const QString text = statusText(detail);
     m_statusLabel->setText(text);
     m_statusLabel->setVisible(!text.isEmpty());
+    switch (state) {
+    case State::Pending: m_badge->setText(QStringLiteral("?")); break;
+    case State::Answered:
+    case State::AnsweredInChat: m_badge->setText(QStringLiteral("✓")); break;
+    case State::ClarifyRequested: m_badge->setText(QStringLiteral("↻")); break;
+    default: m_badge->setText(QStringLiteral("–")); break;
+    }
+    setProperty("pending", pending);
+    repolish(this);
     m_body->setEnabled(pending);
-    // Settled forms collapse to their status line; the toggle still shows them.
+    // Settled forms collapse to their status line; the chevron shows them.
+    m_toggle->setVisible(!pending);
     m_toggle->setChecked(pending);
     setExpanded(pending);
 }

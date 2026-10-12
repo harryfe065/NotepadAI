@@ -71,12 +71,13 @@ signals:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
 private:
     struct Row {
         QWidget *container = nullptr;
         QLabel *requiredLabel = nullptr;
-        QButtonGroup *group = nullptr;          // single / confirm / proposal radios
+        QButtonGroup *group = nullptr;          // single / confirm / proposal
         QVector<QAbstractButton *> optionButtons; // index == option index (confirm: yes, no)
         QComboBox *combo = nullptr;              // dropdown
         QAbstractButton *otherButton = nullptr;  // radio / checkbox for Other
@@ -91,6 +92,7 @@ private:
     QWidget *buildQuestion(int index);
     void buildChoice(int index, Row &row, QVBoxLayout *layout);
     void buildDropdown(int index, Row &row, QVBoxLayout *layout);
+    void buildSegmented(int index, Row &row, QVBoxLayout *layout);
     void buildOther(Row &row, QVBoxLayout *layout, bool checkbox);
     void applyAnswer(int index, const AskUserForm::Answer &answer);
     AskUserForm::Answer answerAt(int index) const;
@@ -99,19 +101,25 @@ private:
     void trySubmit();
     void watch(QWidget *w);
     void updateProposalEditor(int index);
+    void updateProgress();
     void setExpanded(bool expanded);
+    void applyTheme();
     QString statusText(const QString &detail) const;
     QLabel *mutedLabel(const QString &text, Qt::TextFormat format, QWidget *parent) const;
 
     AskUserForm::Spec m_spec;
     QVector<Row> m_rows;
     State m_state = State::Pending;
+    bool m_building = true;
+    QString m_themeKey; // palette colours the current stylesheet was built from
 
-    QToolButton *m_toggle = nullptr;
+    QLabel *m_badge = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QToolButton *m_toggle = nullptr;
     QWidget *m_body = nullptr;
     QWidget *m_footer = nullptr;
+    QLabel *m_progressLabel = nullptr;
     QPushButton *m_submitButton = nullptr;
     QPushButton *m_dismissButton = nullptr;
 };
