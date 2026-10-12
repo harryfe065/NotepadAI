@@ -236,13 +236,16 @@ bool GoalAgent::mustQueueGoalFollowUp(bool processing, bool agentAdvertisesGoal,
 void GoalAgent::noteDeferredGoalDispatched()
 {
     m_deferredPrefixGoal = false;
+    // The held follow-up is now a turn; its promptEnded evaluates.
+    m_deferredForHold = false;
 }
 
 void GoalAgent::noteDeferredGoalDropped()
 {
-    if (!m_deferredPrefixGoal)
+    if (!m_deferredPrefixGoal && !m_deferredForHold)
         return;
     m_deferredPrefixGoal = false;
+    m_deferredForHold = false;
     if (m_status != Active || m_awaitingJudgeResponse || m_awaitingAuthoring)
         return;
     if (m_targetModel && m_targetModel->isProcessing())
@@ -555,6 +558,12 @@ void GoalAgent::evaluateWhenTargetSettled(const QString &origin)
         return;
     }
     m_deferredForBackground = false;
+    if (m_targetHoldProbe && m_targetHoldProbe()) {
+        m_deferredForHold = true;
+        logDebug(QStringLiteral("%1: deferred (host follow-up queued)").arg(origin));
+        return;
+    }
+    m_deferredForHold = false;
     logDebug(QStringLiteral("%1: evaluating criterion %2").arg(origin).arg(m_currentCriterionIndex));
     evaluateCurrentCriterion();
 }
@@ -843,6 +852,11 @@ void GoalAgent::setSessionRestarter(std::function<RestartedSession(const QString
 void GoalAgent::setTargetPromptDecorator(std::function<QString(const QString &)> fn)
 {
     m_targetPromptDecorator = std::move(fn);
+}
+
+void GoalAgent::setTargetHoldProbe(std::function<bool()> probe)
+{
+    m_targetHoldProbe = std::move(probe);
 }
 
 QString GoalAgent::wireTextForTarget(const QString &displayText) const

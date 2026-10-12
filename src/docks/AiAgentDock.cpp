@@ -1067,6 +1067,12 @@ QTabBar *AiAgentDock::hostTabBar(int *tabIndex) const
     return nullptr;
 }
 
+void AiAgentDock::markSessionUnattended(const QString &sessionId)
+{
+    if (Slot *slot = slotById(sessionId); slot && slot->view)
+        slot->view->setScheduledUnattended(true);
+}
+
 bool AiAgentDock::attachGoalAgent(GoalAgent *goal, const QString &sessionId)
 {
     if (!goal)
@@ -1104,6 +1110,7 @@ bool AiAgentDock::attachGoalAgent(GoalAgent *goal, const QString &sessionId)
             return text;
         return view->applyNewWorktreeInstruction(text);
     });
+    goal->setTargetHoldProbe([view]() { return view && view->holdsGoalEvaluation(); });
     QPointer<GoalAgent> goalPtr = goal;
     connect(goal, &GoalAgent::goalFollowUpQueued, this, [view, goalPtr](const QString &text) {
         if (view) {

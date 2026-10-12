@@ -18,6 +18,8 @@
 
 #include "AcpConnection.h"
 
+#include "AskUserForm.h"
+
 #include "IAcpProcessChannel.h"
 #include "LocalAcpProcessChannel.h"
 #include "remote/ExecutionContext.h"
@@ -39,6 +41,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -52,8 +55,18 @@ Q_LOGGING_CATEGORY(lcAcp, "notepadnext.acp")
 
 namespace {
 
+QString rpcIdKey(const QJsonValue &id)
+{
+    if (id.isDouble())
+        return QString::number(id.toInt());
+    if (id.isString())
+        return id.toString();
+    return QString::number(id.toVariant().toInt());
+}
+
 constexpr int kJsonRpcInvalidParams = -32602;
 constexpr int kJsonRpcMethodNotFound = -32601;
+constexpr int kJsonRpcRequestCancelled = -32800;
 constexpr int kPromptIdleEndDelayMs = 250;
 constexpr int kSessionBusyRetryInitialMs = 200;
 constexpr int kSessionBusyRetryMaxDelayMs = 2000;
@@ -194,6 +207,7 @@ AcpConnection::AcpConnection(QObject *parent)
 AcpConnection::~AcpConnection()
 {
     cancelAllPendingPermissions();
+    m_pendingElicitations.clear();
     // Tear down terminals.
     for (auto it = m_terminals.begin(); it != m_terminals.end(); ++it) {
         if (it.value().proc) {
@@ -419,6 +433,11 @@ void AcpConnection::sendInitialize()
     params.insert(QStringLiteral("clientInfo"), client);
     QJsonObject specCaps;
     specCaps.insert(QStringLiteral("_meta"), AcpProtocol::clientCapabilitiesMeta());
+    if (m_elicitationEnabled) {
+        // Each mode must be listed explicitly: `elicitation: {}` advertises none.
+        specCaps.insert(QStringLiteral("elicitation"),
+                        QJsonObject{{QStringLiteral("form"), QJsonObject{}}});
+    }
     params.insert(QStringLiteral("clientCapabilities"), specCaps);
 
     sendRequest(AcpProtocol::kMethodInitialize, params,
@@ -913,6 +932,8 @@ void AcpConnection::handleInboundRequest(const QJsonValue &id, const QString &me
     } else if (AcpProtocol::isPermissionRequestMethod(method)) {
         handleRequestPermission(id, params,
                                 method == QLatin1String(AcpProtocol::kMethodSessionRequestPermission));
+    } else if (method == QLatin1String(AcpProtocol::kMethodElicitationCreate)) {
+        handleElicitationCreate(id, params);
     } else {
         // ext_method passthrough (and any other unknown method).
         handleExtMethod(id, params);
@@ -921,6 +942,10 @@ void AcpConnection::handleInboundRequest(const QJsonValue &id, const QString &me
 
 void AcpConnection::handleInboundNotification(const QString &method, const QJsonObject &params)
 {
+    if (method == QLatin1String(AcpProtocol::kMethodCancelRequest)) {
+        handleCancelRequest(params);
+        return;
+    }
     if (method != QLatin1String(AcpProtocol::kMethodSessionUpdate)) {
         qCDebug(lcAcp) << "unknown notification:" << method;
         return;
@@ -1455,18 +1480,15 @@ void AcpConnection::handleRequestPermission(const QJsonValue &id,
         }
     }
     // Use the JSON-RPC id (stringified) as the requestId we expose externally.
-    QString requestKey;
-    if (id.isDouble()) {
-        requestKey = QString::number(id.toInt());
-    } else if (id.isString()) {
-        requestKey = id.toString();
-    } else {
-        requestKey = QString::number(id.toVariant().toInt());
-    }
+    const QString requestKey = rpcIdKey(id);
     req.requestId = requestKey;
 
     const QString policy = m_autoApproveProvider ? m_autoApproveProvider() : QStringLiteral("manual");
-    if (policy == QLatin1String("allowAll")) {
+    // ask_user only shows a form; asking permission first is pure friction.
+    const bool askUser = AskUserForm::isAskUserToolCall(
+        toolCall.value(QStringLiteral("name")).toString(), toolCall.value(QStringLiteral("title")).toString(),
+        toolCall.value(QStringLiteral("rawInput")).toObject());
+    if (policy == QLatin1String("allowAll") || askUser) {
         const auto picked = AcpProtocol::pickAutoApproveOptionId(req.options);
         if (picked.has_value()) {
             sendResponse(id, AcpProtocol::permissionResponseToJson(QStringLiteral("selected"),
@@ -1502,6 +1524,61 @@ void AcpConnection::cancelAllPendingPermissions()
         it.value()(QStringLiteral("cancelled"), QString());
     }
     m_pendingPermissions.clear();
+}
+
+// ---------- Elicitation -------------------------------------------------
+
+void AcpConnection::handleElicitationCreate(const QJsonValue &id, const QJsonObject &params)
+{
+    // Form is the default mode; only advertised modes may be requested.
+    const QString mode = params.value(QStringLiteral("mode")).toString(QStringLiteral("form"));
+    if (!m_elicitationEnabled || mode != QLatin1String("form")) {
+        sendErrorResponse(id, kJsonRpcInvalidParams, QStringLiteral("Unsupported elicitation mode: %1").arg(mode));
+        return;
+    }
+    AcpProtocol::AcpElicitationRequest req;
+    req.requestId = rpcIdKey(id);
+    req.toolCallId = params.value(QStringLiteral("toolCallId")).toString();
+    req.message = params.value(QStringLiteral("message")).toString();
+    req.requestedSchema = params.value(QStringLiteral("requestedSchema")).toObject();
+    m_pendingElicitations.insert(req.requestId, id);
+    emit elicitationRequested(req);
+}
+
+void AcpConnection::respondToElicitation(const QString &requestId, const QString &action,
+                                         const QJsonObject &content)
+{
+    const auto it = m_pendingElicitations.find(requestId);
+    if (it == m_pendingElicitations.end())
+        return;
+    const QJsonValue id = it.value();
+    m_pendingElicitations.erase(it);
+    QJsonObject result{{QStringLiteral("action"), action}};
+    if (action == QLatin1String("accept"))
+        result.insert(QStringLiteral("content"), content);
+    sendResponse(id, result);
+}
+
+void AcpConnection::handleCancelRequest(const QJsonObject &params)
+{
+    const QString key = rpcIdKey(params.value(QStringLiteral("requestId")));
+    const auto it = m_pendingElicitations.find(key);
+    if (it == m_pendingElicitations.end())
+        return;
+    const QJsonValue id = it.value();
+    m_pendingElicitations.erase(it);
+    sendErrorResponse(id, kJsonRpcRequestCancelled, QStringLiteral("Request cancelled"));
+    emit elicitationClosed(key);
+}
+
+void AcpConnection::cancelAllPendingElicitations()
+{
+    const auto pending = std::exchange(m_pendingElicitations, {});
+    for (auto it = pending.cbegin(); it != pending.cend(); ++it) {
+        QJsonObject result{{QStringLiteral("action"), QStringLiteral("cancel")}};
+        sendResponse(it.value(), result);
+        emit elicitationClosed(it.key());
+    }
 }
 
 // ---------- ext_method passthrough --------------------------------------
@@ -1540,6 +1617,7 @@ void AcpConnection::handleProcessFinished(int exitCode, QProcess::ExitStatus sta
                        .arg(status == QProcess::NormalExit ? QStringLiteral("normal")
                                                            : QStringLiteral("crash")));
     cancelAllPendingPermissions();
+    cancelAllPendingElicitations();
     stopSessionBusyRetry();
     if (m_promptIdleEndTimer)
         m_promptIdleEndTimer->stop();
@@ -1699,7 +1777,8 @@ bool AcpConnection::hasPendingBackgroundWork() const
 
 bool AcpConnection::hasOpenWork() const
 {
-    return !m_openToolCalls.isEmpty() || !m_pendingPermissions.isEmpty();
+    return !m_openToolCalls.isEmpty() || !m_pendingPermissions.isEmpty()
+        || !m_pendingElicitations.isEmpty();
 }
 
 void AcpConnection::trackToolCallStatus(const QString &toolCallId, const QString &status)

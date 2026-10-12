@@ -37,6 +37,9 @@ struct AcpAgentDefinition
     QMap<QString, QString> env;
     QString icon;
     bool builtin = false;
+    // Interactive question forms: the `ask_user` MCP tool and ACP form
+    // elicitation (AskUserQuestion). Off = the agent asks in plain text.
+    bool interactiveQuestions = true;
 };
 
 // Shell-like splitter shared by the settings dialog and the registry loader.
@@ -118,6 +121,7 @@ inline QJsonObject acpAgentDefinitionToJson(const AcpAgentDefinition &def)
 
     obj.insert(QStringLiteral("icon"), def.icon);
     obj.insert(QStringLiteral("builtin"), def.builtin);
+    obj.insert(QStringLiteral("interactiveQuestions"), def.interactiveQuestions);
     return obj;
 }
 
@@ -151,6 +155,7 @@ inline AcpAgentDefinition acpAgentDefinitionFromJson(const QJsonObject &obj)
 
     def.icon = obj.value(QStringLiteral("icon")).toString();
     def.builtin = obj.value(QStringLiteral("builtin")).toBool(false);
+    def.interactiveQuestions = obj.value(QStringLiteral("interactiveQuestions")).toBool(true);
     return def;
 }
 

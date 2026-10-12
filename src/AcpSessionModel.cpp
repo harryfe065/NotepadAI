@@ -915,12 +915,14 @@ void AcpSessionModel::onPromptEnded()
 
 void AcpSessionModel::appendUserMessage(const QString &text,
                                        const QVector<QPair<QByteArray, QString>> &images,
-                                       bool fromGoalAgent)
+                                       bool fromGoalAgent,
+                                       const QString &marker)
 {
     AcpMessage msg;
     msg.role = QStringLiteral("user");
     msg.timestamp = QDateTime::currentMSecsSinceEpoch();
     msg.fromGoalAgent = fromGoalAgent;
+    msg.marker = marker;
     if (!text.isEmpty()) {
         AcpContentBlock tb;
         tb.kind = AcpContentBlock::Kind::Text;

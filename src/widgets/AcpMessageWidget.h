@@ -82,6 +82,11 @@ public:
     // conversation" buttons at the bottom of the bubble, always visible.
     void setResponseActions(bool enabled);
 
+    // User role: show one clickable `summary` line instead of the content (set
+    // after setContent); clicking toggles the full text. Used for ask_user
+    // answer prompts.
+    void setCollapsedSummary(const QString &summary);
+
     bool isCollapsed() const { return m_collapsed; }
     QString role() const { return m_role; }
     QString plainText() const { return m_text; }
@@ -139,6 +144,8 @@ private:
     QTextBrowser *m_browser = nullptr;     // assistant + non-thought rendered widgets
     MarkdownView *m_markdown = nullptr;    // == m_browser for the assistant role
     QToolButton *m_thoughtHeader = nullptr; // thought role
+    QToolButton *m_summaryHeader = nullptr; // user role, collapsed summary
+    QString m_summary;
     QLabel *m_goalBadge = nullptr;         // Goal badge on result rows
     QVBoxLayout *m_layout = nullptr;
 

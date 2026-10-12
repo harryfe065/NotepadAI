@@ -37,6 +37,7 @@
 #include "AcpProtocol.h"
 #include "AcpTranscriptTruncation.h"
 #include "AcpTurnFolding.h"
+#include "AskUserFormWidget.h"
 
 class AcpAgentRegistry;
 class AcpConnection;
@@ -110,6 +111,13 @@ public:
     // transcript and the exit banner; re-runs hydrateFromModel() against the
     // new model. The view widget itself survives.
     void rebind(AcpSessionModel *model, AcpConnection *connection);
+
+    // Started by a scheduled task: nobody answers forms until the user sends a
+    // message here. A running goal makes the session unattended too.
+    void setScheduledUnattended(bool on) { m_scheduledUnattended = on; }
+    // A cancelled form's "ask in plain text" notice is still queued: the goal
+    // judge must wait for the turn it starts.
+    bool holdsGoalEvaluation() const;
 
 signals:
     void retryRequested();
@@ -233,9 +241,33 @@ private:
     void updateAdvisorButton();
     void sendAdvisorCommand(bool on);
     void submitSlashCommand(const QString &text);
+    // `wireText` (when set) is sent instead of `text`, which stays the bubble.
     void dispatchPrompt(const QString &text,
                         const QVector<QPair<QByteArray, QString>> &images,
+                        bool fromGoalAgent = false,
+                        const QString &marker = {},
+                        const QString &wireText = {});
+
+    // Interactive question forms (ask_user tool calls and form elicitation).
+    enum class FormSource : std::uint8_t { ToolCall, Elicitation };
+    void trackAskUserToolCall(const AcpProtocol::AcpToolCall &tc);
+    void showAskUserToolCallForm(const AcpProtocol::AcpToolCall &tc);
+    void onElicitationRequested(const AcpProtocol::AcpElicitationRequest &req);
+    void onElicitationClosed(const QString &requestId);
+    void presentForm(const AskUserForm::Spec &spec, FormSource source, const QString &key);
+    void onFormSubmitted(const QVector<AskUserForm::Answer> &answers);
+    void onFormDismissed();
+    void onFormClarify(int questionIndex);
+    // Leave the pending form in `state` (read-only) and forget it. A pending
+    // elicitation is answered with `elicitationAction` when one is given.
+    void settlePendingForm(AskUserFormWidget::State state, const QString &detail = {},
+                           const QString &elicitationAction = {});
+    // Send (or queue behind the running turn) a host-built prompt.
+    void sendHostPrompt(const QString &text, const QString &marker, const QString &wireText = {},
                         bool fromGoalAgent = false);
+    bool isUnattended() const;
+    void restoreExpiredForm();
+    void applyMessageMarker(AcpMessageWidget *w, int messageIndex);
     bool inputKeyEventIsSubmit(QKeyEvent *ke) const;
     // Heartbeat indicator at the tail of the transcript: shows time since the
     // last structural event (new message / thought / tool call / plan /
@@ -408,6 +440,18 @@ private:
     AcpPlanWidget *m_planWidget = nullptr;
     QPointer<AcpMessageWidget> m_activeThought;
     QPointer<AcpPermissionPrompt> m_activePermissionPrompt;
+
+    // At most one pending form per session; settled forms stay in the
+    // transcript as standalone widgets (never model entries).
+    QPointer<AskUserFormWidget> m_pendingForm;
+    FormSource m_pendingFormSource = FormSource::ToolCall;
+    QString m_pendingFormKey; // tool-call id or elicitation request id
+    // ask_user calls seen but not yet shown (waiting for completion / turn end).
+    QSet<QString> m_askUserCandidates;
+    QSet<QString> m_askUserShown;
+    // Answers of a form that was superseded or sent for clarification.
+    QVector<AskUserForm::Answer> m_carryAnswers;
+    bool m_scheduledUnattended = false;
 
     bool m_updatingSelectors = false;
 

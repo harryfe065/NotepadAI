@@ -82,6 +82,9 @@ public:
     int slotCount() const { return m_slots.size(); }
     int currentIndex() const { return m_current; }
     QString newestSessionId() const;
+    // Started by a scheduled task: forms are cancelled until the user sends a
+    // message in this session.
+    void markSessionUnattended(const QString &sessionId);
     QString sessionIdAt(int index) const;
 
     void addSlot(QString sessionId,

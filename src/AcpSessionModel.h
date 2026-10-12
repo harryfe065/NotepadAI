@@ -178,7 +178,8 @@ public slots:
     // in toHistoryJson() / when sent over the wire.
     void appendUserMessage(const QString &text,
                            const QVector<QPair<QByteArray, QString>> &images,
-                           bool fromGoalAgent = false);
+                           bool fromGoalAgent = false,
+                           const QString &marker = {});
     void appendSystemMessage(const QString &text, const QString &marker = {});
 
     // Goal-judge mirror. Does not touch coding-agent streaming indices or

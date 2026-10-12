@@ -18,6 +18,7 @@
 
 #include "AcpPromptQueue.h"
 
+#include <algorithm>
 #include <utility>
 
 AcpPromptQueue::SendKind AcpPromptQueue::classifySend(bool processing, bool hasContent, bool nativeGoalSlash)
@@ -54,6 +55,12 @@ std::optional<AcpPromptQueue::Item> AcpPromptQueue::takeNextIfIdle(bool processi
     if (processing)
         return std::nullopt;
     return dequeue();
+}
+
+bool AcpPromptQueue::containsMarker(const QString &marker) const
+{
+    return std::any_of(m_items.cbegin(), m_items.cend(),
+                       [&marker](const Item &item) { return item.marker == marker; });
 }
 
 int AcpPromptQueue::size() const

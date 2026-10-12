@@ -43,6 +43,10 @@ public:
         // Flushed as a goal-agent message so the badge and judge handshake match
         // a side-prompt that was deferred onto this queue.
         bool fromGoalAgent = false;
+        // AcpMessage::marker of the bubble (ask_user answers, no-human notice).
+        QString marker;
+        // What the agent receives when it differs from `text` (the bubble).
+        QString wireText;
     };
 
     static SendKind classifySend(bool processing, bool hasContent, bool nativeGoalSlash);
@@ -53,6 +57,7 @@ public:
     std::optional<Item> takeNextIfIdle(bool processing);
     int size() const;
     const QVector<Item> &items() const { return m_items; }
+    bool containsMarker(const QString &marker) const;
 
 private:
     QVector<Item> m_items;

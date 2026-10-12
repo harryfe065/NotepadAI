@@ -27,6 +27,7 @@
 #include "AiAgentDock.h"
 #include "AiDockGroup.h"
 #include "ApplicationSettings.h"
+#include "AskUserMcp.h"
 #include "ProfileScope.h"
 #include "remote/ExecutionContext.h"
 
@@ -34,6 +35,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QPointer>
@@ -76,6 +78,20 @@ AcpAgentManager::~AcpAgentManager()
     // shutdown() is idempotent — call it here in case the caller forgot.
     shutdown();
 }
+
+namespace {
+
+// Interactive question forms: the notepadai `ask_user` MCP server plus ACP form
+// elicitation. Only for sessions with a chat view (never headless/judge).
+void configureInteractiveQuestions(AcpConnection *conn, bool enabled, bool remote)
+{
+    if (!enabled)
+        return;
+    conn->setMcpServers(QJsonArray{AskUserMcp::serverEntry(remote)});
+    conn->setElicitationEnabled(true);
+}
+
+} // namespace
 
 AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &workingDirectory,
                                         bool recordAsLastUsed, remote::ExecutionContext *context,
@@ -133,6 +149,7 @@ AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &w
     if (isRemote) {
         conn->setRemoteSpawn(context, m_remoteChannelBuilder);
     }
+    configureInteractiveQuestions(conn, agent.interactiveQuestions, isRemote);
 
     auto *model = new AcpSessionModel(sessionId, projectId, /*historyDirOverride=*/QString(), this);
     model->setHistoryStore(m_historyStore);
@@ -398,6 +415,12 @@ QString AcpAgentManager::restartSession(const QString &oldSessionId)
         if (isRemote) {
             newConn->setRemoteSpawn(execCtx, m_remoteChannelBuilder);
         }
+        // Pick up a settings change made since the first spawn.
+        const AcpAgentDefinition latest = m_registry->agent(agent.id);
+        configureInteractiveQuestions(newConn,
+                                      latest.id.isEmpty() ? agent.interactiveQuestions
+                                                          : latest.interactiveQuestions,
+                                      isRemote);
         newConn->spawn(agent, workingDir);
     }
 

@@ -80,6 +80,10 @@ public:
     // the registry at request time so the latest policy is always observed.
     void setAutoApprovePolicyProvider(std::function<QString()> provider);
     void setMcpServers(const QJsonArray &servers);
+    // Advertise `clientCapabilities.elicitation.form` in the NEXT initialize.
+    // Set before spawn(); only sessions with a form UI may enable it.
+    void setElicitationEnabled(bool enabled) { m_elicitationEnabled = enabled; }
+    bool elicitationEnabled() const { return m_elicitationEnabled; }
 
     QString sessionId() const { return m_sessionId; }
     AcpProtocol::AcpAgentInfo agentInfo() const { return m_agentInfo; }
@@ -154,6 +158,10 @@ public slots:
     // User-facing reply to an inbound permission request.
     // `outcome` is "selected" or "cancelled".
     void respondToPermission(const QString &requestId, const QString &outcome, const QString &optionId);
+    // Answer an `elicitation/create`. `action` is "accept" (with `content`),
+    // "decline" or "cancel". Unknown or already-answered ids are ignored.
+    void respondToElicitation(const QString &requestId, const QString &action,
+                              const QJsonObject &content = {});
 
 signals:
     void initialized(const AcpProtocol::AcpAgentInfo &info,
@@ -194,6 +202,10 @@ signals:
     void scheduledJobsChanged();
 
     void permissionRequested(const AcpProtocol::AcpPermissionRequest &req);
+    void elicitationRequested(const AcpProtocol::AcpElicitationRequest &req);
+    // The agent withdrew a pending elicitation ($/cancel_request) or the
+    // process went away; the request is already answered.
+    void elicitationClosed(const QString &requestId);
 
     void requestFailed(const QString &message);
     void errorOccurred(AcpErrorClassifier::AcpErrorKind kind, const QString &friendly);
@@ -250,12 +262,15 @@ private:
     void handleTerminalRelease(const QJsonValue &id, const QJsonObject &params);
     void handleRequestPermission(const QJsonValue &id, const QJsonObject &params, bool nestedOutcome);
     void handleExtMethod(const QJsonValue &id, const QJsonObject &params);
+    void handleElicitationCreate(const QJsonValue &id, const QJsonObject &params);
+    void handleCancelRequest(const QJsonObject &params);
 
     // Path sandbox: canonicalize + check against the working dir.
     bool sandboxRead(const QString &rawPath, QString *canonicalOut, QString *errorOut) const;
     bool sandboxWrite(const QString &rawPath, QString *canonicalOut, QString *errorOut) const;
 
     void cancelAllPendingPermissions();
+    void cancelAllPendingElicitations();
     void emitClassifiedError(const QString &raw);
 
     // Idempotent prompt-lifecycle wrappers. The agent may also signal these via
@@ -324,6 +339,9 @@ private:
     QJsonArray m_mcpServers;
 
     QHash<QString, std::function<void(const QString &outcome, const QString &optionId)>> m_pendingPermissions;
+    // requestId key -> JSON-RPC id of an unanswered elicitation/create.
+    QHash<QString, QJsonValue> m_pendingElicitations;
+    bool m_elicitationEnabled = false;
     // Tool calls reported but not yet in a final state. Wake-up turns have no
     // session/prompt to bound them, so this is what keeps the turn open while
     // a long tool runs silently.

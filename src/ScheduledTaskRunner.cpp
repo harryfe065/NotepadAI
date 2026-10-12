@@ -199,6 +199,7 @@ void ScheduledTaskRunner::fireTask(const QString &taskId)
 
     const QString sessionId = dock->newestSessionId();
     m_activeSessions[taskId] = sessionId;
+    dock->markSessionUnattended(sessionId);
     emit taskFired(dock);
 
     AcpConnection *conn = m_manager->connectionFor(sessionId);

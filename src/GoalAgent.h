@@ -161,6 +161,10 @@ public:
     // (continue / restart / handoff). Transcript stays on the display text.
     // `/compact` is never decorated — it is a system command.
     void setTargetPromptDecorator(std::function<QString(const QString &)> fn);
+    // True while the target has a host-queued follow-up that will start another
+    // turn (the "ask in plain text" notice after a cancelled ask_user form).
+    // Judging waits for that turn instead of the one that just ended.
+    void setTargetHoldProbe(std::function<bool()> probe);
 
 signals:
     void statusChanged(GoalAgent::Status status);
@@ -263,6 +267,8 @@ private:
     bool m_restartedSinceLastEval = false;
     std::function<RestartedSession(const QString &)> m_sessionRestarter;
     std::function<QString(const QString &)> m_targetPromptDecorator;
+    std::function<bool()> m_targetHoldProbe;
+    bool m_deferredForHold = false;
 
     bool m_awaitingAuthoring = false;
     QString m_authoringBuffer;

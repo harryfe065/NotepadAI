@@ -351,6 +351,36 @@ void AcpMessageWidget::setContent(const QVector<AcpProtocol::AcpContentBlock> &c
     rerender();
 }
 
+void AcpMessageWidget::setCollapsedSummary(const QString &summary)
+{
+    if (m_role != QLatin1String("user") || !m_layout)
+        return;
+    if (!m_summaryHeader) {
+        m_summaryHeader = new QToolButton(this);
+        m_summaryHeader->setCheckable(true);
+        m_summaryHeader->setAutoRaise(true);
+        m_summaryHeader->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_summaryHeader->setStyleSheet(QStringLiteral(
+            "QToolButton { border: none; padding: 0; margin: 0; text-align: left; }"));
+        m_summaryHeader->setCursor(Qt::PointingHandCursor);
+        if (m_chatFontSet)
+            m_summaryHeader->setFont(m_chatFont);
+        m_layout->insertWidget(0, m_summaryHeader);
+        connect(m_summaryHeader, &QToolButton::toggled, this, [this](bool expanded) {
+            for (QWidget *w : std::as_const(m_userBlocks))
+                w->setVisible(expanded);
+            m_summaryHeader->setText(m_summary + (expanded ? QStringLiteral("  ▾") : QStringLiteral("  ▸")));
+            updateGeometry();
+        });
+    }
+    m_summary = QStringLiteral("↳ ") + summary;
+    m_summaryHeader->setChecked(false);
+    m_summaryHeader->setText(m_summary + QStringLiteral("  ▸"));
+    for (QWidget *w : std::as_const(m_userBlocks))
+        w->setVisible(false);
+    updateGeometry();
+}
+
 void AcpMessageWidget::clearUserBlocks()
 {
     for (QWidget *w : m_userBlocks) {
@@ -425,9 +455,11 @@ QSize AcpMessageWidget::sizeHint() const
     int marginL = 0, marginT = 0, marginR = 0, marginB = 0;
     m_layout->getContentsMargins(&marginL, &marginT, &marginR, &marginB);
     int contentW = 0;
+    if (m_summaryHeader)
+        contentW = m_summaryHeader->sizeHint().width();
     for (const QWidget *w : m_userBlocks) {
         const auto *lbl = qobject_cast<const QLabel *>(w);
-        if (!lbl)
+        if (!lbl || lbl->isHidden())
             continue;
         const QFontMetrics fm = lbl->fontMetrics();
         const QStringList lines = lbl->text().split(QLatin1Char('\n'));
@@ -435,7 +467,7 @@ QSize AcpMessageWidget::sizeHint() const
             contentW = qMax(contentW, fm.horizontalAdvance(line));
     }
     for (const auto &ui : m_userImages) {
-        if (!ui.original.isNull())
+        if (!ui.original.isNull() && !ui.label->isHidden())
             contentW = qMax(contentW, ui.original.width());
     }
     // +2 border, +2 so a line that exactly fits is not wrapped by rounding.
@@ -660,6 +692,8 @@ void AcpMessageWidget::setChatFont(const QFont &font)
         m_thoughtHeader->setFont(hdr);
         m_thoughtHeader->setFixedHeight(m_thoughtHeader->fontMetrics().height());
     }
+    if (m_summaryHeader)
+        m_summaryHeader->setFont(font);
     // User-role bodies are QLabels built lazily in setContent(); stamp the ones
     // that exist now (newly-created ones are stamped in setContent()).
     for (QWidget *w : m_userBlocks) {

@@ -20,6 +20,7 @@
 #include "ui_AcpAgentSettingsDialog.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -281,6 +282,12 @@ public:
         m_form->addRow(tr("&Arguments:"), m_argsEdit);
         m_form->addRow(tr("&Environment:"), m_envEdit);
 
+        m_interactiveCheck = new QCheckBox(tr("Interactive questions"), this);
+        m_interactiveCheck->setChecked(def->interactiveQuestions);
+        m_interactiveCheck->setToolTip(tr("Let the agent ask questions as forms in the chat "
+                                          "(ask_user tool and AskUserQuestion). Applies to new sessions."));
+        m_form->addRow(QString(), m_interactiveCheck);
+
         auto *buttons = new QDialogButtonBox(
             QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
         connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -348,6 +355,7 @@ public:
         m_def->command = command;
         m_def->args = splitArgsFromInput(m_argsEdit->toPlainText());
         m_def->icon = iconValue;
+        m_def->interactiveQuestions = m_interactiveCheck->isChecked();
 
         m_def->env.clear();
         const QStringList envLines = m_envEdit->toPlainText().split(QLatin1Char('\n'));
@@ -427,6 +435,7 @@ private:
     QFormLayout *m_form = nullptr;
     QLineEdit *m_nameEdit = nullptr;
     QComboBox *m_iconCombo = nullptr;
+    QCheckBox *m_interactiveCheck = nullptr;
     QWidget *m_iconPathRow = nullptr;
     QLineEdit *m_iconPathEdit = nullptr;
     QLineEdit *m_commandEdit = nullptr;

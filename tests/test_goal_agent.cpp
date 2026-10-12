@@ -191,6 +191,7 @@ private slots:
     void stopBackgroundTask_sendsAsyncTaskStopRequest();
     void stopBackgroundTask_ignoresUnknownOrUnstoppableTask();
     void goalJudge_defersWhileBackgroundTaskLive();
+    void goalJudge_waitsWhileHostFollowUpQueued();
     void goalJudge_waitsForWakeTurnAfterTasksFinish();
     void streamingChunk_whileIdle_startsTurn();
     void sessionBusy_doesNotFail_retriesPrompt();
@@ -2488,6 +2489,46 @@ void TestGoalAgent::goalJudge_defersWhileBackgroundTaskLive()
     // Task finishes, no wake-up turn arrives: judge once after the grace.
     finishAsyncTask(channel, QStringLiteral("t1"));
     QVERIFY(!logsHave(logs, "evaluateViaHttp"));
+    QTRY_VERIFY(logsHave(logs, "evaluateViaHttp"));
+}
+
+void TestGoalAgent::goalJudge_waitsWhileHostFollowUpQueued()
+{
+    ApplicationSettings settings;
+    GoalAgent goal(nullptr, &settings);
+
+    AcpConnection target;
+    auto *channel = new RecordingChannel(&target);
+    target.attachChannelForTest(channel);
+    channel->start();
+    target.setSessionIdForTest(QStringLiteral("s1"));
+
+    QTemporaryDir historyDir;
+    QVERIFY(historyDir.isValid());
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("p1"), historyDir.path());
+    model.appendUserMessage(QStringLiteral("do the work"), {});
+    model.onPromptStarted();
+    goal.setTargetSession(&target, &model);
+    // The view queued "ask in plain text" after cancelling an ask_user form.
+    bool held = true;
+    goal.setTargetHoldProbe([&held]() { return held; });
+
+    QSignalSpy logs(&goal, &GoalAgent::debugLogEntry);
+    GoalAgent::StartRequest req;
+    req.targetSessionId = QStringLiteral("s1");
+    req.successCriteriaList = QStringList{QStringLiteral("done")};
+    req.agentId = QLatin1String(GoalHttpJudge::kAgentId);
+    req.attachToExistingConversation = true;
+    QVERIFY(goal.start(req));
+
+    model.onPromptEnded();
+    goal.onTargetPromptEnded();
+    QVERIFY(!logsHave(logs, "evaluateViaHttp"));
+    QVERIFY(logsHave(logs, "host follow-up queued"));
+
+    // The user removed the queued follow-up: nothing else will end a turn.
+    held = false;
+    goal.noteDeferredGoalDropped();
     QTRY_VERIFY(logsHave(logs, "evaluateViaHttp"));
 }
 
