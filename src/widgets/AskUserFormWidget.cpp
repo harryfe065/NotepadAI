@@ -73,8 +73,8 @@ QString css(const QColor &c)
     return QStringLiteral("rgb(%1,%2,%3)").arg(c.red()).arg(c.green()).arg(c.blue());
 }
 
-// One choice as a rounded, clickable row: the indicator button, an optional
-// "Recommended" pill, and the description underneath. A click anywhere on the
+// One choice as a rounded, clickable row: the indicator button and the
+// description underneath. A click anywhere on the
 // row toggles the button; the row restyles itself from the button's state.
 class OptionRow : public QFrame
 {
@@ -98,7 +98,6 @@ public:
         });
     }
 
-    void addPill(QLabel *pill) { m_top->addWidget(pill); }
     void addStretch() { m_top->addStretch(1); }
     void addTopWidget(QWidget *w, int stretch = 0) { m_top->addWidget(w, stretch); }
     void addBelow(QWidget *w) { m_layout->addWidget(w); }
@@ -124,11 +123,49 @@ private:
     QHBoxLayout *m_top = nullptr;
 };
 
-QLabel *pill(const QString &text, QWidget *parent)
+// The recommended answer as the user sees it ("Yes", "radio, checkbox", ...).
+QString recommendedText(const Question &q)
 {
-    auto *label = new QLabel(text, parent);
-    label->setObjectName(QStringLiteral("auPill"));
-    return label;
+    const QJsonValue &rec = q.recommended;
+    auto labelOf = [&q](const QString &value) {
+        for (const AskUserForm::Option &opt : q.options) {
+            if (opt.value == value)
+                return opt.label;
+        }
+        return value;
+    };
+    switch (q.type) {
+    case QuestionType::Single:
+    case QuestionType::Select:
+        return rec.isString() ? labelOf(rec.toString()) : QString();
+    case QuestionType::Multi: {
+        QStringList labels;
+        for (const QJsonValue &v : rec.toArray())
+            labels.append(labelOf(v.toString()));
+        return labels.join(QStringLiteral(", "));
+    }
+    case QuestionType::Confirm:
+        if (!rec.isBool())
+            return {};
+        if (rec.toBool())
+            return q.yesLabel.isEmpty() ? AskUserFormWidget::tr("Yes") : q.yesLabel;
+        return q.noLabel.isEmpty() ? AskUserFormWidget::tr("No") : q.noLabel;
+    case QuestionType::Proposal:
+        return rec.toString() == QLatin1String("change") ? AskUserFormWidget::tr("Change")
+                                                         : AskUserFormWidget::tr("Accept");
+    case QuestionType::Text:
+    case QuestionType::Textarea:
+        return rec.toString().trimmed().isEmpty() ? QString() : QStringLiteral("\u201c%1\u201d").arg(rec.toString());
+    case QuestionType::Number:
+        return rec.isDouble() ? QString::number(rec.toDouble(), 'g', 15) : QString();
+    }
+    return {};
+}
+
+// Marks the recommended choice next to its label; the footnote line says why.
+QString withMark(const QString &label, bool recommended)
+{
+    return recommended ? label + QStringLiteral(" *") : label;
 }
 
 } // namespace
@@ -202,8 +239,7 @@ void AskUserFormWidget::applyTheme()
         "QLabel#auMuted, QLabel#auStatus { color: %MUTED%; }"
         "QLabel#auRequired { color: %MUTED%; }"
         "QWidget#auQuestion[invalid=\"true\"] QLabel#auRequired { color: %ACCENTTEXT%; font-weight: 600; }"
-        "QLabel#auPill { background: %ACCENTTINT%; color: %ACCENTTEXT%; border-radius: 8px; padding: 0px 7px; }"
-        "QLabel#auRecommendation { color: %MUTED%; border-left: 2px solid %ACCENTLINE%; padding-left: 8px; }"
+        "QLabel#auRecommendation { color: %MUTED%; font-style: italic; }"
         "QFrame#auOption { background: transparent; border: 1px solid %BORDER%; border-radius: 6px; }"
         "QFrame#auOption:hover { background: %HOVER%; }"
         "QFrame#auOption[checked=\"true\"] { background: %ACCENTTINT%; border-color: %ACCENTLINE%; }"
@@ -404,6 +440,24 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         layout->addWidget(body);
     }
 
+    const QString recommended = recommendedText(q);
+    if (!recommended.isEmpty() || !q.recommendation.trimmed().isEmpty()) {
+        QString line = QStringLiteral("* ") + tr("Recommended");
+        if (!recommended.isEmpty())
+            line += QStringLiteral(": ") + recommended;
+        if (!q.recommendation.trimmed().isEmpty())
+            line += QStringLiteral(" \u2014 ") + q.recommendation.trimmed();
+        auto *rec = new QLabel(line, row.container);
+        rec->setObjectName(QStringLiteral("auRecommendation"));
+        rec->setTextFormat(Qt::PlainText);
+        rec->setWordWrap(true);
+        rec->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        QFont italic = rec->font();
+        italic.setItalic(true);
+        rec->setFont(italic);
+        layout->addWidget(rec);
+    }
+
     switch (q.type) {
     case QuestionType::Single:
     case QuestionType::Select:
@@ -457,13 +511,6 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         break;
     }
 
-    if (!q.recommendation.trimmed().isEmpty()) {
-        QLabel *rec = mutedLabel(tr("**Recommended** — %1").arg(q.recommendation), Qt::MarkdownText,
-                                 row.container);
-        rec->setObjectName(QStringLiteral("auRecommendation"));
-        layout->addWidget(rec);
-    }
-
     row.noteEdit = new QLineEdit(row.container);
     row.noteEdit->setPlaceholderText(tr("Note for the agent"));
     row.noteEdit->hide();
@@ -493,11 +540,9 @@ void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
         const bool recommended = multi ? q.recommended.toArray().contains(opt.value)
                                        : q.recommended.toString() == opt.value;
         QAbstractButton *button = multi
-            ? static_cast<QAbstractButton *>(new QCheckBox(opt.label))
-            : static_cast<QAbstractButton *>(new QRadioButton(opt.label));
+            ? static_cast<QAbstractButton *>(new QCheckBox(withMark(opt.label, recommended)))
+            : static_cast<QAbstractButton *>(new QRadioButton(withMark(opt.label, recommended)));
         auto *option = new OptionRow(button, row.container);
-        if (recommended)
-            option->addPill(pill(tr("Recommended"), option));
         option->addStretch();
         if (!opt.description.trimmed().isEmpty()) {
             auto *desc = new QLabel(option);
@@ -528,7 +573,7 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
     row.combo->addItem(tr("Choose…"), QString()); // index 0 = no answer
     for (const AskUserForm::Option &opt : q.options) {
         const bool recommended = q.recommended.toString() == opt.value;
-        row.combo->addItem(recommended ? tr("%1  (recommended)").arg(opt.label) : opt.label, opt.value);
+        row.combo->addItem(withMark(opt.label, recommended), opt.value);
         if (!opt.description.isEmpty())
             row.combo->setItemData(row.combo->count() - 1, opt.description, Qt::ToolTipRole);
     }
@@ -568,21 +613,19 @@ void AskUserFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
     const bool recommendYes = proposal ? q.recommended.toString() != QLatin1String("change")
                                        : q.recommended.toBool();
     for (int i = 0; i < 2; ++i) {
-        auto *button = new QPushButton(i == 0 ? yes : no, row.container);
+        const bool marked = hasRecommendation && (i == 0) == recommendYes;
+        auto *button = new QPushButton(withMark(i == 0 ? yes : no, marked), row.container);
         button->setObjectName(QStringLiteral("auSeg"));
         button->setCheckable(true);
         button->setAutoDefault(false);
         button->setCursor(Qt::PointingHandCursor);
-        if (hasRecommendation && (i == 0) == recommendYes)
+        if (marked)
             button->setToolTip(tr("Recommended"));
         row.group->addButton(button, i);
         row.optionButtons.append(button);
         buttons->addWidget(button);
         watch(button);
     }
-    if (hasRecommendation)
-        buttons->addWidget(pill(recommendYes ? tr("Recommended: %1").arg(yes) : tr("Recommended: %1").arg(no),
-                                row.container));
     buttons->addStretch(1);
     layout->addLayout(buttons);
     connect(row.group, &QButtonGroup::idToggled, this, &AskUserFormWidget::updateProgress);
@@ -897,6 +940,7 @@ void AskUserFormWidget::setChatFont(const QFont &font)
             continue;
         QFont f = font;
         f.setWeight(w->font().weight());
+        f.setItalic(w->font().italic());
         w->setFont(f);
     }
     QFont title = font;
