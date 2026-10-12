@@ -287,6 +287,9 @@ private:
 
     bool fetchViewportRow(int viewportRow, VTermScreenCell *out);
     void paintRow(QPainter &p, QPainter &devicePainter, const TerminalGlyphCache::Frame &frame, int viewportRow);
+    // The window's own pixels for this paint, when writing them directly is
+    // provably safe (see paintEvent); else false and m_frame is used.
+    bool directPaintTarget(QPainter &p, const QRegion &region, const QSize &deviceSize, QImage *target) const;
     void paintDecorations(QPainter &p, qreal y);
     void paintCursor(QPainter &p);
     void paintPreedit(QPainter &p);
@@ -425,8 +428,9 @@ private:
 
     std::vector<VTermScreenCell> m_rowCells;
     TerminalRowLayout m_layout;
-    // Paint target: rows render here, then one blit to the viewport. Freed
-    // (with the glyph tiles) while the terminal is hidden.
+    // Paint target when the window's pixels cannot be written directly: rows
+    // render here, then one blit. Allocated on first need; freed (with the
+    // glyph tiles) while the terminal is hidden.
     QImage m_frame;
     std::vector<QRgb> m_rowBg;
     // OSC 8 spans that reach the rows being painted (indexes into

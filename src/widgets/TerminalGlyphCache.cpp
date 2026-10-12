@@ -387,19 +387,38 @@ TerminalGlyphCache::Tile TerminalGlyphCache::makeTile(const TileKey &key, quint3
     tile.offset = static_cast<uint32_t>(m_tilePixels.size());
     m_tilePixels.resize(m_tilePixels.size() + pixels);
     uint32_t *dst = m_tilePixels.data() + tile.offset;
+    const uint32_t bgPixel = 0xFF000000u | bg;
+    int inkLeft = tile.width;
+    int inkRight = 0;
+    int inkTop = tile.height;
+    int inkBottom = 0;
     for (int row = 0; row < tile.height; ++row) {
-        std::memcpy(dst + static_cast<qsizetype>(row) * tile.width, image.constScanLine(row),
-                    static_cast<std::size_t>(tile.width) * 4);
+        const auto *line = reinterpret_cast<const uint32_t *>(image.constScanLine(row));
+        std::memcpy(dst + static_cast<qsizetype>(row) * tile.width, line, static_cast<std::size_t>(tile.width) * 4);
+        for (int x = 0; x < tile.width; ++x) {
+            if (line[x] == bgPixel) continue;
+            inkLeft = std::min(inkLeft, x);
+            inkRight = std::max(inkRight, x + 1);
+            inkTop = std::min(inkTop, row);
+            inkBottom = row + 1;
+        }
     }
+    tile.inkLeft = static_cast<int16_t>(std::min(inkLeft, inkRight));
+    tile.inkRight = static_cast<int16_t>(inkRight);
+    tile.inkTop = static_cast<int16_t>(std::min(inkTop, inkBottom));
+    tile.inkBottom = static_cast<int16_t>(inkBottom);
     m_tiles.insert(key, tile);
     return tile;
 }
 
 void TerminalGlyphCache::copyTile(const Frame &frame, const uint32_t *src, const Tile &tile, int x, int y)
 {
-    const int h = std::min<int>(tile.height, frame.height - y);
-    uint32_t *dst = frame.bits + static_cast<qsizetype>(y) * frame.stride + x;
-    for (int row = 0; row < h; ++row) {
+    const int first = std::max(0, frame.top() - y);
+    const int h = std::min<int>(tile.height, frame.bottom() - y);
+    if (first >= h) return;
+    src += static_cast<qsizetype>(first) * tile.width;
+    uint32_t *dst = frame.bits + static_cast<qsizetype>(y + first) * frame.stride + x;
+    for (int row = first; row < h; ++row) {
         // Fixed 16-byte copies inline to vector moves; a sized memcpy call
         // per scanline cost more than the pixels.
         int k = 0;
@@ -418,10 +437,10 @@ void TerminalGlyphCache::mergeTile(const Frame &frame, const uint32_t *src, cons
                                    QRgb fg, QRgb bg)
 {
     const uint32_t bgPixel = 0xFF000000u | bg;
-    const int fromX = std::max(0, -x);
-    const int toX = std::min<int>(tile.width, frame.width - x);
-    const int fromY = std::max(0, -y);
-    const int toY = std::min<int>(tile.height, frame.height - y);
+    const int fromX = std::max<int>(tile.inkLeft, -x);
+    const int toX = std::min<int>(tile.inkRight, frame.width - x);
+    const int fromY = std::max<int>(tile.inkTop, frame.top() - y);
+    const int toY = std::min<int>(tile.inkBottom, frame.bottom() - y);
     // Coverage of the glyph per channel, read back from the tile: (tile - bg)
     // / (fg - bg), in 1/256ths, through a 16.16 reciprocal per channel taken
     // once per call. A channel where fg and bg nearly agree says little, so

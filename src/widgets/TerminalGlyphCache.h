@@ -29,7 +29,9 @@
 #include <QRawFont>
 #include <QRgb>
 
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 class QPainter;
@@ -73,12 +75,18 @@ public:
     // pixels drawn onto untouched background are copied (identical to Qt);
     // only where two glyphs overlap is the colour blended by estimate.
 
-    // An opaque RGB32 frame in device pixels.
+    // Opaque 32-bit pixels in device pixels (the widget's own frame, or its
+    // part of the window's backing store). Rows outside [clipTop, clipBottom)
+    // are never written.
     struct Frame {
         uint32_t *bits = nullptr;
         qsizetype stride = 0;   // pixels per scanline
         int width = 0;
         int height = 0;
+        int clipTop = 0;
+        int clipBottom = std::numeric_limits<int>::max();
+        int top() const { return std::max(0, clipTop); }
+        int bottom() const { return std::min(height, clipBottom); }
     };
     // Cell size and baseline in device pixels; tiles are dropped when any of
     // them changes.
@@ -113,6 +121,13 @@ public:
         int16_t y = 0;
         int16_t width = 0;
         int16_t height = 0;
+        // The pixels the glyph changed, [inkLeft, inkRight) x [inkTop,
+        // inkBottom) within the tile: a merge never visits the rest (most of
+        // an extended tile is background).
+        int16_t inkLeft = 0;
+        int16_t inkTop = 0;
+        int16_t inkRight = 0;
+        int16_t inkBottom = 0;
         bool extended = false;
     };
     // One glyph of a planned row. Without a tile (budget spent) it is drawn

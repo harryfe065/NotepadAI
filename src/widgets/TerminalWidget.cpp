@@ -55,6 +55,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPaintEvent>
+#include <QPaintEngine>
 #include <QPainter>
 #include <QPainterPath>
 #include <QResizeEvent>
@@ -166,8 +167,8 @@ void fillFrame(const TerminalGlyphCache::Frame &frame, int x, int y, int w, int 
 {
     const int left = std::clamp(x, 0, frame.width);
     const int right = std::clamp(x + w, left, frame.width);
-    const int top = std::clamp(y, 0, frame.height);
-    const int bottom = std::clamp(y + h, top, frame.height);
+    const int top = std::clamp(y, frame.top(), std::max(frame.top(), frame.bottom()));
+    const int bottom = std::clamp(y + h, top, std::max(top, frame.bottom()));
     const uint32_t pixel = 0xFF000000u | color;
     for (int yy = top; yy < bottom; ++yy) {
         uint32_t *line = frame.bits + static_cast<qsizetype>(yy) * frame.stride;
@@ -1224,29 +1225,45 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         m_rowCells.resize(static_cast<std::size_t>(m_cols));
     }
 
-    // Rows are rendered into an opaque frame in device pixels (tiles are
-    // copied straight into its memory), then the frame is blitted once.
+    // Rows render in device pixels, tiles copied straight into memory: into
+    // the window's backing store when that is safe (no second copy of a
+    // 27 MB frame at 200%), else into m_frame, blitted once.
     const QSize deviceSize(static_cast<int>(std::ceil(viewport()->width() * m_dpr)),
                            static_cast<int>(std::ceil(viewport()->height() * m_dpr)));
-    if (m_frame.size() != deviceSize || m_frame.devicePixelRatio() != m_dpr) {
-        m_frame = QImage(deviceSize, QImage::Format_RGB32);
-        m_frame.setDevicePixelRatio(m_dpr);
-    }
     m_glyphs.setTileGeometry(static_cast<int>(std::lround(m_cellW * m_dpr)),
                              static_cast<int>(std::lround(m_cellH * m_dpr)), m_baseline, m_dpr);
     m_glyphs.beginFrame();
+    QImage target;
+    const bool direct = directPaintTarget(p, event->region(), deviceSize, &target);
+    if (!direct) {
+        if (m_frame.size() != deviceSize || m_frame.devicePixelRatio() != m_dpr) {
+            m_frame = QImage(deviceSize, QImage::Format_RGB32);
+            m_frame.setDevicePixelRatio(m_dpr);
+        }
+        target = QImage(m_frame.bits(), m_frame.width(), m_frame.height(), m_frame.bytesPerLine(),
+                        QImage::Format_RGB32);
+    }
     TerminalGlyphCache::Frame frame;
-    frame.bits = reinterpret_cast<uint32_t *>(m_frame.bits());
-    frame.stride = m_frame.bytesPerLine() / 4;
-    frame.width = m_frame.width();
-    frame.height = m_frame.height();
+    frame.bits = reinterpret_cast<uint32_t *>(target.bits());
+    frame.stride = target.bytesPerLine() / 4;
+    frame.width = target.width();
+    frame.height = target.height();
+    if (direct) {
+        // Only the paint region may change: Qt repaints nothing else there.
+        frame.clipTop = static_cast<int>(std::floor(bounds.top() * m_dpr));
+        frame.clipBottom = static_cast<int>(std::ceil((bounds.bottom() + 1) * m_dpr));
+    }
     {
-        QPainter fp(&m_frame);
+        // Logical drawing (box drawing, decorations): the widget painter
+        // itself when direct (its system clip is the paint region), else a
+        // painter on m_frame.
+        QPainter framePainter;
+        if (!direct) framePainter.begin(&m_frame);
+        QPainter &fp = direct ? p : framePainter;
         // The same pixels without the scale: glyphs are drawn in device
         // pixels, which keeps Qt on its cached glyph path at every scale.
-        QImage deviceView(m_frame.bits(), m_frame.width(), m_frame.height(), m_frame.bytesPerLine(),
-                          QImage::Format_RGB32);
-        QPainter dp(&deviceView);
+        QPainter dp(&target);
+        if (direct) dp.setClipRect(0, frame.clipTop, frame.width, frame.clipBottom - frame.clipTop);
 
         const qreal top = originY();
         const int first = std::max(0, static_cast<int>(std::floor((bounds.top() - top) / m_cellH)));
@@ -1292,11 +1309,52 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
             previous = row;
         }
     }
-    // Same device scale on both sides: a clipped 1:1 copy.
-    p.drawImage(QPointF(0, 0), m_frame);
+    if (!direct) {
+        // Same device scale on both sides: a clipped 1:1 copy.
+        p.drawImage(QPointF(0, 0), m_frame);
+    }
 
     paintCursor(p);
     paintPreedit(p);
+}
+
+// Writing the window's backing store directly (no frame, no blit) is safe
+// only when every pixel written is one Qt is repainting and lands exactly
+// where Qt's own drawing lands:
+// - a raster engine on a 32-bit opaque-compatible image,
+// - a transform that is just the device pixel ratio, at a whole device pixel
+//   (at 150% a widget can sit at x.5, where Qt and the tiles would round
+//   differently),
+// - one full-width paint rectangle (full repaints, contiguous dirty rows):
+//   rows are written across the whole width, and nothing outside the paint
+//   region (a child like the find bar) may be touched.
+bool TerminalWidget::directPaintTarget(QPainter &p, const QRegion &region, const QSize &deviceSize,
+                                       QImage *target) const
+{
+    QPaintEngine *engine = p.paintEngine();
+    if (!engine || engine->type() != QPaintEngine::Raster) return false;
+    QPaintDevice *device = engine->paintDevice();
+    if (!device || device->devType() != QInternal::Image) return false;
+    auto *image = static_cast<QImage *>(device);
+    if (image->format() != QImage::Format_RGB32 && image->format() != QImage::Format_ARGB32_Premultiplied) {
+        return false;
+    }
+    const QTransform t = p.deviceTransform();
+    if (t.type() > QTransform::TxScale || !qFuzzyCompare(t.m11(), m_dpr) || !qFuzzyCompare(t.m22(), m_dpr)) {
+        return false;
+    }
+    const int ox = qRound(t.dx());
+    const int oy = qRound(t.dy());
+    if (std::abs(t.dx() - ox) > 1e-3 || std::abs(t.dy() - oy) > 1e-3) return false;
+    if (region.rectCount() != 1) return false;
+    const QRect r = region.boundingRect();
+    if (r.left() > 0 || r.right() < viewport()->width() - 1) return false;
+    if (ox < 0 || oy < 0 || ox + deviceSize.width() > image->width() || oy + deviceSize.height() > image->height()) {
+        return false;
+    }
+    *target = QImage(image->bits() + static_cast<qsizetype>(oy) * image->bytesPerLine() + static_cast<qsizetype>(ox) * 4,
+                     deviceSize.width(), deviceSize.height(), image->bytesPerLine(), image->format());
+    return true;
 }
 
 void TerminalWidget::paintRow(QPainter &p, QPainter &devicePainter, const TerminalGlyphCache::Frame &frame,
