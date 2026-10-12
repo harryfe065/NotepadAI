@@ -26,14 +26,17 @@
 #include "ai/CredentialStore.h"
 #include "ui_PreferencesDialog.h"
 #include "ScintillaNext.h"
+#include "TerminalColorScheme.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFontDialog>
+#include <QFormLayout>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
@@ -371,6 +374,16 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
 #endif
 
     m_pendingTerminalFont = settings->terminalFont();
+    // The button names the font it would change, e.g. "Cascadia Mono, 10 pt".
+    auto showTerminalFont = [=]() {
+        QFont f;
+        if (!m_pendingTerminalFont.isEmpty() && f.fromString(m_pendingTerminalFont)) {
+            ui->btnChooseTerminalFont->setText(tr("%1, %2 pt").arg(f.family()).arg(f.pointSizeF()));
+        } else {
+            ui->btnChooseTerminalFont->setText(tr("Choose font..."));
+        }
+    };
+    showTerminalFont();
     connect(ui->btnChooseTerminalFont, &QPushButton::clicked, this, [=]() {
         QFont current;
         const QString stored = m_pendingTerminalFont.isEmpty() ? settings->terminalFont() : m_pendingTerminalFont;
@@ -381,6 +394,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
         const QFont chosen = QFontDialog::getFont(&ok, current, this, tr("Terminal Font"));
         if (ok) {
             m_pendingTerminalFont = chosen.toString();
+            showTerminalFont();
             m_pending.markDirty();
         }
     });
@@ -389,7 +403,114 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
     });
     m_pending.addRevert([=]() {
         m_pendingTerminalFont = settings->terminalFont();
+        showTerminalFont();
     });
+
+    // --- Terminal appearance and behaviour (applied live to open terminals) ---
+    // Rows go between the font and the memory limit: shell + limit frame the
+    // look-and-feel settings, which apply to every open terminal on Apply.
+    QFormLayout *terminalForm = ui->formLayoutTerminal;
+    int terminalRow = 3;
+    auto addTerminalRow = [&](const QString &label, QWidget *field, const QString &toolTip) {
+        auto *labelWidget = new QLabel(label, ui->groupBoxTerminal);
+        labelWidget->setBuddy(field);
+        labelWidget->setToolTip(toolTip);
+        field->setToolTip(toolTip);
+        terminalForm->insertRow(terminalRow++, labelWidget, field);
+    };
+
+    auto *lineHeight = new QSpinBox(ui->groupBoxTerminal);
+    lineHeight->setRange(100, 200);
+    lineHeight->setSingleStep(5);
+    lineHeight->setSuffix(QStringLiteral("%"));
+    addTerminalRow(tr("Line height"), lineHeight,
+                   tr("Row height as a percentage of the font height."));
+
+    auto *colorScheme = new QComboBox(ui->groupBoxTerminal);
+    colorScheme->addItem(tr("Follow app theme"), QStringLiteral("app"));
+    for (const QString &id : TerminalColorScheme::presetIds()) {
+        colorScheme->addItem(TerminalColorScheme::presetName(id), id);
+    }
+    addTerminalRow(tr("Color scheme"), colorScheme,
+                   tr("Terminal text colours. Following the app theme uses the editor's background "
+                      "and switches with dark/light mode; a preset keeps its own colours."));
+
+    auto *contrast = new QSpinBox(ui->groupBoxTerminal);
+    contrast->setRange(0, 100);
+    contrast->setSpecialValueText(tr("Off"));
+    addTerminalRow(tr("Minimum contrast"), contrast,
+                   tr("Text in the 16 basic colours is lifted until it reaches this APCA contrast "
+                      "against its background (45 is comfortable). Colours a program picks exactly "
+                      "are left alone."));
+
+    auto *cursorShape = new QComboBox(ui->groupBoxTerminal);
+    cursorShape->addItem(tr("Block"), QStringLiteral("block"));
+    cursorShape->addItem(tr("Bar"), QStringLiteral("bar"));
+    cursorShape->addItem(tr("Underline"), QStringLiteral("underline"));
+    addTerminalRow(tr("Cursor"), cursorShape,
+                   tr("Default cursor shape. Programs such as vim may change it while they run."));
+
+    auto *cursorBlink = new QComboBox(ui->groupBoxTerminal);
+    cursorBlink->addItem(tr("When the program asks"), QStringLiteral("terminal"));
+    cursorBlink->addItem(tr("Always"), QStringLiteral("on"));
+    cursorBlink->addItem(tr("Never"), QStringLiteral("off"));
+    addTerminalRow(tr("Cursor blink"), cursorBlink, tr("Whether the cursor blinks while the terminal has focus."));
+
+    auto *scrollback = new QSpinBox(ui->groupBoxTerminal);
+    scrollback->setRange(0, 100000);
+    scrollback->setSingleStep(1000);
+    scrollback->setGroupSeparatorShown(true);
+    scrollback->setSpecialValueText(tr("None"));
+    scrollback->setSuffix(tr(" lines"));
+    addTerminalRow(tr("Scrollback"), scrollback,
+                   tr("Lines of history kept per terminal. Task terminals always keep the maximum."));
+
+    auto *copyOnSelect = new QCheckBox(tr("Copy selected text to the clipboard"), ui->groupBoxTerminal);
+    addTerminalRow(tr("Copy on select"), copyOnSelect, tr("Selecting text also copies it, without Ctrl+C."));
+
+    auto *bellSound = new QCheckBox(tr("Play the system sound"), ui->groupBoxTerminal);
+    addTerminalRow(tr("Bell"), bellSound,
+                   tr("A bell in a tab you are not looking at always marks the tab with a dot."));
+
+    auto setComboData = [](QComboBox *combo, const QString &value) {
+        const int i = combo->findData(value);
+        combo->setCurrentIndex(i < 0 ? 0 : i);
+    };
+    auto loadTerminalAppearance = [=]() {
+        const QSignalBlocker b1(lineHeight), b2(colorScheme), b3(contrast), b4(cursorShape),
+            b5(cursorBlink), b6(scrollback), b7(copyOnSelect), b8(bellSound);
+        lineHeight->setValue(settings->terminalLineHeightPct());
+        setComboData(colorScheme, settings->terminalColorScheme());
+        contrast->setValue(settings->terminalMinimumContrast());
+        setComboData(cursorShape, settings->terminalCursorShape());
+        setComboData(cursorBlink, settings->terminalCursorBlink());
+        scrollback->setValue(settings->terminalScrollbackLines());
+        copyOnSelect->setChecked(settings->terminalCopyOnSelect());
+        bellSound->setChecked(settings->terminalBellSound());
+    };
+    loadTerminalAppearance();
+
+    auto markDirty = [=]() { m_pending.markDirty(); };
+    connect(lineHeight, QOverload<int>::of(&QSpinBox::valueChanged), this, markDirty);
+    connect(contrast, QOverload<int>::of(&QSpinBox::valueChanged), this, markDirty);
+    connect(scrollback, QOverload<int>::of(&QSpinBox::valueChanged), this, markDirty);
+    for (QComboBox *combo : {colorScheme, cursorShape, cursorBlink}) {
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, markDirty);
+    }
+    connect(copyOnSelect, &QCheckBox::toggled, this, markDirty);
+    connect(bellSound, &QCheckBox::toggled, this, markDirty);
+
+    m_pending.addApply([=]() {
+        settings->setTerminalLineHeightPct(lineHeight->value());
+        settings->setTerminalColorScheme(colorScheme->currentData().toString());
+        settings->setTerminalMinimumContrast(contrast->value());
+        settings->setTerminalCursorShape(cursorShape->currentData().toString());
+        settings->setTerminalCursorBlink(cursorBlink->currentData().toString());
+        settings->setTerminalScrollbackLines(scrollback->value());
+        settings->setTerminalCopyOnSelect(copyOnSelect->isChecked());
+        settings->setTerminalBellSound(bellSound->isChecked());
+    });
+    m_pending.addRevert(loadTerminalAppearance);
 
     ui->spinBoxTerminalMemoryLimit->setValue(settings->terminalChildMemoryLimitGb());
     connect(ui->spinBoxTerminalMemoryLimit, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int) {
