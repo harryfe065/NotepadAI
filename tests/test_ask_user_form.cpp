@@ -44,6 +44,7 @@ private slots:
     void unwrapsNestedArguments();
     void recognisesOmpDeviceWrite();
     void infersRecommendedFromRecommendation();
+    void overviewListsEachAnswer();
 };
 
 void TestAskUserForm::parsesGrillRound()
@@ -179,7 +180,7 @@ void TestAskUserForm::formatsAnswersForTheAgent()
         "Q2 \"Controls\": radio, textarea, other: \"slider\" — changed (recommended: radio, checkbox)\n"
         "  note: keep it small\n"
         "Q3 \"Module layout\": change requested: \"move core to lib/\" — changed (recommended: accept)\n"
-        "Q4 \"Scan inside?\": Skip (no) (recommended)\n"
+        "Q4 \"Scan inside?\": no (Skip) (recommended)\n"
         "Q5 \"Describe it\": no answer\n"
         "Q6 \"Days\": 45 — changed (recommended: 30)\n");
     QCOMPARE(formatAnswers(spec, answers), expected);
@@ -409,6 +410,33 @@ void TestAskUserForm::infersRecommendedFromRecommendation()
         "options":["a","b"]}]})"), &error);
     QVERIFY(spec.has_value());
     QVERIFY(spec->questions.at(0).recommended.isNull());
+}
+
+void TestAskUserForm::overviewListsEachAnswer()
+{
+    const Spec spec = grillSpec();
+    const QVector<Answer> answers{
+        answer("Q1", QStringLiteral("b2")),
+        answer("Q2", QJsonArray{QStringLiteral("radio"), QStringLiteral("textarea")}, "", "keep it small"),
+        answer("Q3", QStringLiteral("accept")),
+        answer("Q4", false),
+        answer("Q5", QStringLiteral("line one\nline two")),
+        answer("Q6", QJsonValue()),
+    };
+    const QStringList lines = answerOverview(formatAnswers(spec, answers), 40);
+    QCOMPARE(lines, QStringList({
+        QStringLiteral("Q1 Architecture → No-op tool"),
+        QStringLiteral("Q2 Controls → radio, textarea · changed"),
+        QStringLiteral("Q3 Module layout → accepted"),
+        QStringLiteral("Q4 Scan inside? → Skip"),
+        QStringLiteral("Q5 Describe it → line one"),
+        QStringLiteral("Q6 Days → no answer"),
+    }));
+
+    // Long answers are cut; dismiss/clarify prompts have no overview.
+    const QStringList cut = answerOverview(formatAnswers(spec, {answer("Q5", QString(60, QLatin1Char('x')))}), 20);
+    QCOMPARE(cut.at(4), QStringLiteral("Q5 Describe it → ") + QString(19, QLatin1Char('x')) + QStringLiteral("…"));
+    QVERIFY(answerOverview(dismissPrompt(QString())).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestAskUserForm)

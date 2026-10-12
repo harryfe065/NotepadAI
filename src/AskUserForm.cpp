@@ -564,7 +564,8 @@ QString confirmText(const Question &q, bool yes)
     const QString label = yes ? q.yesLabel : q.noLabel;
     if (label.isEmpty() || label.compare(plain, Qt::CaseInsensitive) == 0)
         return plain;
-    return QStringLiteral("%1 (%2)").arg(label, plain);
+    // "value (label)", like choices: the overview shows what is in brackets.
+    return QStringLiteral("%1 (%2)").arg(plain, label);
 }
 
 QString quoted(const QString &text)
@@ -1038,6 +1039,75 @@ QJsonObject elicitationContent(const Spec &spec, const QVector<Answer> &answers)
         }
     }
     return content;
+}
+
+namespace {
+
+// "value (label)" -> "label"; quoted free text -> unquoted.
+QString displayItem(QString item)
+{
+    item = item.trimmed();
+    if (item.startsWith(QLatin1String("other: ")))
+        return QStringLiteral("other: ") + displayItem(item.mid(7));
+    if (item.size() >= 2 && item.startsWith(QLatin1Char('"')) && item.endsWith(QLatin1Char('"')))
+        return item.mid(1, item.size() - 2);
+    if (item.endsWith(QLatin1Char(')'))) {
+        const qsizetype open = item.indexOf(QLatin1String(" ("));
+        if (open > 0)
+            return item.mid(open + 2, item.size() - open - 3);
+    }
+    return item;
+}
+
+} // namespace
+
+QStringList answerOverview(const QString &text, int maxAnswerChars)
+{
+    QStringList out;
+    if (!text.startsWith(QLatin1String(kAnswersHeader)))
+        return out;
+    static const QLatin1String kRecommended(" (recommended)");
+    static const QString kChanged = QStringLiteral(" — changed (recommended: ");
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (int i = 1; i < lines.size(); ++i) {
+        const QString &line = lines.at(i);
+        if (line.isEmpty() || line.at(0).isSpace() || line.startsWith(QLatin1String("Form: ")))
+            continue;
+        const qsizetype space = line.indexOf(QLatin1Char(' '));
+        const qsizetype titleEnd = line.indexOf(QLatin1String("\": "));
+        if (space <= 0 || titleEnd < space || line.at(space + 1) != QLatin1Char('"'))
+            continue;
+        const QString id = line.left(space);
+        const QString title = line.mid(space + 2, titleEnd - space - 2);
+        QString answer = line.mid(titleEnd + 3);
+        bool changed = false;
+        if (answer.endsWith(kRecommended)) {
+            answer.chop(kRecommended.size());
+        } else if (const qsizetype c = answer.indexOf(kChanged); c >= 0) {
+            answer.truncate(c);
+            changed = true;
+        }
+        if (answer.endsWith(QLatin1Char('|'))) {
+            // Multi-line text: its first line follows, indented.
+            const QString next = i + 1 < lines.size() ? lines.at(i + 1).trimmed() : QString();
+            answer.chop(1);
+            answer += next;
+        }
+        QString shown;
+        if (answer.startsWith(QLatin1Char('"')) || answer.startsWith(QLatin1String("change requested: "))) {
+            shown = answer.startsWith(QLatin1Char('"')) ? displayItem(answer) : answer;
+        } else {
+            QStringList items = answer.split(QStringLiteral(", "));
+            for (QString &item : items)
+                item = displayItem(item);
+            shown = items.join(QStringLiteral(", "));
+        }
+        if (maxAnswerChars > 1 && shown.size() > maxAnswerChars)
+            shown = shown.left(maxAnswerChars - 1) + QStringLiteral("…");
+        out.append(QStringLiteral("%1 %2 → %3").arg(id, title, shown)
+                   + (changed ? QStringLiteral(" · changed") : QString()));
+    }
+    return out;
 }
 
 QString dismissPrompt(const QString &note)

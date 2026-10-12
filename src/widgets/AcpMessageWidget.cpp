@@ -351,7 +351,7 @@ void AcpMessageWidget::setContent(const QVector<AcpProtocol::AcpContentBlock> &c
     rerender();
 }
 
-void AcpMessageWidget::setCollapsedSummary(const QString &summary)
+void AcpMessageWidget::setCollapsedSummary(const QString &summary, const QStringList &overview)
 {
     if (m_role != QLatin1String("user") || !m_layout)
         return;
@@ -366,14 +366,25 @@ void AcpMessageWidget::setCollapsedSummary(const QString &summary)
         if (m_chatFontSet)
             m_summaryHeader->setFont(m_chatFont);
         m_layout->insertWidget(0, m_summaryHeader);
+        m_summaryOverview = new QLabel(this);
+        m_summaryOverview->setTextFormat(Qt::PlainText);
+        m_summaryOverview->setWordWrap(true);
+        m_summaryOverview->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        if (m_chatFontSet)
+            m_summaryOverview->setFont(m_chatFont);
+        m_layout->insertWidget(1, m_summaryOverview);
         connect(m_summaryHeader, &QToolButton::toggled, this, [this](bool expanded) {
             for (QWidget *w : std::as_const(m_userBlocks))
                 w->setVisible(expanded);
+            // Expanded shows the full text; the overview would repeat it.
+            m_summaryOverview->setVisible(!expanded && !m_summaryOverview->text().isEmpty());
             m_summaryHeader->setText(m_summary + (expanded ? QStringLiteral("  ▾") : QStringLiteral("  ▸")));
             updateGeometry();
         });
     }
     m_summary = QStringLiteral("↳ ") + summary;
+    m_summaryOverview->setText(overview.join(QLatin1Char('\n')));
+    m_summaryOverview->setVisible(!overview.isEmpty());
     m_summaryHeader->setChecked(false);
     m_summaryHeader->setText(m_summary + QStringLiteral("  ▸"));
     for (QWidget *w : std::as_const(m_userBlocks))
@@ -457,6 +468,12 @@ QSize AcpMessageWidget::sizeHint() const
     int contentW = 0;
     if (m_summaryHeader)
         contentW = m_summaryHeader->sizeHint().width();
+    if (m_summaryOverview && !m_summaryOverview->isHidden()) {
+        const QFontMetrics fm = m_summaryOverview->fontMetrics();
+        const QStringList lines = m_summaryOverview->text().split(QLatin1Char('\n'));
+        for (const QString &line : lines)
+            contentW = qMax(contentW, fm.horizontalAdvance(line));
+    }
     for (const QWidget *w : m_userBlocks) {
         const auto *lbl = qobject_cast<const QLabel *>(w);
         if (!lbl || lbl->isHidden())
@@ -694,6 +711,8 @@ void AcpMessageWidget::setChatFont(const QFont &font)
     }
     if (m_summaryHeader)
         m_summaryHeader->setFont(font);
+    if (m_summaryOverview)
+        m_summaryOverview->setFont(font);
     // User-role bodies are QLabels built lazily in setContent(); stamp the ones
     // that exist now (newly-created ones are stamped in setContent()).
     for (QWidget *w : m_userBlocks) {

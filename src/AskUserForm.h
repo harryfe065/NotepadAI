@@ -15,6 +15,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <cstdint>
@@ -149,6 +150,9 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers);
 QString answerSummary(const Spec &spec, const QVector<Answer> &answers);
 // Same summary, recomputed from the prompt text (restored history).
 QString summaryFromAnswersText(const QString &text);
+// One line per question from the prompt text: "Q1 Title → answer[ · changed]",
+// answers cut to `maxAnswerChars`. Empty for dismiss / clarify prompts.
+QStringList answerOverview(const QString &text, int maxAnswerChars = 90);
 
 QString dismissPrompt(const QString &note);
 QString clarifyPrompt(const Question &q);

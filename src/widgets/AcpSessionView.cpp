@@ -2333,7 +2333,8 @@ void AcpSessionView::applyMessageMarker(AcpMessageWidget *w, int messageIndex)
     if (!m_model || messageIndex < 0 || messageIndex >= m_model->messages().size())
         return;
     if (m_model->messages().at(messageIndex).marker == QLatin1String(AskUserForm::kMarkerAnswers))
-        w->setCollapsedSummary(AskUserForm::summaryFromAnswersText(w->plainText()));
+        w->setCollapsedSummary(AskUserForm::summaryFromAnswersText(w->plainText()),
+                               AskUserForm::answerOverview(w->plainText()));
 }
 
 void AcpSessionView::restoreExpiredForm()
