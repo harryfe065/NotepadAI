@@ -185,7 +185,8 @@ private slots:
     void applyPendingResize();
     void toggleCursorBlink();
     void runSearch();
-    void searchSlice();
+    void launchHistoryScan();
+    void onHistoryScanned();
 
 private:
     // The rows as TerminalSearchSession reads them.
@@ -397,7 +398,7 @@ private:
     TerminalSearchSession m_search;
     QTimer *m_searchDebounce = nullptr;
     QTimer *m_searchFollow = nullptr;
-    QTimer *m_searchSlice = nullptr;
+    QFutureWatcher<TerminalSearchSession::HistoryResult> *m_searchWatcher = nullptr;
     bool m_searchRevealPending = false;
     std::vector<TerminalRowLayout::Highlight> m_rowHighlights;
     int m_rowActiveFrom = -1;

@@ -22,8 +22,10 @@
 #include <vterm.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 // chars[0] of the right half of a wide character, as libvterm reports it.
@@ -37,10 +39,12 @@ constexpr uint32_t kTerminalWideSpacer = 0xFFFFFFFFu;
 // eviction are O(1) amortised and never allocate per line. Styles (attrs + fg +
 // bg) and multi-codepoint clusters are interned in side tables that are
 // compacted when they outgrow the live history.
-class ScrollbackBuffer
+//
+// This is the storage; terminals hold it through ScrollbackBuffer below.
+class ScrollbackStore
 {
 public:
-    explicit ScrollbackBuffer(int maxLines = 10000);
+    explicit ScrollbackStore(int maxLines = 10000);
 
     int  maxLines() const { return m_maxLines; }
     // Returns the number of lines evicted by the resize (0 if none).
@@ -133,6 +137,48 @@ private:
 
     std::vector<Cluster> m_clusters;
     std::size_t m_clusterCompactAt = 1u << 12;
+};
+
+// The history a terminal owns: ScrollbackStore behind a copy-on-write handle.
+// snapshot() is O(1) and gives a store that never changes, so a worker
+// thread (find-in-terminal) can read it while output keeps arriving; the
+// first change made while a snapshot is alive copies the store once.
+class ScrollbackBuffer
+{
+public:
+    explicit ScrollbackBuffer(int maxLines = 10000) : m_store(std::make_shared<ScrollbackStore>(maxLines)) {}
+
+    int maxLines() const { return m_store->maxLines(); }
+    int setMaxLines(int maxLines) { return store().setMaxLines(maxLines); }
+    int size() const { return m_store->size(); }
+    bool isEmpty() const { return m_store->isEmpty(); }
+    void clear() { store().clear(); }
+    int pushLine(int cols, const VTermScreenCell *cells, bool wrapsNext = false)
+    {
+        return store().pushLine(cols, cells, wrapsNext);
+    }
+    bool popLine(int cols, VTermScreenCell *out) { return store().popLine(cols, out); }
+    bool lineAt(int index, int cols, VTermScreenCell *out) const { return m_store->lineAt(index, cols, out); }
+    bool lineWraps(int index) const { return m_store->lineWraps(index); }
+    std::size_t memoryBytes() const { return m_store->memoryBytes(); }
+
+    std::shared_ptr<const ScrollbackStore> snapshot() const { return m_store; }
+
+private:
+    ScrollbackStore &store()
+    {
+        if (m_store.use_count() > 1) {
+            m_store = std::make_shared<ScrollbackStore>(*m_store);
+        } else {
+            // The last snapshot was released on another thread: its reads
+            // happen-before our writes (pairs with the release in the
+            // reference count decrement).
+            std::atomic_thread_fence(std::memory_order_acquire);
+        }
+        return *m_store;
+    }
+
+    std::shared_ptr<ScrollbackStore> m_store;
 };
 
 #endif

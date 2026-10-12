@@ -93,6 +93,11 @@ void configureInteractiveQuestions(AcpConnection *conn, bool enabled, bool remot
 
 } // namespace
 
+AiAgentDock *AcpAgentManager::dockForGroup(const QString &groupKey) const
+{
+    return m_docksByGroup.value(groupKey).data();
+}
+
 AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &workingDirectory,
                                         bool recordAsLastUsed, remote::ExecutionContext *context,
                                         bool raiseNewSession)

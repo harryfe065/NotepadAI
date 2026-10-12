@@ -58,6 +58,7 @@ public:
     }
     void setLive(int r, const QString &text) { m_live[static_cast<std::size_t>(r)] = row(text, m_cols); }
 
+    const ScrollbackBuffer &history() const { return m_history; }
     qint64 firstLine() const override { return m_dropped; }
     qint64 historyEnd() const override { return m_dropped + m_history.size(); }
     int columns() const override { return m_cols; }
@@ -88,11 +89,14 @@ TerminalSearchOptions query(const QString &q, bool regex = false)
     return o;
 }
 
+// What the widget does with its worker, synchronously.
 State scanAll(TerminalSearchSession &s, const FakeTerminal &t)
 {
     State state = s.state();
-    for (int i = 0; i < 100000 && state == State::Scanning; ++i) {
-        state = s.scan(t, std::chrono::milliseconds(4));
+    for (int i = 0; i < 100 && state == State::Scanning; ++i) {
+        const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+        if (!job) break;
+        state = s.finishHistoryJob(TerminalSearchSession::runHistoryJob(*job), t);
     }
     return state;
 }
@@ -106,7 +110,9 @@ class TestTerminalSearchSession : public QObject
 private slots:
     void emptyQueryIsOffAndBadRegexInvalid();
     void findsHistoryAndLiveRowsWithStableIds();
-    void zeroBudgetStillProgresses();
+    void historyChangingDuringTheJob();
+    void replacedSearchIgnoresOldResults();
+    void cancelStopsTheJob();
     void newOutputReplacesLiveMatches();
     void largeBacklogGoesBackToScanning();
     void evictionDropsMatchesAndKeepsCurrent();
@@ -144,20 +150,54 @@ void TestTerminalSearchSession::findsHistoryAndLiveRowsWithStableIds()
     QCOMPARE(s.matches()[1].col, 2);
 }
 
-void TestTerminalSearchSession::zeroBudgetStillProgresses()
+// The worker reads a snapshot: output and eviction while it runs change
+// neither its view nor the merged result.
+void TestTerminalSearchSession::historyChangingDuringTheJob()
+{
+    FakeTerminal t(10, 6, 1);
+    for (int i = 0; i < 10; ++i) t.push(QStringLiteral("hit"));
+    TerminalSearchSession s;
+    s.start(query(QStringLiteral("hit")), t.firstLine());
+    const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    QVERIFY(job.has_value());
+    QVERIFY(!s.takeHistoryJob(t.history(), t.firstLine(), t.columns()).has_value());   // one at a time
+    // Meanwhile: 4 more lines, which evict lines 0..3.
+    for (int i = 0; i < 4; ++i) t.push(QStringLiteral("hit"));
+    const TerminalSearchSession::HistoryResult result = TerminalSearchSession::runHistoryJob(*job);
+    QCOMPARE(result.matches.size(), std::size_t(10));   // the snapshot, untouched
+    QCOMPARE(s.finishHistoryJob(result, t), State::Ready);
+    // Lines 4..13 are in history now: evicted ones dropped, new ones found.
+    QCOMPARE(s.matches().size(), std::size_t(10));
+    QCOMPARE(s.matches().front().line, qint64(4));
+    QCOMPARE(s.matches().back().line, qint64(13));
+}
+
+void TestTerminalSearchSession::replacedSearchIgnoresOldResults()
+{
+    FakeTerminal t(100, 6, 1);
+    for (int i = 0; i < 5; ++i) t.push(QStringLiteral("hit"));
+    TerminalSearchSession s;
+    s.start(query(QStringLiteral("hit")), t.firstLine());
+    const auto old = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    s.start(query(QStringLiteral("zzz")), t.firstLine());
+    QVERIFY(old->cancel->load());
+    QCOMPARE(s.finishHistoryJob(TerminalSearchSession::runHistoryJob(*old), t), State::Scanning);
+    QVERIFY(s.matches().empty());
+    QCOMPARE(scanAll(s, t), State::Ready);
+    QVERIFY(s.matches().empty());
+}
+
+void TestTerminalSearchSession::cancelStopsTheJob()
 {
     FakeTerminal t(10000, 6, 1);
     for (int i = 0; i < 5000; ++i) t.push(QStringLiteral("hit"));
     TerminalSearchSession s;
     s.start(query(QStringLiteral("hit")), t.firstLine());
-    int slices = 0;
-    while (s.state() == State::Scanning && slices < 100000) {
-        s.scan(t, std::chrono::nanoseconds(0));
-        ++slices;
-    }
-    QCOMPARE(s.state(), State::Ready);
-    QVERIFY(slices > 1);   // really sliced
-    QCOMPARE(s.matches().size(), std::size_t(5000));
+    const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    s.stop();
+    const TerminalSearchSession::HistoryResult result = TerminalSearchSession::runHistoryJob(*job);
+    QVERIFY(result.cancelled);
+    QVERIFY(result.matches.size() < 64);
 }
 
 void TestTerminalSearchSession::newOutputReplacesLiveMatches()

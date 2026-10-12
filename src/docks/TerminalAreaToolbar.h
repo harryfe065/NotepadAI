@@ -42,8 +42,10 @@ public:
     // The toolbar already installed in `area`, if any.
     static TerminalAreaToolbar *find(ads::CDockAreaWidget *area);
 
-    ads::CDockAreaWidget *area() const { return m_area.data(); }
-    TerminalDock *dock() const { return m_dock.data(); }
+    // Out of line: QPointer<T>::data() needs T complete, which includers of
+    // this header (and its moc output) need not have.
+    ads::CDockAreaWidget *area() const;
+    TerminalDock *dock() const;
     bool cpuLabelUnderMouse() const;
     // Re-read the current tab (after a tab moved in or out).
     void syncToCurrent();

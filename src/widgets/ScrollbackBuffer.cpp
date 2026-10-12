@@ -145,12 +145,12 @@ uint32_t hashStyle(uint32_t attrs, uint32_t fg, uint32_t bg)
 
 } // namespace
 
-ScrollbackBuffer::ScrollbackBuffer(int maxLines)
+ScrollbackStore::ScrollbackStore(int maxLines)
     : m_maxLines(maxLines > 0 ? maxLines : 0)
 {
 }
 
-int ScrollbackBuffer::setMaxLines(int maxLines)
+int ScrollbackStore::setMaxLines(int maxLines)
 {
     m_maxLines = maxLines > 0 ? maxLines : 0;
     int evicted = 0;
@@ -168,7 +168,7 @@ int ScrollbackBuffer::setMaxLines(int maxLines)
     return evicted;
 }
 
-void ScrollbackBuffer::clear()
+void ScrollbackStore::clear()
 {
     std::vector<Line>().swap(m_lines);
     std::vector<Cell>().swap(m_cells);
@@ -184,12 +184,12 @@ void ScrollbackBuffer::clear()
     m_lastStyleIndex = kNoIndex;
 }
 
-const ScrollbackBuffer::Line &ScrollbackBuffer::lineRef(int index) const
+const ScrollbackStore::Line &ScrollbackStore::lineRef(int index) const
 {
     return m_lines[static_cast<std::size_t>((m_head + index) % static_cast<int>(m_lines.size()))];
 }
 
-void ScrollbackBuffer::evictOldest()
+void ScrollbackStore::evictOldest()
 {
     if (m_count == 0) return;
     m_used -= lineRef(0).length;
@@ -203,7 +203,7 @@ void ScrollbackBuffer::evictOldest()
     }
 }
 
-void ScrollbackBuffer::relinearize(int newCapacity)
+void ScrollbackStore::relinearize(int newCapacity)
 {
     std::vector<Line> lines;
     lines.reserve(static_cast<std::size_t>(std::max(newCapacity, m_count)));
@@ -214,7 +214,7 @@ void ScrollbackBuffer::relinearize(int newCapacity)
     m_head = 0;
 }
 
-void ScrollbackBuffer::compactArena()
+void ScrollbackStore::compactArena()
 {
     const auto target = std::max<uint64_t>(kInitialArenaCells, m_used + m_used / 2);
     std::vector<Cell> cells(static_cast<std::size_t>(target));
@@ -231,7 +231,7 @@ void ScrollbackBuffer::compactArena()
     m_tail = write;
 }
 
-void ScrollbackBuffer::growArena(uint32_t needed)
+void ScrollbackStore::growArena(uint32_t needed)
 {
     // 1.5x growth keeps pushes amortised O(1) while bounding the arena to
     // about 1.5x the live cells (the free gap only has to fit one line).
@@ -260,7 +260,7 @@ void ScrollbackBuffer::growArena(uint32_t needed)
 // Finds `length` contiguous free cells after the newest line, wrapping to the
 // arena start when the end is too short. Offsets stay monotonic in ring order,
 // so the oldest line's offset is always where live cells begin.
-uint32_t ScrollbackBuffer::reserveCells(uint32_t length)
+uint32_t ScrollbackStore::reserveCells(uint32_t length)
 {
     if (length == 0) {
         return m_tail;
@@ -296,7 +296,7 @@ uint32_t ScrollbackBuffer::reserveCells(uint32_t length)
     return at;
 }
 
-void ScrollbackBuffer::rehashStyles(std::size_t buckets)
+void ScrollbackStore::rehashStyles(std::size_t buckets)
 {
     m_styleSlots.assign(buckets, 0);
     const std::size_t mask = buckets - 1;
@@ -310,7 +310,7 @@ void ScrollbackBuffer::rehashStyles(std::size_t buckets)
     }
 }
 
-uint32_t ScrollbackBuffer::internStyle(const Style &style)
+uint32_t ScrollbackStore::internStyle(const Style &style)
 {
     if (m_lastStyleIndex != kNoIndex && style == m_lastStyle) {
         return m_lastStyleIndex;
@@ -347,7 +347,7 @@ uint32_t ScrollbackBuffer::internStyle(const Style &style)
     return index;
 }
 
-uint32_t ScrollbackBuffer::internCluster(const uint32_t *chars)
+uint32_t ScrollbackStore::internCluster(const uint32_t *chars)
 {
     Cluster cluster{};
     for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && chars[i]; ++i) {
@@ -359,7 +359,7 @@ uint32_t ScrollbackBuffer::internCluster(const uint32_t *chars)
 
 // Drops styles and clusters no live cell references and renumbers the rest.
 // Runs only after the tables doubled past the live set, so it is amortised.
-void ScrollbackBuffer::compactTables()
+void ScrollbackStore::compactTables()
 {
     std::vector<uint32_t> styleRemap(m_styles.size(), kNoIndex);
     std::vector<uint32_t> clusterRemap(m_clusters.size(), kNoIndex);
@@ -397,7 +397,7 @@ void ScrollbackBuffer::compactTables()
     m_clusterCompactAt = std::max<std::size_t>(1u << 12, m_clusters.size() * 2);
 }
 
-int ScrollbackBuffer::pushLine(int cols, const VTermScreenCell *cells, bool wrapsNext)
+int ScrollbackStore::pushLine(int cols, const VTermScreenCell *cells, bool wrapsNext)
 {
     if (m_maxLines <= 0 || cols <= 0 || cells == nullptr) {
         return 0;
@@ -449,7 +449,7 @@ int ScrollbackBuffer::pushLine(int cols, const VTermScreenCell *cells, bool wrap
     return evicted;
 }
 
-void ScrollbackBuffer::decodeLine(const Line &line, int cols, VTermScreenCell *out) const
+void ScrollbackStore::decodeLine(const Line &line, int cols, VTermScreenCell *out) const
 {
     const int copy = std::min(cols, static_cast<int>(line.length));
     const Cell *cell = m_cells.data() + line.offset;
@@ -473,7 +473,7 @@ void ScrollbackBuffer::decodeLine(const Line &line, int cols, VTermScreenCell *o
     }
 }
 
-bool ScrollbackBuffer::popLine(int cols, VTermScreenCell *out)
+bool ScrollbackStore::popLine(int cols, VTermScreenCell *out)
 {
     if (m_count == 0 || cols <= 0 || out == nullptr) {
         return false;
@@ -493,7 +493,7 @@ bool ScrollbackBuffer::popLine(int cols, VTermScreenCell *out)
     return true;
 }
 
-bool ScrollbackBuffer::lineAt(int index, int cols, VTermScreenCell *out) const
+bool ScrollbackStore::lineAt(int index, int cols, VTermScreenCell *out) const
 {
     if (index < 0 || index >= m_count || cols <= 0 || out == nullptr) {
         return false;
@@ -502,13 +502,13 @@ bool ScrollbackBuffer::lineAt(int index, int cols, VTermScreenCell *out) const
     return true;
 }
 
-bool ScrollbackBuffer::lineWraps(int index) const
+bool ScrollbackStore::lineWraps(int index) const
 {
     if (index < 0 || index >= m_count) return false;
     return (lineRef(index).flags & kWrapsNext) != 0;
 }
 
-std::size_t ScrollbackBuffer::memoryBytes() const
+std::size_t ScrollbackStore::memoryBytes() const
 {
     return m_lines.capacity() * sizeof(Line)
          + m_cells.capacity() * sizeof(Cell)

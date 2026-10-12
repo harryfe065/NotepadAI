@@ -133,7 +133,7 @@ target_include_directories(test_terminal_search_session PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/widgets
 )
-target_link_libraries(test_terminal_search_session PRIVATE Qt6::Core Qt6::Test libvterm)
+target_link_libraries(test_terminal_search_session PRIVATE Qt6::Core Qt6::Gui Qt6::Test libvterm)
 target_sources(test_terminal_search_session PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchSession.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalSearchSession.h

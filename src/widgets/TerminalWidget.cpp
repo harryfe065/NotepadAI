@@ -77,7 +77,6 @@ constexpr int kResizeSettleMs = 24;
 // A missing file seen on hover is re-checked after this long (it may be built).
 constexpr qint64 kMissingPathRecheckMs = 3000;
 // Search slices on the UI thread stay under this budget per event-loop pass.
-constexpr auto kSearchSliceBudget = std::chrono::milliseconds(4);
 constexpr int kCursorBlinkMs = 500;
 // Wheel: three lines per notch, as on every platform default.
 constexpr int kWheelLines = 3;
@@ -228,10 +227,8 @@ TerminalWidget::TerminalWidget(QWidget *parent)
     m_searchFollow->setSingleShot(true);
     m_searchFollow->setInterval(kSearchFollowMs);
     connect(m_searchFollow, &QTimer::timeout, this, &TerminalWidget::searchNewOutput);
-    m_searchSlice = new QTimer(this);
-    m_searchSlice->setSingleShot(true);
-    m_searchSlice->setInterval(0);
-    connect(m_searchSlice, &QTimer::timeout, this, &TerminalWidget::searchSlice);
+    m_searchWatcher = new QFutureWatcher<TerminalSearchSession::HistoryResult>(this);
+    connect(m_searchWatcher, &QFutureWatcherBase::finished, this, &TerminalWidget::onHistoryScanned);
     m_clock.start();
 
     m_pathWatcher = new QFutureWatcher<QString>(this);
@@ -275,6 +272,9 @@ TerminalWidget::TerminalWidget(QWidget *parent)
 
 TerminalWidget::~TerminalWidget()
 {
+    // A history scan still running reads only its own snapshot; this just
+    // tells it to stop early.
+    m_search.stop();
     if (m_pty) {
         m_pty->kill();
         delete m_pty;
@@ -2751,7 +2751,6 @@ void TerminalWidget::closeSearch()
 {
     m_searchDebounce->stop();
     m_searchFollow->stop();
-    m_searchSlice->stop();
     if (m_searchBar) {
         m_searchBar->hide();
     }
@@ -2785,13 +2784,12 @@ private:
     const TerminalWidget &m_w;
 };
 
-// Full search: history in slices (searchSlice), then the tail and the live
-// screen.
+// Full search: history on a worker thread over a snapshot, then the tail and
+// the live screen.
 void TerminalWidget::runSearch()
 {
     if (!m_searchBar) return;
     m_searchFollow->stop();
-    m_searchSlice->stop();
     const TerminalSearchSession::State state = m_search.start(m_searchBar->options(), m_linesDropped);
     m_searchBar->setInvalid(state == TerminalSearchSession::State::Invalid);
     if (state != TerminalSearchSession::State::Scanning) {
@@ -2800,19 +2798,25 @@ void TerminalWidget::runSearch()
         return;
     }
     m_searchRevealPending = true;
-    searchSlice();
+    launchHistoryScan();
 }
 
-// History is searched in slices of at most kSearchSliceBudget per event-loop
-// pass, oldest to newest, straight from the compact buffer: no copy of the
-// scrollback, no locking, and the UI stays responsive on 100k lines.
-void TerminalWidget::searchSlice()
+void TerminalWidget::launchHistoryScan()
 {
-    if (m_search.state() != TerminalSearchSession::State::Scanning) return;
-    const TerminalSearchSession::State state = m_search.scan(SearchSource(*this), kSearchSliceBudget);
+    if (std::optional<TerminalSearchSession::HistoryJob> job =
+            m_search.takeHistoryJob(m_scrollback, m_linesDropped, m_cols)) {
+        m_searchWatcher->setFuture(QtConcurrent::run(&TerminalSearchSession::runHistoryJob, std::move(*job)));
+    }
+}
+
+void TerminalWidget::onHistoryScanned()
+{
+    const TerminalSearchSession::State state =
+        m_search.finishHistoryJob(m_searchWatcher->result(), SearchSource(*this));
     if (state == TerminalSearchSession::State::Scanning) {
+        // Output arrived faster than one incremental pass: scan again.
         if (m_searchBar) m_searchBar->setCount(m_search.activeMatch(), static_cast<int>(m_search.matches().size()));
-        m_searchSlice->start();
+        launchHistoryScan();
         return;
     }
     // Start from the most recent hit, like a terminal search from the prompt.
@@ -2830,8 +2834,8 @@ void TerminalWidget::searchNewOutput()
 {
     if (m_search.state() != TerminalSearchSession::State::Ready) return;
     if (m_search.searchNewOutput(SearchSource(*this)) == TerminalSearchSession::State::Scanning) {
-        // Too much new history for one pass: continue in slices.
-        m_searchSlice->start();
+        // Too much new history for one pass: back to the worker.
+        launchHistoryScan();
         return;
     }
     searchChanged();

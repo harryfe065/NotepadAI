@@ -86,6 +86,16 @@ TerminalAreaToolbar::TerminalAreaToolbar(ads::CDockAreaWidget *area)
     syncToCurrent();
 }
 
+ads::CDockAreaWidget *TerminalAreaToolbar::area() const
+{
+    return m_area.data();
+}
+
+TerminalDock *TerminalAreaToolbar::dock() const
+{
+    return m_dock.data();
+}
+
 TerminalAreaToolbar *TerminalAreaToolbar::find(ads::CDockAreaWidget *area)
 {
     if (!area) return nullptr;

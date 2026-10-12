@@ -19,19 +19,24 @@
 #ifndef TERMINALSEARCHSESSION_H
 #define TERMINALSEARCHSESSION_H
 
+#include "ScrollbackBuffer.h"
 #include "TerminalRowLayout.h"
 #include "TerminalSearch.h"
 
 #include <QRegularExpression>
 
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <optional>
 #include <vector>
 
 // One find-in-terminal search, apart from the widget: its matches and how far
-// the scan has got. History is scanned oldest to newest in time-boxed slices
-// straight from the rows (no copy, no thread); output that arrives later is
-// searched incrementally. A user regex that backtracks catastrophically ends
-// the search (TooSlow) instead of stalling the caller on every row. Rows are
+// the scan has got. History is scanned on a worker thread over a snapshot of
+// the scrollback (O(1), copy-on-write), so even 100k lines cost the UI thread
+// nothing; output that arrives later is searched incrementally on the caller's
+// thread (only lines new since the last pass, plus the screen). A user regex
+// that backtracks catastrophically ends the search (TooSlow). Live rows are
 // read through Source, so tests drive it without a terminal.
 class TerminalSearchSession
 {
@@ -60,12 +65,38 @@ public:
     static constexpr std::chrono::milliseconds kRegexRowLimit{20};
     static constexpr std::chrono::milliseconds kRegexPassLimit{50};
 
-    // A new search; nothing is scanned until scan(). Empty query: Off.
+    // A new search (Scanning: history still to scan). Empty query: Off.
+    // Starting or stopping cancels a history job still running.
     State start(const TerminalSearchOptions &options, qint64 firstLine);
     void stop();
-    // Scans history for about `budget`. Scanning while some remains; once it
-    // is done, the new output is searched too (see searchNewOutput).
-    State scan(const Source &source, std::chrono::nanoseconds budget);
+
+    // The history scan, as a job for a worker thread.
+    struct HistoryJob {
+        std::shared_ptr<const ScrollbackStore> history;   // never changes
+        qint64 firstLine = 0;   // line id of history index 0
+        qint64 from = 0;        // first line id to search
+        int columns = 0;
+        QRegularExpression re;
+        bool regex = false;
+        bool skipBlank = false;
+        quint64 generation = 0;
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+    struct HistoryResult {
+        std::vector<TerminalSearchMatch> matches;
+        qint64 end = 0;   // line id after the last line searched
+        quint64 generation = 0;
+        bool tooSlow = false;
+        bool cancelled = false;
+    };
+    // The next job while Scanning and none is running, else nothing.
+    std::optional<HistoryJob> takeHistoryJob(const ScrollbackBuffer &history, qint64 firstLine, int columns);
+    // Pure and thread-safe: reads only the job's snapshot.
+    static HistoryResult runHistoryJob(const HistoryJob &job);
+    // Merges a finished job (results of a replaced search are ignored), then
+    // searches the output that arrived meanwhile; Scanning again when that
+    // was more than kSyncLines.
+    State finishHistoryJob(const HistoryResult &result, const Source &source);
     // Searches the lines that reached history since the last pass and the
     // live rows, replacing matches on rows that were live (they may have
     // changed). A backlog over kSyncLines goes back to Scanning.
@@ -98,6 +129,7 @@ public:
 private:
     bool searchRow(qint64 line, int cols);
     void giveUp();
+    void cancelJob();
 
     TerminalSearchOptions m_options;
     QRegularExpression m_re;
@@ -110,6 +142,9 @@ private:
     std::vector<VTermScreenCell> m_cells;
     QString m_text;
     std::vector<int> m_colOf;
+    quint64 m_generation = 0;
+    bool m_jobRunning = false;
+    std::shared_ptr<std::atomic<bool>> m_cancel;
 };
 
 #endif

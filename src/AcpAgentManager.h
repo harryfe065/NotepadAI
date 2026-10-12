@@ -92,7 +92,9 @@ public:
     // raiseNewSession: true (user open) switches the dock to the new slot;
     // false (scheduled/background) leaves the current slot and marks activity.
     // The project dock for an aiDockGroupKey (cwd + SSH profile), if open.
-    AiAgentDock *dockForGroup(const QString &groupKey) const { return m_docksByGroup.value(groupKey).data(); }
+    // Out of line: QPointer<AiAgentDock>::data() needs the complete type,
+    // which most includers of this header do not have.
+    AiAgentDock *dockForGroup(const QString &groupKey) const;
 
     AiAgentDock *openAgent(const QString &agentId, const QString &workingDirectory,
                            bool recordAsLastUsed = false,

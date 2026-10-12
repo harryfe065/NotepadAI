@@ -28,6 +28,14 @@ auto lineLess = [](const TerminalSearchMatch &m, qint64 line) { return m.line < 
 
 } // namespace
 
+void TerminalSearchSession::cancelJob()
+{
+    if (m_cancel) m_cancel->store(true, std::memory_order_relaxed);
+    m_cancel.reset();
+    m_jobRunning = false;
+    ++m_generation;
+}
+
 TerminalSearchSession::State TerminalSearchSession::start(const TerminalSearchOptions &options, qint64 firstLine)
 {
     stop();
@@ -49,6 +57,7 @@ TerminalSearchSession::State TerminalSearchSession::start(const TerminalSearchOp
 
 void TerminalSearchSession::stop()
 {
+    cancelJob();
     m_state = State::Off;
     m_re = QRegularExpression();
     m_matches.clear();
@@ -71,29 +80,85 @@ bool TerminalSearchSession::searchRow(qint64 line, int cols)
 
 void TerminalSearchSession::giveUp()
 {
+    cancelJob();
     m_state = State::TooSlow;
     m_re = QRegularExpression();
     m_matches.clear();
     m_active = -1;
 }
 
-TerminalSearchSession::State TerminalSearchSession::scan(const Source &source, std::chrono::nanoseconds budget)
+std::optional<TerminalSearchSession::HistoryJob>
+TerminalSearchSession::takeHistoryJob(const ScrollbackBuffer &history, qint64 firstLine, int columns)
 {
-    if (m_state != State::Scanning) return m_state;
-    const auto start = Clock::now();
-    const int cols = source.columns();
-    if (static_cast<int>(m_cells.size()) < cols) m_cells.resize(static_cast<std::size_t>(cols));
-    const qint64 historyEnd = source.historyEnd();
-    m_scanNext = std::max(m_scanNext, source.firstLine());
-    int scanned = 0;
-    while (m_scanNext < historyEnd) {
-        if (source.historyLine(m_scanNext, m_cells.data()) && !searchRow(m_scanNext, cols)) return m_state;
-        ++m_scanNext;
-        // A regex row can take milliseconds, so the clock is read after each.
-        if (((++scanned & 63) == 0 || m_options.regex) && Clock::now() - start > budget) break;
+    if (m_state != State::Scanning || m_jobRunning) return std::nullopt;
+    HistoryJob job;
+    job.history = history.snapshot();
+    job.firstLine = firstLine;
+    job.from = std::max(m_scanNext, firstLine);
+    job.columns = columns;
+    job.re = m_re;
+    job.regex = m_options.regex;
+    job.skipBlank = m_skipBlank;
+    job.generation = m_generation;
+    m_cancel = std::make_shared<std::atomic<bool>>(false);
+    job.cancel = m_cancel;
+    m_jobRunning = true;
+    return job;
+}
+
+TerminalSearchSession::HistoryResult TerminalSearchSession::runHistoryJob(const HistoryJob &job)
+{
+    HistoryResult result;
+    result.generation = job.generation;
+    const ScrollbackStore &history = *job.history;
+    result.end = job.firstLine + history.size();
+    if (job.columns <= 0) return result;
+    std::vector<VTermScreenCell> cells(static_cast<std::size_t>(job.columns));
+    QString text;
+    std::vector<int> colOf;
+    qint64 scanned = 0;
+    for (qint64 id = std::max(job.from, job.firstLine); id < result.end; ++id) {
+        if ((++scanned & 63) == 0 && job.cancel && job.cancel->load(std::memory_order_relaxed)) {
+            result.cancelled = true;
+            return result;
+        }
+        if (!history.lineAt(static_cast<int>(id - job.firstLine), job.columns, cells.data())) continue;
+        if (!job.regex) {
+            // Literal patterns are escaped: linear time, nothing to watch.
+            searchTerminalRow(job.re, id, cells.data(), job.columns, result.matches, text, colOf, job.skipBlank);
+            continue;
+        }
+        // Off the UI thread, but a regex stuck on one row would still burn
+        // a core for nothing: give up like the incremental pass does.
+        const auto start = Clock::now();
+        searchTerminalRow(job.re, id, cells.data(), job.columns, result.matches, text, colOf, job.skipBlank);
+        if (Clock::now() - start > kRegexRowLimit) {
+            result.tooSlow = true;
+            result.matches.clear();
+            return result;
+        }
     }
-    m_searchedHistoryEnd = m_scanNext;
-    if (m_scanNext < historyEnd) return m_state;
+    return result;
+}
+
+TerminalSearchSession::State TerminalSearchSession::finishHistoryJob(const HistoryResult &result,
+                                                                     const Source &source)
+{
+    if (result.generation != m_generation || m_state != State::Scanning) return m_state;
+    m_jobRunning = false;
+    m_cancel.reset();
+    if (result.tooSlow) {
+        giveUp();
+        return m_state;
+    }
+    if (result.cancelled) return m_state;
+    // Earlier rounds' matches are all before this job's range; lines evicted
+    // while it ran are gone.
+    const qint64 first = source.firstLine();
+    m_matches.insert(m_matches.end(), result.matches.begin(), result.matches.end());
+    m_matches.erase(m_matches.begin(), std::lower_bound(m_matches.begin(), m_matches.end(), first, lineLess));
+    m_scanNext = result.end;
+    m_searchedHistoryEnd = result.end;
     m_state = State::Ready;
     return searchNewOutput(source);
 }
