@@ -89,6 +89,9 @@ public:
     // Opens (and docks) an AI tab in `cwd` with the last-used agent, falling
     // back to the default one. Null when no agent can start there.
     AiAgentDock *openAiAgentInFolder(const QString &cwd, remote::ExecutionContext *ctx);
+    // Selects `path` in the open workspace tree that contains it (raising
+    // that workspace). False when no open workspace contains it.
+    bool revealInWorkspace(const QString &path);
 
 public slots:
     // replaceInitialEditor: when true, an unedited pristine "New X" buffer that

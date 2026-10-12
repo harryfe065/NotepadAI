@@ -86,6 +86,8 @@ public slots:
     void renameTerminal(TerminalDock *dock);
     // Ctrl+click on a path in a terminal: open it at line/column.
     void openFileAt(const QString &path, int line, int column);
+    // Ctrl+click on a directory: the workspace tree, else the file manager.
+    void revealPath(const QString &path);
     // Selection → the terminal's project AI tab (or the active one, or a new
     // one in the terminal's directory).
     void sendSelectionToAi(TerminalDock *dock);
@@ -96,8 +98,13 @@ public slots:
     void applyWorkspaceFilter(const QString &activeWorkspaceRoot, const QStringList &openWorkspaceRoots);
     void closeTerminalsForWorkspace(const QString &workspaceRoot, const QStringList &openWorkspaceRoots);
 
+protected:
+    // Editor tabs dropped on a terminal type their file path into it.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     static constexpr int kMaxScrollbackLines = 100000;
+    TerminalDock *terminalAt(const QPoint &globalPos) const;
 
     QFont terminalFont() const;
     TerminalAppearance appearance() const;

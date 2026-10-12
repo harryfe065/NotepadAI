@@ -113,6 +113,8 @@ public:
     void setLinkBaseDirs(const QStringList &dirs) { m_linkBaseDirs = dirs; }
     void setLocalPathLinks(bool enabled) { m_localPathLinks = enabled; }
     void selectAll();
+    // Types `paths` as shell-quoted words (drag and drop of files or tabs).
+    void pasteDroppedPaths(const QStringList &paths);
 
     bool isProcessRunning() const;
     qint64 ptyPid() const;
@@ -142,6 +144,8 @@ signals:
     void cwdChanged(const QString &cwd);
     // Ctrl+click on a file path (line/column 0 when absent).
     void openFileRequested(const QString &path, int line, int column);
+    // Ctrl+click on a directory: show it in the workspace tree.
+    void revealPathRequested(const QString &path);
     // Ctrl+Shift+L or the context menu's Clear.
     void clearRequested();
     // Ctrl+Shift+A or the context menu's Send to AI.

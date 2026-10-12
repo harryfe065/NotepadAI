@@ -5654,6 +5654,18 @@ void MainWindow::openAiAgentAt(const QString &agentId, const QString &cwd, remot
         attachAiAgentDock(dock);
 }
 
+bool MainWindow::revealInWorkspace(const QString &path)
+{
+    FolderAsWorkspaceDock *dock = resolveShowInWorkspaceDock(path, /*isFile=*/!path.isEmpty());
+    if (!dock)
+        return false;
+    dock->setVisible(true);
+    dock->raise();
+    setActiveWorkspace(dock);
+    dock->revealAndSelectPath(path);
+    return true;
+}
+
 AiAgentDock *MainWindow::openAiAgentInFolder(const QString &cwd, remote::ExecutionContext *ctx)
 {
     AcpAgentManager *manager = app ? app->getAiAgentManager() : nullptr;

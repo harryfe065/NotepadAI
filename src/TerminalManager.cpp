@@ -37,6 +37,8 @@
 #include "EditorManager.h"
 #include "ScintillaNext.h"
 #include "DockWidgetTab.h"
+#include "DockOverlay.h"
+#include "DockManager.h"
 
 #include "iptyprocess.h"
 #include "ptyqt.h"
@@ -56,7 +58,9 @@
 #include <QCoreApplication>
 #include <QTimer>
 #include <QHash>
+#include <QDesktopServices>
 #include <QInputDialog>
+#include <QUrl>
 #include <QStatusBar>
 #include <QMouseEvent>
 
@@ -75,6 +79,8 @@ TerminalManager::TerminalManager(NotepadNextApplication *app, MainWindow *mainWi
     m_statsTimer->setTimerType(Qt::CoarseTimer);
     connect(m_statsTimer, &QTimer::timeout, this, &TerminalManager::refreshProcessStats);
     // Started by updateStatsTimer() once a local terminal is on screen.
+
+    qApp->installEventFilter(this);
 
     if (ApplicationSettings *s = app ? app->getSettings() : nullptr) {
         connect(s, &ApplicationSettings::terminalLineHeightPctChanged, this, &TerminalManager::applyAppearance);
@@ -794,10 +800,68 @@ void TerminalManager::wireWidget(TerminalDock *dock)
     wireContextMenu(dock);
     connect(tw, &TerminalWidget::zoomRequested, this, &TerminalManager::zoomTerminals);
     connect(tw, &TerminalWidget::openFileRequested, this, &TerminalManager::openFileAt);
+    connect(tw, &TerminalWidget::revealPathRequested, this, &TerminalManager::revealPath);
     connect(tw, &TerminalWidget::sendToAiRequested, this, [this, dock = QPointer<TerminalDock>(dock)]() {
         if (dock)
             sendSelectionToAi(dock.data());
     });
+}
+
+void TerminalManager::revealPath(const QString &path)
+{
+    if (!m_mainWindow->revealInWorkspace(path))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+TerminalDock *TerminalManager::terminalAt(const QPoint &globalPos) const
+{
+    for (const auto &d : m_docks) {
+        TerminalWidget *w = d ? d->terminalWidget() : nullptr;
+        if (!w || !w->isVisible())
+            continue;
+        QWidget *vp = w->viewport();
+        if (vp->rect().contains(vp->mapFromGlobal(globalPos)))
+            return d.data();
+    }
+    return nullptr;
+}
+
+bool TerminalManager::eventFilter(QObject *watched, QEvent *event)
+{
+    // ADS drags tabs itself (no MIME drag), but the tab still receives the
+    // release before ADS finishes the drag, so a file tab let go over a
+    // terminal can type its path there. Only releases on dock tabs reach the
+    // rest of this function.
+    if (event->type() != QEvent::MouseButtonRelease)
+        return QObject::eventFilter(watched, event);
+    auto *tab = qobject_cast<ads::CDockWidgetTab *>(watched);
+    if (!tab)
+        return QObject::eventFilter(watched, event);
+    auto *me = static_cast<QMouseEvent *>(event);
+    if (me->button() != Qt::LeftButton)
+        return QObject::eventFilter(watched, event);
+    ads::CDockWidget *dw = tab->dockWidget();
+    auto *editor = dw ? qobject_cast<ScintillaNext *>(dw->widget()) : nullptr;
+    if (!editor || !editor->isFile())
+        return QObject::eventFilter(watched, event);
+    const QString path = editor->getFilePath();
+    if (path.startsWith(QLatin1String("ssh://")))
+        return QObject::eventFilter(watched, event);
+
+    const QPoint global = me->globalPosition().toPoint();
+    TerminalDock *target = terminalAt(global);
+    if (!target)
+        return QObject::eventFilter(watched, event);
+    // When ADS offers a dock target under the pointer the user is docking.
+    if (ads::CDockManager *manager = dw->dockManager()) {
+        const auto overlays = manager->findChildren<ads::CDockOverlay *>();
+        for (ads::CDockOverlay *overlay : overlays) {
+            if (overlay->isVisible() && overlay->visibleDropAreaUnderCursor() != ads::InvalidDockWidgetArea)
+                return QObject::eventFilter(watched, event);
+        }
+    }
+    target->terminalWidget()->pasteDroppedPaths({path});
+    return QObject::eventFilter(watched, event);
 }
 
 void TerminalManager::openFileAt(const QString &path, int line, int column)

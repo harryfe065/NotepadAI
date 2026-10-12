@@ -2131,7 +2131,7 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
                 for (const QString &c : candidates) {
                     const QFileInfo fi(c);
                     if (fi.isDir()) {
-                        QDesktopServices::openUrl(QUrl::fromLocalFile(fi.absoluteFilePath()));
+                        emit revealPathRequested(fi.absoluteFilePath());
                         return;
                     }
                     if (fi.exists()) {
@@ -2359,7 +2359,7 @@ bool TerminalWidget::openHoverLink()
     if (link.url) {
         QDesktopServices::openUrl(QUrl(link.target));
     } else if (QFileInfo(link.target).isDir()) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(link.target));
+        emit revealPathRequested(link.target);
     } else {
         emit openFileRequested(link.target, link.line, link.column);
     }
@@ -2652,18 +2652,29 @@ void TerminalWidget::dragMoveEvent(QDragMoveEvent *event)
 // Dropped files are typed as shell-quoted paths, space separated.
 void TerminalWidget::dropEvent(QDropEvent *event)
 {
-    QStringList words;
+    QStringList paths;
     const auto urls = event->mimeData()->urls();
     for (const QUrl &url : urls) {
-        if (!url.isLocalFile()) continue;
-        QString path = url.toLocalFile();
+        if (url.isLocalFile()) {
+            paths << url.toLocalFile();
+        }
+    }
+    if (paths.isEmpty()) return;
+    event->acceptProposedAction();
+    pasteDroppedPaths(paths);
+}
+
+void TerminalWidget::pasteDroppedPaths(const QStringList &paths)
+{
+    QStringList words;
+    for (QString path : paths) {
+        if (path.isEmpty()) continue;
         if (m_shellKind == TerminalShellKind::PowerShell || m_shellKind == TerminalShellKind::Cmd) {
             path = QDir::toNativeSeparators(path);
         }
         words << quotePathForShell(path, m_shellKind);
     }
     if (words.isEmpty()) return;
-    event->acceptProposedAction();
     setFocus(Qt::MouseFocusReason);
     pasteText(words.join(QLatin1Char(' ')) + QLatin1Char(' '));
 }
