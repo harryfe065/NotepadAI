@@ -43,6 +43,7 @@ private slots:
     void recognisesAskUserToolCalls();
     void unwrapsNestedArguments();
     void recognisesOmpDeviceWrite();
+    void infersRecommendedFromRecommendation();
 };
 
 void TestAskUserForm::parsesGrillRound()
@@ -379,6 +380,31 @@ void TestAskUserForm::recognisesOmpDeviceWrite()
         {QStringLiteral("args"), QJsonDocument::fromJson(argsJson.toUtf8()).object()}}}}}};
     QCOMPARE(askUserArguments(noContent, rawOutput).value(QStringLiteral("title")).toString(),
              QStringLiteral("Round 1"));
+}
+
+void TestAskUserForm::infersRecommendedFromRecommendation()
+{
+    // The agent explained its pick but left `recommended` out.
+    QString error;
+    auto spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"State?","type":"single",
+        "options":[{"value":"review","label":"Review the code"},{"value":"redesign","label":"Reopen the design"},
+                   {"value":"archive","label":"Archive now"}],
+        "recommendation":"Chọn **review**. Code đã có, nên kiểm chứng trước khi archive."}]})"), &error);
+    // "archive" also appears in the reason, but "review" is the pick: ambiguous.
+    QVERIFY(!spec.has_value());
+    QVERIFY2(error.contains(QLatin1String("recommended")), qPrintable(error));
+
+    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Size gate?","type":"single",
+        "options":[{"value":"accept","label":"Accept for v1"},{"value":"now","label":"Support big files now"}],
+        "recommendation":"Accept for v1. Note it as a follow-up."}]})"), &error);
+    QVERIFY2(spec.has_value(), qPrintable(error));
+    QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("accept"));
+
+    // No reasoning, no recommendation: nothing to preselect, still valid.
+    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Pick","type":"single",
+        "options":["a","b"]}]})"), &error);
+    QVERIFY(spec.has_value());
+    QVERIFY(spec->questions.at(0).recommended.isNull());
 }
 
 QTEST_GUILESS_MAIN(TestAskUserForm)

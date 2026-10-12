@@ -194,6 +194,16 @@ QString recommendedText(const Question &q)
     return {};
 }
 
+// Option labels are plain text; keep them literal inside the markdown line.
+QString escapeMarkdown(QString text)
+{
+    for (const QChar c : {QLatin1Char('\\'), QLatin1Char('*'), QLatin1Char('_'), QLatin1Char('`'),
+                          QLatin1Char('['), QLatin1Char(']'), QLatin1Char('<'), QLatin1Char('#')}) {
+        text.replace(c, QString(QLatin1Char('\\')) + c);
+    }
+    return text;
+}
+
 // Marks the recommended choice next to its label; the footnote line says why.
 QString withMark(const QString &label, bool recommended)
 {
@@ -476,14 +486,16 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
 
     const QString recommended = recommendedText(q);
     if (!recommended.isEmpty() || !q.recommendation.trimmed().isEmpty()) {
-        QString line = QStringLiteral("* ") + tr("Recommended");
+        // Markdown: the agent's reasoning often carries **bold** / `code`.
+        QString line = QStringLiteral("\\* ") + tr("Recommended");
         if (!recommended.isEmpty())
-            line += QStringLiteral(": ") + recommended;
+            line += QStringLiteral(": ") + escapeMarkdown(recommended);
         if (!q.recommendation.trimmed().isEmpty())
             line += QStringLiteral(" \u2014 ") + q.recommendation.trimmed();
-        auto *rec = new QLabel(line, row.container);
+        auto *rec = new QLabel(row.container);
         rec->setObjectName(QStringLiteral("auRecommendation"));
-        rec->setTextFormat(Qt::PlainText);
+        rec->setTextFormat(Qt::MarkdownText);
+        rec->setText(line);
         rec->setWordWrap(true);
         rec->setTextInteractionFlags(Qt::TextSelectableByMouse);
         QFont italic = rec->font();
