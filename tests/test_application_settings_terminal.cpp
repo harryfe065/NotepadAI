@@ -48,6 +48,9 @@ private slots:
     void childMemoryLimit_setAndGetRoundTrip();
     void childMemoryLimit_zeroMeansUnlimited();
 
+    void appearance_defaults();
+    void appearance_roundTrips();
+
 private:
     QTemporaryDir tempDir;
 };
@@ -179,6 +182,33 @@ void TestApplicationSettingsTerminal::childMemoryLimit_zeroMeansUnlimited()
     ApplicationSettings s;
     s.setTerminalChildMemoryLimitGb(0);
     QCOMPARE(s.terminalChildMemoryLimitGb(), 0);
+}
+void TestApplicationSettingsTerminal::appearance_defaults()
+{
+    ApplicationSettings s;
+    QCOMPARE(s.terminalLineHeightPct(), 120);
+    QCOMPARE(s.terminalColorScheme(), QStringLiteral("app"));
+    QCOMPARE(s.terminalMinimumContrast(), 45);
+    QCOMPARE(s.terminalCursorShape(), QStringLiteral("block"));
+    QCOMPARE(s.terminalCursorBlink(), QStringLiteral("terminal"));
+    QCOMPARE(s.terminalScrollbackLines(), 10000);
+    QCOMPARE(s.terminalCopyOnSelect(), false);
+    QCOMPARE(s.terminalBellSound(), false);
+}
+
+void TestApplicationSettingsTerminal::appearance_roundTrips()
+{
+    ApplicationSettings s;
+    QSignalSpy spy(&s, &ApplicationSettings::terminalColorSchemeChanged);
+    s.setTerminalColorScheme(QStringLiteral("dracula"));
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(s.terminalColorScheme(), QStringLiteral("dracula"));
+    s.setTerminalLineHeightPct(140);
+    QCOMPARE(s.terminalLineHeightPct(), 140);
+    s.setTerminalCursorShape(QStringLiteral("bar"));
+    QCOMPARE(s.terminalCursorShape(), QStringLiteral("bar"));
+    s.setTerminalCopyOnSelect(true);
+    QCOMPARE(s.terminalCopyOnSelect(), true);
 }
 
 QTEST_MAIN(TestApplicationSettingsTerminal)

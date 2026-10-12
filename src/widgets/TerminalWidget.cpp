@@ -19,6 +19,7 @@
 #include "TerminalWidget.h"
 
 #include "TerminalBoxDrawing.h"
+#include "TerminalScrollBar.h"
 #include "TerminalCellSource.h"
 #include "ProfileScope.h"
 
@@ -47,7 +48,6 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QScreen>
-#include <QScrollBar>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -60,6 +60,9 @@ namespace {
 constexpr uint32_t kWideSpacer = 0xFFFFFFFFu;
 // Resizes are applied at most once per this interval while a splitter drags.
 constexpr int kResizeThrottleMs = 16;
+constexpr int kCursorBlinkMs = 500;
+// Wheel: three lines per notch, as on every platform default.
+constexpr int kWheelLines = 3;
 
 class WidgetCellSource final : public TerminalCellSource
 {
@@ -138,12 +141,18 @@ TerminalWidget::TerminalWidget(QWidget *parent)
     viewport()->setAttribute(Qt::WA_OpaquePaintEvent, true);
     viewport()->setAttribute(Qt::WA_NoSystemBackground, true);
     viewport()->setCursor(Qt::IBeamCursor);
+    // The overlay scrollbar lives in the right padding; a classic one would
+    // change the grid width every time history appears.
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    if (QScrollBar *sb = verticalScrollBar()) {
-        sb->setSingleStep(1);
-        sb->setPageStep(m_rows);
-        sb->setRange(0, 0);
-    }
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setFrameShape(QFrame::NoFrame);
+    m_scrollBar = new TerminalScrollBar(viewport());
+    m_scrollBar->hide();
+    connect(m_scrollBar, &TerminalScrollBar::offsetRequested, this, &TerminalWidget::setScrollOffset);
+
+    m_blinkTimer = new QTimer(this);
+    m_blinkTimer->setInterval(kCursorBlinkMs);
+    connect(m_blinkTimer, &QTimer::timeout, this, &TerminalWidget::toggleCursorBlink);
 
     m_batchTimer = new QTimer(this);
     m_batchTimer->setSingleShot(true);
@@ -223,6 +232,7 @@ int TerminalWidget::vtermSetTermProp(VTermProp prop, VTermValue *val, void *user
     if (prop == VTERM_PROP_CURSORVISIBLE && val) {
         w->m_cursorVisible = val->boolean != 0;
         w->markLiveRowsDirty(w->m_cursor.y(), w->m_cursor.y() + 1);
+        w->updateBlinkTimer();
         return 1;
     }
     if (prop == VTERM_PROP_ALTSCREEN && val) {
@@ -237,6 +247,16 @@ int TerminalWidget::vtermSetTermProp(VTermProp prop, VTermValue *val, void *user
         w->m_mouseMode = val->number;
         return 1;
     }
+    if (prop == VTERM_PROP_CURSORSHAPE && val) {
+        w->m_cursorShape = val->number;
+        w->markLiveRowsDirty(w->m_cursor.y(), w->m_cursor.y() + 1);
+        return 1;
+    }
+    if (prop == VTERM_PROP_CURSORBLINK && val) {
+        w->m_programBlink = val->boolean != 0;
+        w->updateBlinkTimer();
+        return 1;
+    }
     if (prop == VTERM_PROP_FOCUSREPORT && val) {
         w->m_focusReporting = val->boolean != 0;
         return 1;
@@ -246,8 +266,11 @@ int TerminalWidget::vtermSetTermProp(VTermProp prop, VTermValue *val, void *user
 
 int TerminalWidget::vtermBell(void *user)
 {
-    Q_UNUSED(user);
-    QApplication::beep();
+    auto *w = static_cast<TerminalWidget *>(user);
+    if (w->m_bellSound) {
+        QApplication::beep();
+    }
+    emit w->bellRung();
     return 1;
 }
 
@@ -418,36 +441,97 @@ void TerminalWidget::flushFrame()
 void TerminalWidget::syncScrollbar()
 {
     m_scrollbarDirty = false;
-    QScrollBar *sb = verticalScrollBar();
-    if (!sb) return;
-    const int max = m_scrollback.size();
-    m_scrollOffset = std::min(m_scrollOffset, max);
-    m_inScrollbarSync = true;
-    sb->setRange(0, max);
-    sb->setPageStep(m_rows);
-    sb->setValue(max - m_scrollOffset);
-    m_inScrollbarSync = false;
+    const int history = m_scrollback.size();
+    m_scrollOffset = std::min(m_scrollOffset, history);
+    m_scrollBar->setState(history, m_rows, m_scrollOffset);
+    // Full-screen apps own the grid; there is nothing to scroll back to.
+    const bool show = history > 0 && !m_altScreen;
+    if (show != m_scrollBar->isVisible()) {
+        m_scrollBar->setVisible(show);
+    }
 }
 
-void TerminalWidget::scrollContentsBy(int dx, int dy)
+void TerminalWidget::setScrollOffset(int offset)
 {
-    Q_UNUSED(dx);
-    Q_UNUSED(dy);
-    if (m_inScrollbarSync) return;
-    if (QScrollBar *sb = verticalScrollBar()) {
-        m_scrollOffset = sb->maximum() - sb->value();
-    }
+    offset = std::clamp(offset, 0, m_altScreen ? 0 : m_scrollback.size());
+    if (offset == m_scrollOffset) return;
+    m_scrollOffset = offset;
+    m_scrollbarDirty = true;
     markAllDirty();
+    updateBlinkTimer();
     scheduleFrame();
 }
 
 void TerminalWidget::scrollToBottom()
 {
-    if (m_scrollOffset == 0) return;
-    m_scrollOffset = 0;
-    m_scrollbarDirty = true;
-    markAllDirty();
-    scheduleFrame();
+    setScrollOffset(0);
+}
+
+// --- cursor style -------------------------------------------------------------
+
+// The user's style becomes libvterm's own cursor state, so a program's
+// DECSCUSR overrides it and DECRC restores to it instead of to a hard block.
+void TerminalWidget::applyCursorStyleToState()
+{
+    if (!m_vt) return;
+    VTermState *state = vterm_obtain_state(m_vt);
+    VTermValue shape;
+    switch (m_cursorShapeSetting) {
+    case TerminalCursorShape::Bar:       shape.number = VTERM_PROP_CURSORSHAPE_BAR_LEFT; break;
+    case TerminalCursorShape::Underline: shape.number = VTERM_PROP_CURSORSHAPE_UNDERLINE; break;
+    default:                             shape.number = VTERM_PROP_CURSORSHAPE_BLOCK; break;
+    }
+    vterm_state_set_termprop(state, VTERM_PROP_CURSORSHAPE, &shape);
+    // libvterm resets to a blinking cursor; a steady one is the quiet default.
+    VTermValue blink;
+    blink.boolean = 0;
+    vterm_state_set_termprop(state, VTERM_PROP_CURSORBLINK, &blink);
+}
+
+bool TerminalWidget::cursorBlinkEnabled() const
+{
+    switch (m_cursorBlinkSetting) {
+    case TerminalCursorBlink::On:  return true;
+    case TerminalCursorBlink::Off: return false;
+    default:                       return m_programBlink;
+    }
+}
+
+// The blink timer only runs while it can matter: focused, cursor shown, at the
+// live bottom. Idle terminals cost nothing.
+void TerminalWidget::updateBlinkTimer()
+{
+    const bool atBottom = m_altScreen || m_scrollOffset == 0;
+    const bool run = cursorBlinkEnabled() && m_hasFocus && m_cursorVisible && atBottom && !m_exited;
+    if (run && !m_blinkTimer->isActive()) {
+        m_blinkTimer->start();
+    } else if (!run && m_blinkTimer->isActive()) {
+        m_blinkTimer->stop();
+    }
+    if (!run && !m_blinkPhaseOn) {
+        m_blinkPhaseOn = true;
+        markLiveRowsDirty(m_cursor.y(), m_cursor.y() + 1);
+        scheduleFrame();
+    }
+}
+
+// Typing keeps the cursor solid; blinking resumes a full period later.
+void TerminalWidget::restartBlink()
+{
+    if (!m_blinkPhaseOn) {
+        m_blinkPhaseOn = true;
+        markLiveRowsDirty(m_cursor.y(), m_cursor.y() + 1);
+    }
+    if (m_blinkTimer->isActive()) {
+        m_blinkTimer->start();
+    }
+}
+
+void TerminalWidget::toggleCursorBlink()
+{
+    m_blinkPhaseOn = !m_blinkPhaseOn;
+    // Only the cursor cell changes; repaint just that rect.
+    viewport()->update(cursorRect().toAlignedRect().adjusted(-1, -1, 1, 1));
 }
 
 // --- lifecycle ----------------------------------------------------------------
@@ -488,6 +572,7 @@ bool TerminalWidget::start(const QString &shell, const QString &cwd, const QStri
     // Merge damage down to one scroll + rects per flush; we flush once per batch.
     vterm_screen_set_damage_merge(m_screen, VTERM_DAMAGE_SCROLL);
     vterm_screen_reset(m_screen, 1);
+    applyCursorStyleToState();
 
     vterm_output_set_callback(m_vt, &TerminalWidget::vtermOutput, this);
 
@@ -553,6 +638,56 @@ void TerminalWidget::setColorScheme(const TerminalColorScheme &scheme)
 {
     m_scheme = scheme;
     m_palette = TerminalPalette::fromScheme(scheme);
+    m_scrollBar->setThumbColor(m_palette.defaultFg);
+    markAllDirty();
+    scheduleFrame();
+}
+
+void TerminalWidget::setAppearance(const TerminalAppearance &appearance)
+{
+    setColorScheme(appearance.scheme);
+    m_contrast.setMinimum(appearance.minimumContrast);
+    m_copyOnSelect = appearance.copyOnSelect;
+    m_bellSound = appearance.bellSound;
+    setScrollbackLines(appearance.scrollbackLines);
+
+    const bool styleChanged = m_cursorShapeSetting != appearance.cursorShape;
+    m_cursorShapeSetting = appearance.cursorShape;
+    m_cursorBlinkSetting = appearance.cursorBlink;
+    if (styleChanged) {
+        applyCursorStyleToState();
+    }
+    updateBlinkTimer();
+
+    const qreal lineHeight = std::clamp(appearance.lineHeight, 1.0, 2.0);
+    if (appearance.font != m_font || !qFuzzyCompare(lineHeight, m_lineHeight)) {
+        m_font = appearance.font;
+        m_lineHeight = lineHeight;
+        m_glyphs.setFont(m_font);
+        recomputeMetrics();
+        requestResizeToViewport();
+    }
+    markAllDirty();
+    scheduleFrame();
+}
+
+void TerminalWidget::setScrollbackLines(int lines)
+{
+    lines = std::clamp(lines, 0, 100000);
+    if (lines == m_scrollback.maxLines()) return;
+    const int evicted = m_scrollback.setMaxLines(lines);
+    if (evicted > 0 && m_hasSelection) {
+        m_selStart.ry() -= evicted;
+        m_selEnd.ry() -= evicted;
+        if (m_selStart.y() < 0 && m_selEnd.y() < 0) {
+            m_hasSelection = false;
+        } else {
+            if (m_selStart.y() < 0) m_selStart = QPoint(0, 0);
+            if (m_selEnd.y() < 0) m_selEnd = QPoint(0, 0);
+        }
+    }
+    m_scrollOffset = std::min(m_scrollOffset, m_scrollback.size());
+    m_scrollbarDirty = true;
     markAllDirty();
     scheduleFrame();
 }
@@ -662,6 +797,7 @@ void TerminalWidget::onPtyFinished(int exitCode)
     while (m_pendingOffset < m_pendingInput.size()) {
         processPendingInput();
     }
+    updateBlinkTimer();
     emit processExited(exitCode);
     markAllDirty();
     scheduleFrame();
@@ -786,6 +922,8 @@ void TerminalWidget::applyPendingResize()
 void TerminalWidget::resizeEvent(QResizeEvent *event)
 {
     QAbstractScrollArea::resizeEvent(event);
+    m_scrollBar->setGeometry(viewport()->width() - TerminalScrollBar::kWidth, 0,
+                             TerminalScrollBar::kWidth, viewport()->height());
     markAllDirty();
     // Splitter drags fire a resize per mouse move; apply the latest size at
     // most once per kResizeThrottleMs so the shell is not flooded with SIGWINCH.
@@ -921,7 +1059,7 @@ void TerminalWidget::paintRow(QPainter &p, int viewportRow)
         }
     }
 
-    layoutTerminalRow(m_rowCells.data(), m_cols, m_palette, selFrom, selTo, m_layout);
+    layoutTerminalRow(m_rowCells.data(), m_cols, m_palette, selFrom, selTo, m_layout, &m_contrast);
 
     const qreal y = rowTop(viewportRow);
     for (const auto &bg : m_layout.backgrounds) {
@@ -1000,6 +1138,18 @@ void TerminalWidget::paintCursor(QPainter &p)
         const qreal h = m_lineWidth / 2;
         p.drawRect(r.adjusted(h, h, -h, -h));
         p.restore();
+        return;
+    }
+    if (!m_blinkPhaseOn) return;
+
+    // Bar and underline are two device-pixel-snapped logical pixels thick.
+    const qreal thin = std::max(2.0 / m_dpr, snapTo(2.0, m_dpr));
+    if (m_cursorShape == VTERM_PROP_CURSORSHAPE_BAR_LEFT) {
+        p.fillRect(QRectF(r.x(), r.y(), thin, r.height()), cursorColor);
+        return;
+    }
+    if (m_cursorShape == VTERM_PROP_CURSORSHAPE_UNDERLINE) {
+        p.fillRect(QRectF(r.x(), r.bottom() - thin, r.width(), thin), cursorColor);
         return;
     }
 
@@ -1121,6 +1271,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
 
     // Typing returns the view to the live screen, like every other terminal.
     scrollToBottom();
+    restartBlink();
 
     VTermModifier vmod = VTERM_MOD_NONE;
     if (mods & Qt::ShiftModifier)   vmod = static_cast<VTermModifier>(vmod | VTERM_MOD_SHIFT);
@@ -1268,8 +1419,12 @@ void TerminalWidget::mouseReleaseEvent(QMouseEvent *event)
         scheduleFrame();
         if (m_hasSelection) {
             QClipboard *cb = QApplication::clipboard();
+            const QString text = selectionText();
             if (cb->supportsSelection()) {
-                cb->setText(selectionText(), QClipboard::Selection);
+                cb->setText(text, QClipboard::Selection);
+            }
+            if (m_copyOnSelect) {
+                cb->setText(text);
             }
         }
     }
@@ -1283,6 +1438,8 @@ void TerminalWidget::focusInEvent(QFocusEvent *event)
         writeToPty(QByteArray("\x1b[I", 3));
     }
     markLiveRowsDirty(m_cursor.y(), m_cursor.y() + 1);
+    m_blinkPhaseOn = true;
+    updateBlinkTimer();
     scheduleFrame();
     QAbstractScrollArea::focusInEvent(event);
 }
@@ -1294,6 +1451,7 @@ void TerminalWidget::focusOutEvent(QFocusEvent *event)
         writeToPty(QByteArray("\x1b[O", 3));
     }
     markLiveRowsDirty(m_cursor.y(), m_cursor.y() + 1);
+    updateBlinkTimer();
     scheduleFrame();
     QAbstractScrollArea::focusOutEvent(event);
 }
@@ -1311,7 +1469,40 @@ void TerminalWidget::wheelEvent(QWheelEvent *event)
         event->accept();
         return;
     }
-    QAbstractScrollArea::wheelEvent(event);
+    event->accept();
+
+    // Ctrl+wheel zooms every terminal (the owner persists the size).
+    if (event->modifiers() & Qt::ControlModifier) {
+        const int notches = event->angleDelta().y() / 120;
+        if (notches != 0) {
+            emit zoomRequested(notches);
+        }
+        return;
+    }
+
+    // Accumulate in lines so high-resolution wheels and touchpads scroll
+    // smoothly instead of rounding every small delta away.
+    if (!event->pixelDelta().isNull()) {
+        m_wheelAccum += event->pixelDelta().y() / m_cellH;
+    } else {
+        m_wheelAccum += event->angleDelta().y() / 120.0 * kWheelLines;
+    }
+    const int lines = static_cast<int>(m_wheelAccum);
+    if (lines == 0) return;
+    m_wheelAccum -= lines;
+
+    if (m_altScreen) {
+        // Alternate scroll: full-screen apps without mouse mode (less, man)
+        // scroll with the arrow keys.
+        if (m_vt) {
+            const VTermKey key = lines > 0 ? VTERM_KEY_UP : VTERM_KEY_DOWN;
+            for (int i = 0; i < std::abs(lines); ++i) {
+                vterm_keyboard_key(m_vt, key, VTERM_MOD_NONE);
+            }
+        }
+        return;
+    }
+    setScrollOffset(m_scrollOffset + lines);
 }
 
 void TerminalWidget::mouseDoubleClickEvent(QMouseEvent *event)

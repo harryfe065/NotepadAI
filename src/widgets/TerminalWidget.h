@@ -22,6 +22,7 @@
 #include "ScrollbackBuffer.h"
 #include "TerminalCellSource.h"
 #include "TerminalColorScheme.h"
+#include "TerminalContrast.h"
 #include "TerminalGlyphCache.h"
 #include "TerminalRowLayout.h"
 
@@ -41,9 +42,29 @@
 
 class QMenu;
 class QPainter;
+class TerminalScrollBar;
 
 class  IPtyProcess;
 namespace remote { class ExecutionContext; }
+
+enum class TerminalCursorShape : uint8_t { Block, Bar, Underline };
+// Terminal: blink only when the program asks for it (DECSCUSR).
+enum class TerminalCursorBlink : uint8_t { Terminal, On, Off };
+
+// Everything the user can tune about how a terminal looks and behaves; built
+// from settings by TerminalManager and applied live.
+struct TerminalAppearance
+{
+    TerminalColorScheme scheme = TerminalColorScheme::darkScheme();
+    QFont font;
+    qreal lineHeight = 1.2;
+    int minimumContrast = 45;
+    TerminalCursorShape cursorShape = TerminalCursorShape::Block;
+    TerminalCursorBlink cursorBlink = TerminalCursorBlink::Terminal;
+    int scrollbackLines = 10000;
+    bool copyOnSelect = false;
+    bool bellSound = false;
+};
 
 class TerminalWidget : public QAbstractScrollArea
 {
@@ -66,6 +87,9 @@ public:
     // Commit ceiling for a local shell's process tree, applied by start().
     // 0 = uncapped. Ignored for remote PTYs.
     void setChildMemoryLimitGb(int gb);
+    void setAppearance(const TerminalAppearance &appearance);
+    void setScrollbackLines(int lines);
+    const QFont &terminalFont() const { return m_font; }
 
     bool isProcessRunning() const;
     qint64 ptyPid() const;
@@ -84,6 +108,11 @@ signals:
     void spawnFailed(const QString &message);
     void firstOutputReceived();
     void contextMenuAboutToShow(QMenu *menu);
+    // BEL arrived; the owner marks the tab (the sound is optional).
+    void bellRung();
+    // Ctrl+wheel / Ctrl+=/-: change the shared terminal font size by `steps`;
+    // 0 resets it.
+    void zoomRequested(int steps);
 
 protected:
     bool event(QEvent *event) override;
@@ -99,7 +128,6 @@ protected:
     void focusOutEvent(QFocusEvent *event) override;
     void inputMethodEvent(QInputMethodEvent *event) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
-    void scrollContentsBy(int dx, int dy) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
 
 private slots:
@@ -108,6 +136,7 @@ private slots:
     void processPendingInput();
     void flushFrame();
     void applyPendingResize();
+    void toggleCursorBlink();
 
 private:
     // Geometry. Cell sizes are whole device pixels so every row and column
@@ -131,6 +160,11 @@ private:
     VTermModifier qtModsToVterm(Qt::KeyboardModifiers mods) const;
     void selectWord(const QPoint &cellPos);
     void scrollToBottom();
+    void setScrollOffset(int offset);
+    void applyCursorStyleToState();
+    bool cursorBlinkEnabled() const;
+    void updateBlinkTimer();
+    void restartBlink();
 
     // Damage is tracked per viewport row and flushed at most once per frame.
     void markLiveRowsDirty(int startRow, int endRow);
@@ -178,6 +212,21 @@ private:
     int m_frameIntervalMs = 16;
     int m_childMemoryLimitGb = 0;
 
+    TerminalContrastCache m_contrast;
+    TerminalScrollBar *m_scrollBar = nullptr;
+    qreal m_wheelAccum = 0;
+    bool m_copyOnSelect = false;
+    bool m_bellSound = false;
+
+    // Cursor: the user's style is pushed into libvterm as its default, so
+    // DECSCUSR and save/restore work on top of it.
+    TerminalCursorShape m_cursorShapeSetting = TerminalCursorShape::Block;
+    TerminalCursorBlink m_cursorBlinkSetting = TerminalCursorBlink::Terminal;
+    int m_cursorShape = VTERM_PROP_CURSORSHAPE_BLOCK;
+    bool m_programBlink = false;
+    bool m_blinkPhaseOn = true;
+    QTimer *m_blinkTimer = nullptr;
+
     int m_cols = 80;
     int m_rows = 24;
     QPoint m_cursor{0, 0};
@@ -209,7 +258,6 @@ private:
     std::vector<uint8_t> m_dirtyRows;
     bool m_allDirty = true;
     bool m_scrollbarDirty = false;
-    bool m_inScrollbarSync = false;
     bool m_cursorMoved = false;
     bool m_inResize = false;
     QTimer *m_frameTimer = nullptr;

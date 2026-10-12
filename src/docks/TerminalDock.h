@@ -68,6 +68,8 @@ public:
 
 signals:
     void cpuHoverChanged();
+    // restartTask() replaced terminalWidget(); the owner re-applies its setup.
+    void terminalRecreated();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

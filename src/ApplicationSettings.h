@@ -155,6 +155,21 @@ public:
     DEFINE_SETTING(TerminalFont, terminalFont, QString)
     // GiB commit ceiling for processes launched from a local terminal. 0 = no limit.
     DEFINE_SETTING(TerminalChildMemoryLimitGb, terminalChildMemoryLimitGb, int)
+    // Row height in percent of the font height (100-200).
+    DEFINE_SETTING(TerminalLineHeightPct, terminalLineHeightPct, int)
+    // "app" follows the editor theme; otherwise a TerminalColorSchemes preset id.
+    DEFINE_SETTING(TerminalColorScheme, terminalColorScheme, QString)
+    // APCA Lc floor for ANSI/default text (0 = off).
+    DEFINE_SETTING(TerminalMinimumContrast, terminalMinimumContrast, int)
+    // "block" | "bar" | "underline"; programs may override it (DECSCUSR).
+    DEFINE_SETTING(TerminalCursorShape, terminalCursorShape, QString)
+    // "terminal" (program decides) | "on" | "off".
+    DEFINE_SETTING(TerminalCursorBlink, terminalCursorBlink, QString)
+    // History lines per terminal (0 = none, max 100000). Tasks always get the max.
+    DEFINE_SETTING(TerminalScrollbackLines, terminalScrollbackLines, int)
+    DEFINE_SETTING(TerminalCopyOnSelect, terminalCopyOnSelect, bool)
+    // Play the system sound on BEL; the tab dot is shown either way.
+    DEFINE_SETTING(TerminalBellSound, terminalBellSound, bool)
 
     DEFINE_SETTING(LastProxyType, lastProxyType, int)
     DEFINE_SETTING(LastProxyHost, lastProxyHost, QString)

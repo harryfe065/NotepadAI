@@ -31,6 +31,7 @@
 
 #include "TerminalTaskRegistry.h"
 #include "TerminalProcessStats.h"
+#include "TerminalWidget.h"
 
 
 class NotepadNextApplication;
@@ -69,6 +70,10 @@ public slots:
                           remote::ExecutionContext *context = nullptr);
     void applyTheme();
     void applyFont();
+    // Re-reads every Terminal/* appearance setting into all terminals.
+    void applyAppearance();
+    // Ctrl+wheel / Ctrl+=/-/0 in any terminal: persisted font size step.
+    void zoomTerminals(int steps);
     void shutdown();
 
     TerminalDock *findTaskDock(const QString &command, const QString &cwd) const;
@@ -77,6 +82,14 @@ public slots:
     void closeTerminalsForWorkspace(const QString &workspaceRoot, const QStringList &openWorkspaceRoots);
 
 private:
+    static constexpr int kMaxScrollbackLines = 100000;
+
+    QFont terminalFont() const;
+    TerminalAppearance appearance() const;
+    void applyAppearanceTo(TerminalDock *dock, const TerminalAppearance &appearance);
+    // Appearance + signal wiring for a dock's current TerminalWidget.
+    void configureDock(TerminalDock *dock);
+    void wireWidget(TerminalDock *dock);
     void wireContextMenu(TerminalDock *dock);
     void placeInEditor(TerminalDock *dock);
     void rememberDock(TerminalDock *dock);

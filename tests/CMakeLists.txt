@@ -268,8 +268,24 @@ target_sources(test_terminal_row_layout PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.h
 )
 add_test(NAME TerminalRowLayout COMMAND test_terminal_row_layout)
+
+# --- TerminalContrast: APCA minimum text contrast and its use in row layout ---
+qt_add_executable(test_terminal_contrast test_terminal_contrast.cpp)
+target_include_directories(test_terminal_contrast PRIVATE ${CMAKE_SOURCE_DIR}/src/widgets)
+target_link_libraries(test_terminal_contrast PRIVATE Qt6::Core Qt6::Gui Qt6::Test libvterm)
+target_sources(test_terminal_contrast PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalRowLayout.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalColorScheme.h
+)
+add_test(NAME TerminalContrast COMMAND test_terminal_contrast)
 
 # --- TerminalBoxDrawing: procedural box/block/Powerline glyphs tile without seams ---
 qt_add_executable(test_terminal_box_drawing test_terminal_box_drawing.cpp)
@@ -320,6 +336,10 @@ target_sources(test_terminal_key_routing PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalBoxDrawing.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalContrast.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalScrollBar.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalScrollBar.h
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
 )

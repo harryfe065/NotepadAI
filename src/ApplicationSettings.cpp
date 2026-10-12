@@ -130,10 +130,40 @@ static QString defaultShellCommand()
 }
 
 CREATE_SETTING(Terminal, ShellCommand, shellCommand, QString, []() { return defaultShellCommand(); })
-CREATE_SETTING(Terminal, TerminalFont, terminalFont, QString, []() {
+// First installed of the usual terminal faces; Courier New (the Windows
+// system fixed font) only as a last resort.
+static QString defaultTerminalFont()
+{
+    static const char *const families[] = {
+        "Cascadia Mono", "Consolas", "SF Mono", "Menlo", "DejaVu Sans Mono", "Liberation Mono",
+    };
+#ifdef Q_OS_MACOS
+    constexpr int pointSize = 12;
+#else
+    constexpr int pointSize = 10;
+#endif
+    const QStringList installed = QFontDatabase::families();
+    for (const char *name : families) {
+        const QString family = QString::fromLatin1(name);
+        if (installed.contains(family)) {
+            QFont f(family, pointSize);
+            f.setStyleHint(QFont::Monospace);
+            return f.toString();
+        }
+    }
     return QFontDatabase::systemFont(QFontDatabase::FixedFont).toString();
-})
+}
+
+CREATE_SETTING(Terminal, TerminalFont, terminalFont, QString, []() { return defaultTerminalFont(); })
 CREATE_SETTING(Terminal, TerminalChildMemoryLimitGb, terminalChildMemoryLimitGb, int, 16)
+CREATE_SETTING(Terminal, TerminalLineHeightPct, terminalLineHeightPct, int, 120)
+CREATE_SETTING(Terminal, TerminalColorScheme, terminalColorScheme, QString, QStringLiteral("app"))
+CREATE_SETTING(Terminal, TerminalMinimumContrast, terminalMinimumContrast, int, 45)
+CREATE_SETTING(Terminal, TerminalCursorShape, terminalCursorShape, QString, QStringLiteral("block"))
+CREATE_SETTING(Terminal, TerminalCursorBlink, terminalCursorBlink, QString, QStringLiteral("terminal"))
+CREATE_SETTING(Terminal, TerminalScrollbackLines, terminalScrollbackLines, int, 10000)
+CREATE_SETTING(Terminal, TerminalCopyOnSelect, terminalCopyOnSelect, bool, false)
+CREATE_SETTING(Terminal, TerminalBellSound, terminalBellSound, bool, false)
 
 // --- Quick Browser last-used proxy settings ------------------------------------
 

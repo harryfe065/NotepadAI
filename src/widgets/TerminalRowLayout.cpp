@@ -19,6 +19,7 @@
 #include "TerminalRowLayout.h"
 
 #include "TerminalBoxDrawing.h"
+#include "TerminalContrast.h"
 
 #include <algorithm>
 
@@ -53,13 +54,18 @@ TerminalCellColors resolveTerminalCellColors(const VTermScreenCell &cell,
     TerminalCellColors out;
     const bool defFg = VTERM_COLOR_IS_DEFAULT_FG(&cell.fg);
     const bool defBg = VTERM_COLOR_IS_DEFAULT_BG(&cell.bg);
+    auto exact = [](const VTermColor &c, bool isDefault) {
+        return !isDefault && (VTERM_COLOR_IS_RGB(&c) || c.indexed.idx >= 16);
+    };
     out.fg = defFg ? palette.defaultFg : paletteColor(cell.fg, palette, palette.defaultFg);
     out.bg = defBg ? palette.defaultBg : paletteColor(cell.bg, palette, palette.defaultBg);
     out.defaultBg = defBg;
 
+    out.exactFg = exact(cell.fg, defFg);
     if (cell.attrs.reverse) {
         std::swap(out.fg, out.bg);
         out.defaultBg = false;
+        out.exactFg = exact(cell.bg, defBg);
     }
     if (cell.attrs.dim) {
         out.fg = faint(out.fg, out.bg);
@@ -83,8 +89,15 @@ void TerminalRowLayout::clear()
 void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                        const TerminalPalette &palette,
                        int selFrom, int selTo,
-                       TerminalRowLayout &out)
+                       TerminalRowLayout &out,
+                       TerminalContrastCache *contrast)
 {
+    const bool contrastOn = contrast && contrast->enabled();
+    // Runs of one colour pair skip even the cache probe.
+    QRgb lastFg = 0;
+    QRgb lastBg = 0;
+    QRgb lastAdjusted = 0;
+    bool haveLast = false;
     out.clear();
     const bool hasSelection = selFrom < selTo;
 
@@ -101,8 +114,18 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
         const TerminalCellColors colors = resolveTerminalCellColors(cell, palette);
 
         const bool selected = hasSelection && col < selTo && col + width > selFrom;
+        const QRgb bg = selected ? palette.selection : colors.bg;
+        QRgb textFg = colors.fg;
+        if (contrastOn && (selected || !colors.exactFg)) {
+            if (!haveLast || lastFg != colors.fg || lastBg != bg) {
+                lastFg = colors.fg;
+                lastBg = bg;
+                lastAdjusted = contrast->adjust(colors.fg, bg);
+                haveLast = true;
+            }
+            textFg = lastAdjusted;
+        }
         if (selected || !colors.defaultBg) {
-            const QRgb bg = selected ? palette.selection : colors.bg;
             TerminalRowLayout::Background *last = out.backgrounds.empty() ? nullptr : &out.backgrounds.back();
             if (last && last->col + last->span == col && last->color == bg) {
                 last->span += width;
@@ -115,12 +138,12 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
             auto decorate = [&](uint8_t kind) {
                 if (!out.decorations.empty()) {
                     TerminalRowLayout::Decoration &last = out.decorations.back();
-                    if (last.kind == kind && last.color == colors.fg && last.col + last.span == col) {
+                    if (last.kind == kind && last.color == textFg && last.col + last.span == col) {
                         last.span += width;
                         return;
                     }
                 }
-                out.decorations.push_back({col, width, colors.fg, kind});
+                out.decorations.push_back({col, width, textFg, kind});
             };
             switch (cell.attrs.underline) {
             case VTERM_UNDERLINE_SINGLE: decorate(TerminalRowLayout::Underline); break;
@@ -136,7 +159,7 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                 const auto font = static_cast<uint8_t>((cell.attrs.bold ? TerminalFontBold : 0)
                                                      | (cell.attrs.italic ? TerminalFontItalic : 0));
                 if (cell.chars[1] != 0) {
-                    TerminalRowLayout::Cluster cluster{col, width, colors.fg, font, {}};
+                    TerminalRowLayout::Cluster cluster{col, width, textFg, font, {}};
                     for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; ++i) {
                         cluster.chars[i] = cell.chars[i];
                     }
@@ -144,8 +167,8 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                 } else if (TerminalBoxDrawing::isProcedural(ch)) {
                     out.specials.push_back({col, width, ch, colors.fg});
                 } else {
-                    if (out.runs.empty() || out.runs.back().fg != colors.fg || out.runs.back().font != font) {
-                        out.runs.push_back({static_cast<int>(out.glyphs.size()), 0, colors.fg, font});
+                    if (out.runs.empty() || out.runs.back().fg != textFg || out.runs.back().font != font) {
+                        out.runs.push_back({static_cast<int>(out.glyphs.size()), 0, textFg, font});
                     }
                     out.glyphs.push_back({col, ch});
                     ++out.runs.back().glyphCount;

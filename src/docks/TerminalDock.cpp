@@ -289,6 +289,7 @@ void TerminalDock::restartTask()
 
     m_terminal = new TerminalWidget(this);
     lay->addWidget(m_terminal);
+    emit terminalRecreated();
 
     connect(m_terminal, &TerminalWidget::spawnFailed, this, [this](const QString &msg) {
         QMessageBox::critical(this, tr("Terminal"), msg);

@@ -50,6 +50,8 @@
 #include <QTimer>
 #include <QHash>
 
+#include <algorithm>
+
 
 
 TerminalManager::TerminalManager(NotepadNextApplication *app, MainWindow *mainWindow)
@@ -62,6 +64,17 @@ TerminalManager::TerminalManager(NotepadNextApplication *app, MainWindow *mainWi
     m_statsTimer->setTimerType(Qt::CoarseTimer);
     connect(m_statsTimer, &QTimer::timeout, this, &TerminalManager::refreshProcessStats);
     m_statsTimer->start();
+
+    if (ApplicationSettings *s = app ? app->getSettings() : nullptr) {
+        connect(s, &ApplicationSettings::terminalLineHeightPctChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalColorSchemeChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalMinimumContrastChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalCursorShapeChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalCursorBlinkChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalScrollbackLinesChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalCopyOnSelectChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalBellSoundChanged, this, &TerminalManager::applyAppearance);
+    }
 }
 
 
@@ -130,27 +143,10 @@ void TerminalManager::openTerminal(const QString &cwd)
     }
 
     auto *dock = new TerminalDock(shell, cwd, m_mainWindow);
-    wireContextMenu(dock);
 
     rememberDock(dock);
 
-    if (m_app) {
-        const TerminalColorScheme scheme = m_app->isEffectiveThemeDark()
-            ? TerminalColorScheme::darkScheme()
-            : TerminalColorScheme::lightScheme();
-        dock->terminalWidget()->setColorScheme(scheme);
-
-        if (m_app->getSettings()) {
-            QFont f;
-            const QString fontStr = m_app->getSettings()->terminalFont();
-            if (!fontStr.isEmpty() && f.fromString(fontStr)) {
-                dock->terminalWidget()->setTerminalFont(f);
-            } else {
-                dock->terminalWidget()->setTerminalFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-            }
-        }
-    }
-
+    configureDock(dock);
     placeInEditor(dock);
 }
 
@@ -163,27 +159,10 @@ void TerminalManager::openRemoteTerminal(remote::ExecutionContext *ctx,
     // No local PTY probe — the backend is an SSH channel on `ctx`. Pass an empty
     // shell through as-is so SshPtyProcess defaults to the remote $SHELL.
     auto *dock = new TerminalDock(ctx, shell, remoteCwd, m_mainWindow);
-    wireContextMenu(dock);
 
     rememberDock(dock);
 
-    if (m_app) {
-        const TerminalColorScheme scheme = m_app->isEffectiveThemeDark()
-            ? TerminalColorScheme::darkScheme()
-            : TerminalColorScheme::lightScheme();
-        dock->terminalWidget()->setColorScheme(scheme);
-
-        if (m_app->getSettings()) {
-            QFont f;
-            const QString fontStr = m_app->getSettings()->terminalFont();
-            if (!fontStr.isEmpty() && f.fromString(fontStr)) {
-                dock->terminalWidget()->setTerminalFont(f);
-            } else {
-                dock->terminalWidget()->setTerminalFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-            }
-        }
-    }
-
+    configureDock(dock);
     placeInEditor(dock);
 }
 
@@ -274,27 +253,10 @@ void TerminalManager::openTask(const QString &workspaceCwd, const TerminalTask &
     auto *dock = new TerminalDock(shell, resolvedCwd, task.command, task.name, env, m_mainWindow);
     if (!cwdWarning.isEmpty())
         dock->setCwdWarning(cwdWarning);
-    wireContextMenu(dock);
 
     rememberDock(dock);
 
-    if (m_app) {
-        const TerminalColorScheme scheme = m_app->isEffectiveThemeDark()
-            ? TerminalColorScheme::darkScheme()
-            : TerminalColorScheme::lightScheme();
-        dock->terminalWidget()->setColorScheme(scheme);
-
-        if (m_app->getSettings()) {
-            QFont f;
-            const QString fontStr = m_app->getSettings()->terminalFont();
-            if (!fontStr.isEmpty() && f.fromString(fontStr)) {
-                dock->terminalWidget()->setTerminalFont(f);
-            } else {
-                dock->terminalWidget()->setTerminalFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-            }
-        }
-    }
-
+    configureDock(dock);
     placeInEditor(dock);
 }
 
@@ -314,58 +276,116 @@ void TerminalManager::openRemoteTask(remote::ExecutionContext *ctx,
     }
 
     auto *dock = new TerminalDock(ctx, remoteCwd, task.command, task.name, m_mainWindow);
-    wireContextMenu(dock);
 
     rememberDock(dock);
 
-    if (m_app) {
-        const TerminalColorScheme scheme = m_app->isEffectiveThemeDark()
-            ? TerminalColorScheme::darkScheme()
-            : TerminalColorScheme::lightScheme();
-        dock->terminalWidget()->setColorScheme(scheme);
+    configureDock(dock);
+    placeInEditor(dock);
+}
 
-        if (m_app->getSettings()) {
-            QFont f;
-            const QString fontStr = m_app->getSettings()->terminalFont();
-            if (!fontStr.isEmpty() && f.fromString(fontStr)) {
-                dock->terminalWidget()->setTerminalFont(f);
-            } else {
-                dock->terminalWidget()->setTerminalFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-            }
+namespace {
+
+#ifdef Q_OS_MACOS
+constexpr qreal kDefaultTerminalPointSize = 12;
+#else
+constexpr qreal kDefaultTerminalPointSize = 10;
+#endif
+
+TerminalCursorShape cursorShapeFromSetting(const QString &value)
+{
+    if (value == QLatin1String("bar")) return TerminalCursorShape::Bar;
+    if (value == QLatin1String("underline")) return TerminalCursorShape::Underline;
+    return TerminalCursorShape::Block;
+}
+
+TerminalCursorBlink cursorBlinkFromSetting(const QString &value)
+{
+    if (value == QLatin1String("on")) return TerminalCursorBlink::On;
+    if (value == QLatin1String("off")) return TerminalCursorBlink::Off;
+    return TerminalCursorBlink::Terminal;
+}
+
+} // namespace
+
+QFont TerminalManager::terminalFont() const
+{
+    QFont f;
+    const QString fontStr = (m_app && m_app->getSettings()) ? m_app->getSettings()->terminalFont() : QString();
+    if (fontStr.isEmpty() || !f.fromString(fontStr)) {
+        f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    }
+    return f;
+}
+
+TerminalAppearance TerminalManager::appearance() const
+{
+    TerminalAppearance a;
+    ApplicationSettings *s = m_app ? m_app->getSettings() : nullptr;
+    const bool dark = m_app ? m_app->isEffectiveThemeDark() : true;
+    a.scheme = TerminalColorScheme::forSetting(s ? s->terminalColorScheme() : QString(), dark);
+    a.font = terminalFont();
+    if (s) {
+        a.lineHeight = std::clamp(s->terminalLineHeightPct(), 100, 200) / 100.0;
+        a.minimumContrast = std::clamp(s->terminalMinimumContrast(), 0, 100);
+        a.cursorShape = cursorShapeFromSetting(s->terminalCursorShape());
+        a.cursorBlink = cursorBlinkFromSetting(s->terminalCursorBlink());
+        a.scrollbackLines = std::clamp(s->terminalScrollbackLines(), 0, kMaxScrollbackLines);
+        a.copyOnSelect = s->terminalCopyOnSelect();
+        a.bellSound = s->terminalBellSound();
+    }
+    return a;
+}
+
+void TerminalManager::applyAppearanceTo(TerminalDock *dock, const TerminalAppearance &appearance)
+{
+    TerminalWidget *w = dock ? dock->terminalWidget() : nullptr;
+    if (!w) return;
+    if (dock->isTask()) {
+        // Build and test logs are worth keeping in full.
+        TerminalAppearance task = appearance;
+        task.scrollbackLines = kMaxScrollbackLines;
+        w->setAppearance(task);
+    } else {
+        w->setAppearance(appearance);
+    }
+}
+
+void TerminalManager::configureDock(TerminalDock *dock)
+{
+    applyAppearanceTo(dock, appearance());
+    wireWidget(dock);
+}
+
+void TerminalManager::applyAppearance()
+{
+    const TerminalAppearance a = appearance();
+    for (const auto &d : m_docks) {
+        if (!d.isNull()) {
+            applyAppearanceTo(d.data(), a);
         }
     }
-
-    placeInEditor(dock);
 }
 
 void TerminalManager::applyTheme()
 {
-    if (!m_app) return;
-    const TerminalColorScheme scheme = m_app->isEffectiveThemeDark()
-        ? TerminalColorScheme::darkScheme()
-        : TerminalColorScheme::lightScheme();
-    for (const auto &d : m_docks) {
-        if (d.isNull()) continue;
-        if (auto *w = d->terminalWidget()) {
-            w->setColorScheme(scheme);
-        }
-    }
+    applyAppearance();
 }
 
 void TerminalManager::applyFont()
 {
+    applyAppearance();
+}
+
+void TerminalManager::zoomTerminals(int steps)
+{
     if (!m_app || !m_app->getSettings()) return;
-    QFont f;
-    const QString fontStr = m_app->getSettings()->terminalFont();
-    if (fontStr.isEmpty() || !f.fromString(fontStr)) {
-        f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    }
-    for (const auto &d : m_docks) {
-        if (d.isNull()) continue;
-        if (auto *w = d->terminalWidget()) {
-            w->setTerminalFont(f);
-        }
-    }
+    QFont f = terminalFont();
+    const qreal size = steps == 0 ? kDefaultTerminalPointSize
+                                  : std::clamp(f.pointSizeF() + steps, 6.0, 48.0);
+    if (qFuzzyCompare(size, f.pointSizeF())) return;
+    f.setPointSizeF(size);
+    // Persisted; terminalFontChanged re-applies it to every terminal.
+    m_app->getSettings()->setTerminalFont(f.toString());
 }
 
 void TerminalManager::shutdown()
@@ -594,9 +614,21 @@ void TerminalManager::wireContextMenu(TerminalDock *dock)
     });
 }
 
+void TerminalManager::wireWidget(TerminalDock *dock)
+{
+    TerminalWidget *tw = dock->terminalWidget();
+    if (!tw) return;
+    wireContextMenu(dock);
+    connect(tw, &TerminalWidget::zoomRequested, this, &TerminalManager::zoomTerminals);
+}
+
 void TerminalManager::rememberDock(TerminalDock *dock)
 {
     m_docks.append(QPointer<TerminalDock>(dock));
+    // Restarting a task swaps in a fresh widget; give it the same setup.
+    connect(dock, &TerminalDock::terminalRecreated, this, [this, dock]() {
+        configureDock(dock);
+    });
     connect(dock, &TerminalDock::cpuHoverChanged, this, [this]() {
         if (syncStatsPoll())
             refreshProcessStats();

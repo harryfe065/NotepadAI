@@ -39,6 +39,8 @@ private slots:
 
     void xtermIndexed_cubeAndGreyRamp();
     void palette_flattensSchemeAndFixedColours();
+    void presets_areCompleteAndReadable();
+    void forSetting_unknownFollowsApp();
 };
 
 void TestTerminalColorScheme::lightScheme_hasSixteenValidAnsiColors()
@@ -123,6 +125,32 @@ void TestTerminalColorScheme::palette_flattensSchemeAndFixedColours()
     }
     QCOMPARE(p.defaultBg, s.defaultBg.rgb());
     QCOMPARE(p.selection, s.selection.rgb());
+}
+
+void TestTerminalColorScheme::presets_areCompleteAndReadable()
+{
+    const QStringList ids = TerminalColorScheme::presetIds();
+    QCOMPARE(ids.size(), 8);
+    for (const QString &id : ids) {
+        QVERIFY2(!TerminalColorScheme::presetName(id).isEmpty(), qPrintable(id));
+        const TerminalColorScheme s = TerminalColorScheme::forSetting(id, true);
+        for (int i = 0; i < 16; ++i) {
+            QVERIFY(s.ansi[i].isValid());
+        }
+        // Text must stand off its background in every preset.
+        QVERIFY2(qAbs(s.defaultBg.lightness() - s.defaultFg.lightness()) > 60, qPrintable(id));
+        QVERIFY(s.selection != s.defaultBg);
+    }
+}
+
+void TestTerminalColorScheme::forSetting_unknownFollowsApp()
+{
+    QCOMPARE(TerminalColorScheme::forSetting(QStringLiteral("app"), true).defaultBg,
+             TerminalColorScheme::darkScheme().defaultBg);
+    QCOMPARE(TerminalColorScheme::forSetting(QStringLiteral("nope"), false).defaultBg,
+             TerminalColorScheme::lightScheme().defaultBg);
+    QCOMPARE(TerminalColorScheme::forSetting(QStringLiteral("dracula"), false).defaultBg,
+             QColor(0x28, 0x2A, 0x36));
 }
 
 QTEST_MAIN(TestTerminalColorScheme)

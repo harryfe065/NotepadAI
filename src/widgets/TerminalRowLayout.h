@@ -28,6 +28,8 @@
 #include <cstdint>
 #include <vector>
 
+class TerminalContrastCache;
+
 // Resolved colours of one cell after palette lookup, reverse video, faint and
 // conceal. `defaultBg` cells need no background fill (the row is pre-filled).
 struct TerminalCellColors
@@ -36,6 +38,9 @@ struct TerminalCellColors
     QRgb bg = 0;
     bool defaultBg = true;
     bool invisible = false;
+    // The program picked this exact colour (truecolor or palette 16-255), so
+    // minimum-contrast adjustment leaves it alone.
+    bool exactFg = false;
 };
 
 TerminalCellColors resolveTerminalCellColors(const VTermScreenCell &cell,
@@ -76,10 +81,13 @@ struct TerminalRowLayout
 };
 
 // Lays out `cols` cells. Cells in [selFrom, selTo) get the selection
-// background; pass selFrom >= selTo for no selection.
+// background; pass selFrom >= selTo for no selection. With `contrast`, text
+// in ANSI/default colours (and any selected text) is lifted to its minimum
+// contrast; box drawing keeps its colour so frames stay uniform.
 void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                        const TerminalPalette &palette,
                        int selFrom, int selTo,
-                       TerminalRowLayout &out);
+                       TerminalRowLayout &out,
+                       TerminalContrastCache *contrast = nullptr);
 
 #endif

@@ -20,6 +20,8 @@
 #define TERMINALCOLORSCHEME_H
 
 #include <QColor>
+#include <QString>
+#include <QStringList>
 
 struct TerminalColorScheme
 {
@@ -29,8 +31,17 @@ struct TerminalColorScheme
     QColor cursor;
     QColor selection;
 
+    // The "follow app" schemes: editor background/foreground/selection with
+    // VS Code Light+/Dark+ ANSI colours.
     static TerminalColorScheme lightScheme();
     static TerminalColorScheme darkScheme();
+
+    // Named presets that override the app theme (content colours only).
+    static QStringList presetIds();
+    static QString presetName(const QString &id);
+    // `id` is the Terminal/ColorScheme setting; unknown ids and "app" follow
+    // the app theme.
+    static TerminalColorScheme forSetting(const QString &id, bool appIsDark);
 };
 
 // xterm's fixed palette for indices 16..255: a 6x6x6 colour cube followed by a
