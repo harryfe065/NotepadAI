@@ -80,6 +80,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <utility>
 
 namespace {
@@ -2230,7 +2231,6 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
     m_pendingFormKey = key;
     connect(form, &AskUserFormWidget::submitted, this, &AcpSessionView::onFormSubmitted);
     connect(form, &AskUserFormWidget::dismissed, this, &AcpSessionView::onFormDismissed);
-    connect(form, &AskUserFormWidget::clarifyRequested, this, &AcpSessionView::onFormClarify);
     connect(form, &AskUserFormWidget::escapePressed, this, [this]() {
         if (m_input)
             m_input->setFocus();
@@ -2286,13 +2286,19 @@ void AcpSessionView::onFormSubmitted(const QVector<AskUserForm::Answer> &answers
     const AskUserForm::Spec spec = m_pendingForm->spec();
     const FormSource source = m_pendingFormSource;
     const QString key = m_pendingFormKey;
-    settlePendingForm(AskUserFormWidget::State::Answered, AskUserForm::answerSummary(spec, answers));
+    const bool clarify = std::any_of(answers.cbegin(), answers.cend(),
+                                     [](const AskUserForm::Answer &a) { return a.clarify; });
+    settlePendingForm(clarify ? AskUserFormWidget::State::ClarifyRequested : AskUserFormWidget::State::Answered,
+                      AskUserForm::answerSummary(spec, answers));
     if (source == FormSource::Elicitation) {
         if (m_connection) {
             m_connection->respondToElicitation(key, QStringLiteral("accept"),
                                                AskUserForm::elicitationContent(spec, answers));
         }
     } else {
+        // The agent re-asks the flagged questions: keep what the user chose.
+        if (clarify)
+            m_carryAnswers = answers;
         sendHostPrompt(AskUserForm::formatAnswers(spec, answers), QLatin1String(AskUserForm::kMarkerAnswers));
     }
     if (m_input)
@@ -2312,33 +2318,6 @@ void AcpSessionView::onFormDismissed()
     } else {
         sendHostPrompt(AskUserForm::dismissPrompt({}), QLatin1String(AskUserForm::kMarkerAnswers));
     }
-}
-
-void AcpSessionView::onFormClarify(int questionIndex)
-{
-    if (!m_pendingForm || questionIndex < 0 || questionIndex >= m_pendingForm->spec().questions.size())
-        return;
-    const AskUserForm::Spec spec = m_pendingForm->spec();
-    const AskUserForm::Question &q = spec.questions.at(questionIndex);
-    QVector<AskUserForm::Answer> answers = m_pendingForm->answers();
-    const FormSource source = m_pendingFormSource;
-    const QString key = m_pendingFormKey;
-    settlePendingForm(AskUserFormWidget::State::ClarifyRequested);
-    if (source == FormSource::Elicitation) {
-        // The free-text companion carries the request; the agent re-asks.
-        // The value stays: codex-acp marks every question required.
-        if (!q.otherFieldKey.isEmpty())
-            answers[questionIndex].other = AskUserForm::clarifyPrompt(q);
-        else
-            answers[questionIndex].note = AskUserForm::clarifyPrompt(q);
-        if (m_connection) {
-            m_connection->respondToElicitation(key, QStringLiteral("accept"),
-                                               AskUserForm::elicitationContent(spec, answers));
-        }
-        return;
-    }
-    m_carryAnswers = answers;
-    sendHostPrompt(AskUserForm::clarifyPrompt(q), QLatin1String(AskUserForm::kMarkerAnswers));
 }
 
 void AcpSessionView::sendHostPrompt(const QString &text, const QString &marker, const QString &wireText,

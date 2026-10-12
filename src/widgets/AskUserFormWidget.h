@@ -29,9 +29,9 @@ class QToolButton;
 class QVBoxLayout;
 
 // An interactive question form in the chat transcript (ask_user tool call or
-// ACP form elicitation). Pending until the user submits, dismisses or asks
-// for clarification; every other state is read-only and collapsed to its
-// status line, expandable to show what was chosen.
+// ACP form elicitation). Pending until the user submits or dismisses; every
+// other state is read-only and collapsed to its status line, expandable to
+// show what was chosen. Clarify is a per-question toggle sent with Submit.
 class AskUserFormWidget : public QFrame
 {
     Q_OBJECT
@@ -42,7 +42,7 @@ public:
         Answered,
         AnsweredInChat,
         Dismissed,
-        ClarifyRequested,
+        ClarifyRequested, // submitted with questions flagged for clarification
         Superseded,
         Cancelled,
         Expired,
@@ -65,7 +65,6 @@ public:
 signals:
     void submitted(const QVector<AskUserForm::Answer> &answers);
     void dismissed();
-    void clarifyRequested(int questionIndex);
     // Esc inside the form: give focus back to the composer.
     void escapePressed();
 
@@ -86,6 +85,8 @@ private:
         QPlainTextEdit *textEdit = nullptr;      // textarea / proposal change
         QLineEdit *noteEdit = nullptr;
         QToolButton *noteButton = nullptr;
+        QToolButton *clarifyButton = nullptr;
+        QWidget *answerBox = nullptr;            // the controls, dimmed while flagged
     };
 
     void buildUi();
@@ -101,6 +102,7 @@ private:
     void trySubmit();
     void watch(QWidget *w);
     void updateProposalEditor(int index);
+    void setClarify(int index, bool on);
     void updateProgress();
     void setExpanded(bool expanded);
     void applyTheme();

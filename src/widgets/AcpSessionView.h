@@ -257,7 +257,6 @@ private:
     void presentForm(const AskUserForm::Spec &spec, FormSource source, const QString &key);
     void onFormSubmitted(const QVector<AskUserForm::Answer> &answers);
     void onFormDismissed();
-    void onFormClarify(int questionIndex);
     // Leave the pending form in `state` (read-only) and forget it. A pending
     // elicitation is answered with `elicitationAction` when one is given.
     void settlePendingForm(AskUserFormWidget::State state, const QString &detail = {},

@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QDoubleValidator>
 #include <QFileInfo>
+#include <QGraphicsOpacityEffect>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -44,6 +45,7 @@ using AskUserForm::QuestionType;
 namespace {
 
 constexpr int kTextareaLines = 4;
+constexpr qreal kClarifyOpacity = 0.45; // controls of a flagged question: not sent
 constexpr int kOtherButtonId = 1 << 20; // past any option index; never a Qt auto id
 
 // Dropdown item data of the "Other…" entry; never a valid option value.
@@ -490,16 +492,16 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     const bool canClarify = m_spec.source == AskUserForm::Source::AskUser
         || !q.otherFieldKey.isEmpty() || !q.noteFieldKey.isEmpty();
     if (canClarify) {
-        auto *clarify = new QToolButton(row.container);
-        clarify->setObjectName(QStringLiteral("auLink"));
-        clarify->setText(tr("Clarify"));
-        clarify->setToolTip(tr("Ask the agent to explain this question"));
-        clarify->setCursor(Qt::PointingHandCursor);
-        connect(clarify, &QToolButton::clicked, this, [this, index]() {
-            if (isPending())
-                emit clarifyRequested(index);
+        row.clarifyButton = new QToolButton(row.container);
+        row.clarifyButton->setObjectName(QStringLiteral("auLink"));
+        row.clarifyButton->setCheckable(true);
+        row.clarifyButton->setText(tr("Clarify"));
+        row.clarifyButton->setToolTip(tr("Mark as unclear: the agent explains it after you submit"));
+        row.clarifyButton->setCursor(Qt::PointingHandCursor);
+        connect(row.clarifyButton, &QToolButton::toggled, this, [this, index](bool on) {
+            setClarify(index, on);
         });
-        titleRow->addWidget(clarify, 0, Qt::AlignVCenter);
+        titleRow->addWidget(row.clarifyButton, 0, Qt::AlignVCenter);
     }
     layout->addLayout(titleRow);
 
@@ -533,20 +535,26 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         layout->addWidget(rec);
     }
 
+    row.answerBox = new QWidget(row.container);
+    auto *answerLayout = new QVBoxLayout(row.answerBox);
+    answerLayout->setContentsMargins(0, 0, 0, 0);
+    answerLayout->setSpacing(layout->spacing());
+    layout->addWidget(row.answerBox);
+
     switch (q.type) {
     case QuestionType::Single:
     case QuestionType::Select:
         if (q.isDropdown())
-            buildDropdown(index, row, layout);
+            buildDropdown(index, row, answerLayout);
         else
-            buildChoice(index, row, layout);
+            buildChoice(index, row, answerLayout);
         break;
     case QuestionType::Multi:
-        buildChoice(index, row, layout);
+        buildChoice(index, row, answerLayout);
         break;
     case QuestionType::Confirm:
     case QuestionType::Proposal:
-        buildSegmented(index, row, layout);
+        buildSegmented(index, row, answerLayout);
         break;
     case QuestionType::Text:
     case QuestionType::Number: {
@@ -570,7 +578,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
                                        q.max ? QString::number(*q.max) : QStringLiteral("∞")));
             }
         }
-        layout->addWidget(row.lineEdit);
+        answerLayout->addWidget(row.lineEdit);
         watch(row.lineEdit);
         connect(row.lineEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
         break;
@@ -580,7 +588,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         row.textEdit->setPlaceholderText(q.placeholder.isEmpty() ? tr("Type your answer") : q.placeholder);
         row.textEdit->setTabChangesFocus(true);
         fitLines(row.textEdit, kTextareaLines);
-        layout->addWidget(row.textEdit);
+        answerLayout->addWidget(row.textEdit);
         watch(row.textEdit);
         connect(row.textEdit, &QPlainTextEdit::textChanged, this, &AskUserFormWidget::updateProgress);
         break;
@@ -761,18 +769,49 @@ void AskUserFormWidget::updateProposalEditor(int index)
         row.textEdit->setFocus();
 }
 
+void AskUserFormWidget::setClarify(int index, bool on)
+{
+    Row &row = m_rows[index];
+    // The effect renders offscreen: only flagged rows carry an enabled one.
+    auto *effect = qobject_cast<QGraphicsOpacityEffect *>(row.answerBox->graphicsEffect());
+    if (on && !effect) {
+        effect = new QGraphicsOpacityEffect(row.answerBox);
+        effect->setOpacity(kClarifyOpacity);
+        row.answerBox->setGraphicsEffect(effect);
+    }
+    if (effect)
+        effect->setEnabled(on);
+    row.clarifyButton->setToolTip(on ? tr("Marked as unclear: click to answer it instead")
+                                     : tr("Mark as unclear: the agent explains it after you submit"));
+    if (on && row.container->property("invalid").toBool()) {
+        row.container->setProperty("invalid", false);
+        repolish(row.container);
+        repolish(row.requiredLabel);
+    }
+    updateProgress();
+}
+
 void AskUserFormWidget::updateProgress()
 {
     if (m_building || !m_progressLabel)
         return;
     int answered = 0;
+    int clarify = 0;
     for (int i = 0; i < m_spec.questions.size(); ++i) {
-        if (AskUserForm::hasAnswer(m_spec.questions.at(i), answerAt(i)))
+        const Answer a = answerAt(i);
+        if (a.clarify)
+            ++clarify;
+        else if (AskUserForm::hasAnswer(m_spec.questions.at(i), a))
             ++answered;
     }
     const qsizetype total = m_spec.questions.size();
-    m_progressLabel->setText(total <= 1 ? tr("Enter to submit")
-                                        : tr("%1 of %2 answered · Enter to submit").arg(answered).arg(total));
+    QStringList parts;
+    if (total > 1)
+        parts.append(tr("%1 of %2 answered").arg(answered).arg(total));
+    if (clarify > 0)
+        parts.append(tr("%1 to clarify").arg(clarify));
+    parts.append(tr("Enter to submit"));
+    m_progressLabel->setText(parts.join(QStringLiteral(" · ")));
 }
 
 void AskUserFormWidget::applyAnswer(int index, const Answer &a)
@@ -825,6 +864,8 @@ void AskUserFormWidget::applyAnswer(int index, const Answer &a)
     row.noteEdit->setText(a.note);
     if (!a.note.isEmpty())
         row.noteButton->setChecked(true);
+    if (row.clarifyButton)
+        row.clarifyButton->setChecked(a.clarify);
 }
 
 Answer AskUserFormWidget::answerAt(int index) const
@@ -834,6 +875,7 @@ Answer AskUserFormWidget::answerAt(int index) const
     Answer a;
     a.questionId = q.id;
     a.note = row.noteEdit ? row.noteEdit->text().trimmed() : QString();
+    a.clarify = row.clarifyButton && row.clarifyButton->isChecked();
     switch (q.type) {
     case QuestionType::Single:
     case QuestionType::Select:
@@ -917,10 +959,11 @@ void AskUserFormWidget::trySubmit()
         const Question &q = m_spec.questions.at(i);
         const Row &row = m_rows.at(i);
         const Answer &a = current.at(i);
-        // A requested change must say what to change.
-        const bool missingChange = q.type == QuestionType::Proposal
+        // A requested change must say what to change. A question flagged
+        // for clarification needs no answer.
+        const bool missingChange = !a.clarify && q.type == QuestionType::Proposal
             && a.value.toString() == QLatin1String("change") && a.other.isEmpty();
-        const bool missing = missingChange || (q.required && !AskUserForm::hasAnswer(q, a));
+        const bool missing = missingChange || (!a.clarify && q.required && !AskUserForm::hasAnswer(q, a));
         row.requiredLabel->setText(missingChange ? tr("Describe the change") : tr("Required"));
         row.requiredLabel->setVisible(q.required || missingChange);
         row.container->setProperty("invalid", missing);

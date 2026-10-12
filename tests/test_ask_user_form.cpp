@@ -36,6 +36,7 @@ private slots:
     void acceptsLenientShapes();
     void formatsAnswersForTheAgent();
     void summaryLine();
+    void reportsQuestionsToClarify();
     void carriesAnswersOverById();
     void mapsClaudeAskUserQuestion();
     void mapsCodexRequestUserInput();
@@ -202,10 +203,69 @@ void TestAskUserForm::summaryLine()
     QCOMPARE(summary, QStringLiteral("Answered 6 questions · 1 changed"));
     QCOMPARE(summaryFromAnswersText(formatAnswers(spec, answers)), summary);
 
-    // Dismiss and clarify prompts share the collapsed bubble.
+    // Dismiss and legacy clarify prompts share the collapsed bubble.
     QCOMPARE(summaryFromAnswersText(dismissPrompt(QString())), QStringLiteral("Dismissed the form"));
-    QCOMPARE(summaryFromAnswersText(clarifyPrompt(spec.questions.at(1))),
-             QStringLiteral("Asked to clarify Q2 \"Controls\""));
+    const QString legacyClarify = QStringLiteral(
+        "[ask_user clarify]
+The user does not understand question Q2 \"Controls\". Explain it in the "
+        "user's language (the language the user writes in), then call ask_user again with the revised form.");
+    QCOMPARE(summaryFromAnswersText(legacyClarify), QStringLiteral("Asked to clarify Q2 \"Controls\""));
+}
+
+void TestAskUserForm::reportsQuestionsToClarify()
+{
+    const Spec spec = grillSpec();
+    QVector<Answer> answers{
+        answer("Q1", QStringLiteral("a")),
+        answer("Q2", QJsonArray{QStringLiteral("radio")}, "", "what is a slider here?"),
+        answer("Q3", QStringLiteral("change")), // flagged: no change text needed
+        answer("Q4", false),
+        answer("Q5", QStringLiteral("free text")),
+        answer("Q6", 30.0),
+    };
+    answers[1].clarify = true;
+    answers[2].clarify = true;
+    const QString text = formatAnswers(spec, answers);
+    const QString expected = QStringLiteral(
+        "[ask_user answers]
+"
+        "Form: Round 2
+"
+        "Q1 \"Architecture\": a (Elicitation) — changed (recommended: b2 (No-op tool))
+"
+        "Q2 \"Controls\": needs clarification
+"
+        "  note: what is a slider here?
+"
+        "Q3 \"Module layout\": needs clarification
+"
+        "Q4 \"Scan inside?\": no (Skip) (recommended)
+"
+        "Q5 \"Describe it\": \"free text\"
+"
+        "Q6 \"Days\": 30 (recommended)
+"
+        "To clarify: Q2, Q3. Explain them in the user's language, then call ask_user again with only these "
+        "questions, keeping their ids. The other answers are final.
+");
+    QCOMPARE(text, expected);
+
+    // Flagged questions are neither answered nor changed.
+    const QString summary = answerSummary(spec, answers);
+    QCOMPARE(summary, QStringLiteral("Answered 4 of 6 questions · 1 changed · 2 to clarify"));
+    QCOMPARE(summaryFromAnswersText(text), summary);
+    const QStringList overview = answerOverview(text);
+    QCOMPARE(overview.size(), 6); // the trailing instruction is not a question
+    QCOMPARE(overview.at(1), QStringLiteral("Q2 Controls → needs clarification"));
+
+    // The re-asked form keeps the pick and the note, not the flag.
+    const QVector<Answer> carried = carryOver(spec, answers);
+    QCOMPARE(carried.at(1).value.toArray(), QJsonArray{QStringLiteral("radio")});
+    QCOMPARE(carried.at(1).note, QStringLiteral("what is a slider here?"));
+    QVERIFY(!carried.at(1).clarify);
+
+    // Nothing flagged: no instruction line.
+    QVERIFY(!formatAnswers(spec, defaultAnswers(spec)).contains(QLatin1String("To clarify:")));
 }
 
 void TestAskUserForm::carriesAnswersOverById()
@@ -285,6 +345,15 @@ void TestAskUserForm::mapsCodexRequestUserInput()
         Answer{spec.questions.at(0).id, QStringLiteral("n"), QString(), QString()},
         Answer{spec.questions.at(1).id, QStringLiteral("y"), QString(), QStringLiteral("but later")}});
     QCOMPARE(content.value(QStringLiteral("alpha_note")).toString(), QStringLiteral("but later"));
+
+    // Clarify keeps the required value and asks in the note field.
+    Answer unclear{spec.questions.at(1).id, QStringLiteral("y"), QString(), QStringLiteral("which branch?")};
+    unclear.clarify = true;
+    const QJsonObject asked = elicitationContent(spec, {unclear});
+    QCOMPARE(asked.value(QStringLiteral("alpha")).toString(), QStringLiteral("y"));
+    const QString note = asked.value(QStringLiteral("alpha_note")).toString();
+    QVERIFY2(note.startsWith(QLatin1String("Needs clarification: ")), qPrintable(note));
+    QVERIFY(note.endsWith(QLatin1String(" Note: which branch?")));
 }
 
 void TestAskUserForm::mapsPrimitiveFields()

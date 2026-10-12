@@ -29,6 +29,7 @@ namespace AskUserForm {
 inline constexpr char kServerName[] = "notepadai";
 inline constexpr char kToolName[] = "ask_user";
 inline constexpr char kAnswersHeader[] = "[ask_user answers]";
+// Legacy: the one-question clarify prompt of earlier builds (restored history).
 inline constexpr char kClarifyHeader[] = "[ask_user clarify]";
 inline constexpr char kDismissedLine[] = "The user dismissed the form without answering.";
 // AcpMessage::marker / AcpPromptQueue::Item::marker values.
@@ -105,6 +106,9 @@ struct Answer
     QJsonValue value;
     QString other; // free text in the Other box; for proposal "change": the requested change
     QString note;
+    // The user does not understand the question: the agent explains it and
+    // asks again. The value is not reported (elicitation still sends it).
+    bool clarify = false;
 };
 
 // --- ask_user ---------------------------------------------------------------
@@ -146,16 +150,16 @@ bool isChanged(const Question &q, const Answer &a);
 
 // The prompt sent to the agent after Submit.
 QString formatAnswers(const Spec &spec, const QVector<Answer> &answers);
-// One line for the collapsed bubble: "Answered 10 questions · 3 changed".
+// One line for the collapsed bubble: "Answered 10 questions · 3 changed",
+// plus " · 2 to clarify" when the user flagged questions.
 QString answerSummary(const Spec &spec, const QVector<Answer> &answers);
 // Same summary, recomputed from the prompt text (restored history).
 QString summaryFromAnswersText(const QString &text);
 // One line per question from the prompt text: "Q1 Title → answer[ · changed]",
-// answers cut to `maxAnswerChars`. Empty for dismiss / clarify prompts.
+// answers cut to `maxAnswerChars`. Empty for dismiss and legacy clarify prompts.
 QStringList answerOverview(const QString &text, int maxAnswerChars = 90);
 
 QString dismissPrompt(const QString &note);
-QString clarifyPrompt(const Question &q);
 QString freeformPrompt(const QString &text);
 // Unattended session. `goalAgent`: a goal agent will answer plain-text questions.
 QString noHumanPrompt(bool goalAgent);

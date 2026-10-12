@@ -514,9 +514,10 @@ QJsonObject toolDefinition()
              "AskUserQuestion's 4; prefer this tool over AskUserQuestion and request_user_input), write in the "
              "user's language, then END YOUR TURN: the tool shows an interactive form in the NotepadAI chat and "
              "returns immediately without answers. The answers arrive as the next user message beginning with "
-             "`[ask_user answers]`; `no answer` means unanswered, so re-ask it in a later round. A message "
-             "beginning with `[ask_user clarify]` asks you to explain one question in the user's language and "
-             "call ask_user again with the same ids. Never call it twice in one turn.")},
+             "`[ask_user answers]`; `no answer` means unanswered, so re-ask it in a later round. "
+             "`needs clarification` means the user did not understand that question: treat the other answers "
+             "as final, explain each such question in the user's language, then call ask_user again with only "
+             "those questions, keeping their ids. Never call it twice in one turn.")},
         {QStringLiteral("inputSchema"), schema},
     };
 }
@@ -690,13 +691,18 @@ QJsonValue fitToQuestion(const Question &q, const QJsonValue &v)
     return {};
 }
 
-QString summaryText(int answered, int total, int changed)
+QString summaryText(int answered, int total, int changed, int clarify)
 {
     const QString head = answered == total
         ? QStringLiteral("Answered %1 question%2").arg(total).arg(total == 1 ? QString() : QStringLiteral("s"))
         : QStringLiteral("Answered %1 of %2 questions").arg(answered).arg(total);
-    return head + QStringLiteral(" · %1 changed").arg(changed);
+    QString out = head + QStringLiteral(" · %1 changed").arg(changed);
+    if (clarify > 0)
+        out += QStringLiteral(" · %1 to clarify").arg(clarify);
+    return out;
 }
+
+constexpr QLatin1String kNeedsClarification("needs clarification");
 
 } // namespace
 
@@ -759,11 +765,19 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers)
     QString out = QLatin1String(kAnswersHeader) + QLatin1Char('\n');
     if (!spec.title.isEmpty())
         out += QStringLiteral("Form: ") + spec.title + QLatin1Char('\n');
+    QStringList unclear;
     for (const Question &q : spec.questions) {
         const Answer *found = findAnswer(answers, q.id);
-        const Answer a = found ? *found : Answer{q.id, {}, {}, {}};
+        Answer a;
+        if (found)
+            a = *found;
+        else
+            a.questionId = q.id;
         out += QStringLiteral("%1 %2: ").arg(q.id, quoted(q.title));
-        if (!hasAnswer(q, a)) {
+        if (a.clarify) {
+            out += kNeedsClarification;
+            unclear.append(q.id);
+        } else if (!hasAnswer(q, a)) {
             out += QStringLiteral("no answer");
         } else {
             out += answerText(q, a);
@@ -780,6 +794,12 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers)
             out += QStringLiteral("  note: ") + indented + QLatin1Char('\n');
         }
     }
+    // No `": ` in this line: the summary and overview parsers skip it.
+    if (!unclear.isEmpty()) {
+        out += QStringLiteral("To clarify: %1. Explain them in the user's language, then call ask_user again "
+                              "with only these questions, keeping their ids. The other answers are final.\n")
+                   .arg(unclear.join(QStringLiteral(", ")));
+    }
     return out;
 }
 
@@ -787,19 +807,25 @@ QString answerSummary(const Spec &spec, const QVector<Answer> &answers)
 {
     int answered = 0;
     int changed = 0;
+    int clarify = 0;
     for (const Question &q : spec.questions) {
         const Answer *a = findAnswer(answers, q.id);
+        if (a && a->clarify) {
+            ++clarify;
+            continue;
+        }
         if (!a || !hasAnswer(q, *a))
             continue;
         ++answered;
         if (isChanged(q, *a))
             ++changed;
     }
-    return summaryText(answered, static_cast<int>(spec.questions.size()), changed);
+    return summaryText(answered, static_cast<int>(spec.questions.size()), changed, clarify);
 }
 
 QString summaryFromAnswersText(const QString &text)
 {
+    // Legacy one-question clarify prompt, still in older saved sessions.
     if (text.startsWith(QLatin1String(kClarifyHeader))) {
         static const QLatin1String kLead("does not understand question ");
         const qsizetype from = text.indexOf(kLead);
@@ -813,6 +839,8 @@ QString summaryFromAnswersText(const QString &text)
     int total = 0;
     int answered = 0;
     int changed = 0;
+    int clarify = 0;
+    static const QString kClarifyEnd = QStringLiteral("\": ") + kNeedsClarification;
     const QStringList lines = text.split(QLatin1Char('\n'));
     for (int i = 1; i < lines.size(); ++i) { // line 0 is the header
         const QString &line = lines.at(i);
@@ -821,13 +849,17 @@ QString summaryFromAnswersText(const QString &text)
             continue;
         }
         ++total;
+        if (line.endsWith(kClarifyEnd)) {
+            ++clarify;
+            continue;
+        }
         if (line.endsWith(QLatin1String("\": no answer")))
             continue;
         ++answered;
         if (line.contains(QStringLiteral(" — changed (recommended: ")))
             ++changed;
     }
-    return summaryText(answered, total, changed);
+    return summaryText(answered, total, changed, clarify);
 }
 
 namespace {
@@ -1020,6 +1052,14 @@ QJsonObject elicitationContent(const Spec &spec, const QVector<Answer> &answers)
         }
         QString other = a->other.trimmed();
         QString note = a->note.trimmed();
+        // The value stays (codex-acp marks every question required); the
+        // request rides in the free-text companion and the agent re-asks.
+        if (a->clarify) {
+            const QString request = QStringLiteral(
+                "Needs clarification: the user does not understand this question. Explain it in the user's "
+                "language, then ask it again.");
+            note = note.isEmpty() ? request : request + QStringLiteral(" Note: ") + note;
+        }
         // No dedicated note field: the note rides along in the Other box.
         if (q.noteFieldKey.isEmpty() && !q.otherFieldKey.isEmpty() && !note.isEmpty()) {
             other = other.isEmpty() ? note : other + QStringLiteral("; ") + note;
@@ -1116,15 +1156,6 @@ QString dismissPrompt(const QString &note)
     if (!note.trimmed().isEmpty())
         out += QStringLiteral("\nNote from the user: ") + note.trimmed();
     return out;
-}
-
-QString clarifyPrompt(const Question &q)
-{
-    return QLatin1String(kClarifyHeader)
-        + QStringLiteral("\nThe user does not understand question %1 %2. Explain it in the user's "
-                         "language (the language the user writes in), then call ask_user again with "
-                         "the revised form. Keep the same question ids so earlier answers carry over.")
-              .arg(q.id, quoted(q.title));
 }
 
 QString freeformPrompt(const QString &text)
