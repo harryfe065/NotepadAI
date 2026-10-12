@@ -712,7 +712,9 @@ QJsonArray ensureDiffContent(const QJsonArray &content,
         path = rawInput.value(QStringLiteral("file_path")).toString();
     }
     const QJsonValue writeBody = rawInput.value(QStringLiteral("content"));
+    // omp's xd:// device writes are tool calls with JSON arguments, not files.
     if (!path.isEmpty()
+        && !path.startsWith(QLatin1String("xd://"), Qt::CaseInsensitive)
         && writeBody.isString()
         && !rawInput.contains(QStringLiteral("input"))
         && !rawInput.contains(QStringLiteral("edits"))) {

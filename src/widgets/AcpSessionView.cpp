@@ -2152,7 +2152,7 @@ void AcpSessionView::showAskUserToolCallForm(const AcpProtocol::AcpToolCall &tc)
         return;
     m_askUserShown.insert(tc.id);
     QString error;
-    const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc.rawInput), &error);
+    const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc.rawInput, tc.rawOutput), &error);
     if (!spec) {
         // The agent believes the form is on screen and waits: tell it.
         sendHostPrompt(QLatin1String(AskUserForm::kAnswersHeader)
@@ -2358,7 +2358,7 @@ void AcpSessionView::restoreExpiredForm()
         m_askUserShown.insert(tc->id);
         if (askUserCallDropped(tc->status))
             return;
-        const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc->rawInput));
+        const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc->rawInput, tc->rawOutput));
         if (!spec)
             return;
         auto *form = new AskUserFormWidget(*spec, AskUserForm::defaultAnswers(*spec), m_transcriptHost);

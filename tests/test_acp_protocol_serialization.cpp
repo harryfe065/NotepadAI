@@ -329,6 +329,12 @@ void TestAcpProtocolSerialization::ensureDiffContentSynthesizesWriteAndDetails()
     QVERIFY(writeDiff.value(QStringLiteral("oldText")).isNull());
     QCOMPARE(writeDiff.value(QStringLiteral("newText")).toString(), QStringLiteral("hello\n"));
 
+    // omp's xd:// device write is a tool call, not a file: no diff.
+    QJsonObject device;
+    device.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user"));
+    device.insert(QStringLiteral("content"), QStringLiteral("{\"questions\":[]}"));
+    QVERIFY(AcpProtocol::ensureDiffContent(QJsonArray(), device, QJsonObject()).isEmpty());
+
     QJsonObject details;
     details.insert(QStringLiteral("path"), QStringLiteral("edit.txt"));
     details.insert(QStringLiteral("oldText"), QStringLiteral("a\n"));

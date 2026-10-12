@@ -42,6 +42,7 @@ private slots:
     void mapsPrimitiveFields();
     void recognisesAskUserToolCalls();
     void unwrapsNestedArguments();
+    void recognisesOmpDeviceWrite();
 };
 
 void TestAskUserForm::parsesGrillRound()
@@ -343,6 +344,41 @@ void TestAskUserForm::unwrapsNestedArguments()
                                   {QStringLiteral("tool"), QStringLiteral("ask_user")},
                                   {QStringLiteral("arguments"), QStringLiteral("{\"questions\":[]}")}};
     QCOMPARE(askUserArguments(stringified), direct);
+}
+
+void TestAskUserForm::recognisesOmpDeviceWrite()
+{
+    // omp mounts MCP tools as xd:// devices and calls them through its `write`
+    // tool: the title is the model's intent, the arguments a JSON string.
+    const QString argsJson = QStringLiteral("{\"title\":\"Round 1\",\"questions\":[{\"id\":\"Q1\","
+                                            "\"title\":\"What?\",\"type\":\"textarea\"}]}");
+    const QJsonObject raw{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")},
+                          {QStringLiteral("content"), argsJson}};
+    const QString intent = QStringLiteral("Asking grill-me topic for round 1");
+    QVERIFY(isAskUserToolCall(QString(), intent, raw));
+    QJsonObject doubleUnderscore = raw;
+    doubleUnderscore.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai__ask_user"));
+    QVERIFY(isAskUserToolCall(QString(), intent, doubleUnderscore));
+    QJsonObject otherDevice = raw;
+    otherDevice.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__other_ask_user"));
+    QVERIFY(!isAskUserToolCall(QString(), intent, otherDevice));
+    QJsonObject file = raw;
+    file.insert(QStringLiteral("path"), QStringLiteral("notepadai_ask_user.json"));
+    QVERIFY(!isAskUserToolCall(QStringLiteral("write"), intent, file));
+
+    const QJsonObject args = askUserArguments(raw);
+    QCOMPARE(args.value(QStringLiteral("title")).toString(), QStringLiteral("Round 1"));
+    const auto spec = parseAskUserInput(args);
+    QVERIFY(spec.has_value());
+    QCOMPARE(spec->questions.size(), 1);
+
+    // Completion carries the parsed arguments in rawOutput.details.xdev.
+    const QJsonObject noContent{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")}};
+    const QJsonObject rawOutput{{QStringLiteral("details"), QJsonObject{{QStringLiteral("xdev"), QJsonObject{
+        {QStringLiteral("tool"), QStringLiteral("mcp__notepadai_ask_user")},
+        {QStringLiteral("args"), QJsonDocument::fromJson(argsJson.toUtf8()).object()}}}}}};
+    QCOMPARE(askUserArguments(noContent, rawOutput).value(QStringLiteral("title")).toString(),
+             QStringLiteral("Round 1"));
 }
 
 QTEST_GUILESS_MAIN(TestAskUserForm)

@@ -312,19 +312,48 @@ bool nameMatches(const QString &raw)
     return false;
 }
 
-} // namespace
+constexpr QLatin1String kDevicePrefix("xd://");
 
-QJsonObject askUserArguments(const QJsonObject &rawInput)
+// omp mounts MCP tools as devices and calls them through its `write` tool:
+// rawInput = {path: "xd://mcp__notepadai_ask_user", content: "<args JSON>"}.
+bool isAskUserDevice(const QJsonObject &rawInput)
 {
-    if (!rawInput.contains(QStringLiteral("tool")) || rawInput.contains(QStringLiteral("questions")))
-        return rawInput;
-    const QJsonValue args = rawInput.value(QStringLiteral("arguments"));
-    if (args.isObject())
-        return args.toObject();
-    if (args.isString()) {
-        const QJsonDocument doc = QJsonDocument::fromJson(args.toString().toUtf8());
+    const QString path = rawInput.value(QStringLiteral("path")).toString().trimmed();
+    return path.startsWith(kDevicePrefix, Qt::CaseInsensitive) && nameMatches(path.mid(kDevicePrefix.size()));
+}
+
+QJsonObject objectFrom(const QJsonValue &v)
+{
+    if (v.isObject())
+        return v.toObject();
+    if (v.isString()) {
+        const QJsonDocument doc = QJsonDocument::fromJson(v.toString().toUtf8());
         if (doc.isObject())
             return doc.object();
+    }
+    return {};
+}
+
+} // namespace
+
+QJsonObject askUserArguments(const QJsonObject &rawInput, const QJsonObject &rawOutput)
+{
+    if (rawInput.contains(QStringLiteral("questions")))
+        return rawInput;
+    if (isAskUserDevice(rawInput)) {
+        QJsonObject args = objectFrom(rawInput.value(QStringLiteral("content")));
+        if (args.isEmpty()) {
+            // Completion: omp echoes the parsed arguments.
+            args = rawOutput.value(QStringLiteral("details")).toObject()
+                       .value(QStringLiteral("xdev")).toObject()
+                       .value(QStringLiteral("args")).toObject();
+        }
+        return args;
+    }
+    if (rawInput.contains(QStringLiteral("tool"))) {
+        const QJsonObject args = objectFrom(rawInput.value(QStringLiteral("arguments")));
+        if (!args.isEmpty())
+            return args;
     }
     return rawInput;
 }
@@ -440,7 +469,7 @@ QJsonObject toolDefinition()
 
 bool isAskUserToolCall(const QString &name, const QString &title, const QJsonObject &rawInput)
 {
-    if (nameMatches(name) || nameMatches(title))
+    if (nameMatches(name) || nameMatches(title) || isAskUserDevice(rawInput))
         return true;
     return rawInput.value(QStringLiteral("server")).toString() == QLatin1String(kServerName)
         && rawInput.value(QStringLiteral("tool")).toString() == QLatin1String(kToolName);

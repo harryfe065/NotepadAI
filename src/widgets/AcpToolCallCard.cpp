@@ -1113,7 +1113,7 @@ QString AcpToolCallCard::computeEnrichedTitle() const
 {
     // notepadai's ask_user: name it by what it did, not mcp__notepadai__ask_user.
     if (AskUserForm::isAskUserToolCall(m_name, m_title, m_rawInput)) {
-        const QJsonObject askArgs = AskUserForm::askUserArguments(m_rawInput);
+        const QJsonObject askArgs = AskUserForm::askUserArguments(m_rawInput, m_rawOutput);
         const QString formTitle = askArgs.value(QStringLiteral("title")).toString().trimmed();
         if (!formTitle.isEmpty())
             return tr("Asked you: %1").arg(formTitle);

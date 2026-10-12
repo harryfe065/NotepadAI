@@ -115,11 +115,14 @@ struct Answer
 std::optional<Spec> parseAskUserInput(const QJsonObject &args, QString *error = nullptr);
 
 // Unwrap a tool call's rawInput into the tool arguments. Some adapters nest
-// them as {server, tool, arguments} with arguments possibly a JSON string.
-QJsonObject askUserArguments(const QJsonObject &rawInput);
+// them as {server, tool, arguments} with arguments possibly a JSON string;
+// omp sends {path: "xd://mcp__notepadai_ask_user", content: "<JSON>"} and
+// echoes the parsed arguments in rawOutput.details.xdev.args on completion.
+QJsonObject askUserArguments(const QJsonObject &rawInput, const QJsonObject &rawOutput = {});
 
 // True when the tool call is notepadai's ask_user, whatever prefix the agent
-// adds (mcp__notepadai__ask_user, notepadai_ask_user, notepadai/ask_user, ...).
+// adds (mcp__notepadai__ask_user, notepadai_ask_user, notepadai/ask_user, ...),
+// including omp's device write to xd://mcp__notepadai_ask_user.
 bool isAskUserToolCall(const QString &name, const QString &title, const QJsonObject &rawInput);
 
 // MCP tools/list entry (name, description, inputSchema).
