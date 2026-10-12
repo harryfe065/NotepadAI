@@ -189,6 +189,7 @@ CREATE_SETTING(Ai, CommitMessageGenerateShortcut, commitMessageGenerateShortcut,
 
 CREATE_SETTING(Ai, SyncWorkspaceOnAiSwitch, syncWorkspaceOnAiSwitch, bool, true)
 CREATE_SETTING(Ai, UsagePercentRemaining, usagePercentRemaining, bool, false)
+CREATE_SETTING(Ai, UsageClaudeConfigDir, usageClaudeConfigDir, QString, QString())
 // NOLINTEND(bugprone-throwing-static-initialization,performance-unnecessary-value-param)
 
 // --- AI / ACP agent settings ---------------------------------------------------

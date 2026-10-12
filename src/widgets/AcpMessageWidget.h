@@ -78,6 +78,10 @@ public:
     // font + user QLabels) here.
     void setChatFont(const QFont &font);
 
+    // Assistant role, a turn's final report: a row of "Copy response" / "Copy
+    // conversation" buttons at the bottom of the bubble, always visible.
+    void setResponseActions(bool enabled);
+
     bool isCollapsed() const { return m_collapsed; }
     QString role() const { return m_role; }
     QString plainText() const { return m_text; }
@@ -86,6 +90,11 @@ public:
     // right-aligns the widget, so this width — widest line, capped to the
     // transcript — is what it gets. Other roles keep the layout default.
     QSize sizeHint() const override;
+
+signals:
+    // "Copy conversation" clicked: the view owns the timeline, so it builds the
+    // transcript through this message and puts it on the clipboard.
+    void copyConversationRequested();
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -111,6 +120,8 @@ private:
     void applyGoalSetFrame();
     void scheduleRerender();
     void flushRerender();
+    void ensureResponseActions();
+    void retintResponseActionIcons();
 
     QString m_role;
     QString m_text;
@@ -130,6 +141,12 @@ private:
     QToolButton *m_thoughtHeader = nullptr; // thought role
     QLabel *m_goalBadge = nullptr;         // Goal badge on result rows
     QVBoxLayout *m_layout = nullptr;
+
+    // Final-report action row (assistant role), built on first enable.
+    QWidget *m_responseActions = nullptr;
+    QToolButton *m_copyResponseBtn = nullptr;
+    QToolButton *m_copyConversationBtn = nullptr;
+    bool m_responseActionsEnabled = false;
 
     // Debounce timer for assistant markdown re-renders. setMarkdown on a long
     // table-bearing payload is O(N) per call; without debouncing, every

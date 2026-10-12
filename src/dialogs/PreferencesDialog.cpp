@@ -402,6 +402,29 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
         ui->spinBoxTerminalMemoryLimit->setValue(settings->terminalChildMemoryLimitGb());
     });
 
+    // --- Claude usage config folder --------------------------------------------
+
+    ui->lineEditClaudeConfigDir->setText(QDir::toNativeSeparators(settings->usageClaudeConfigDir()));
+    connect(ui->lineEditClaudeConfigDir, &QLineEdit::textChanged, this, [=](const QString &) {
+        m_pending.markDirty();
+    });
+    connect(ui->btnBrowseClaudeConfigDir, &QToolButton::clicked, this, [this]() {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, tr("Claude Config Folder"), ui->lineEditClaudeConfigDir->text());
+        if (!dir.isEmpty())
+            ui->lineEditClaudeConfigDir->setText(QDir::toNativeSeparators(dir));
+    });
+    m_pending.addApply([=]() {
+        // The setter always emits, and a change drops the usage snapshot: skip no-ops.
+        const QString dir = QDir::fromNativeSeparators(ui->lineEditClaudeConfigDir->text().trimmed());
+        if (dir != settings->usageClaudeConfigDir())
+            settings->setUsageClaudeConfigDir(dir);
+    });
+    m_pending.addRevert([=]() {
+        QSignalBlocker blocker(ui->lineEditClaudeConfigDir);
+        ui->lineEditClaudeConfigDir->setText(QDir::toNativeSeparators(settings->usageClaudeConfigDir()));
+    });
+
     // --- Data Directory section ------------------------------------------------
 
     ui->lineEditDataDir->setText(QDir::toNativeSeparators(DataPaths::appDataLocation()));

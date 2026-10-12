@@ -1,6 +1,9 @@
 #include "UsageButton.h"
 
+#include <QCoreApplication>
 #include <QEvent>
+#include <QMenuBar>
+#include <QResizeEvent>
 
 #include "UsagePopover.h"
 #include "UsageStyle.h"
@@ -56,7 +59,8 @@ void UsageButton::setPercentMode(PercentMode mode)
 void UsageButton::onServiceChanged()
 {
     const bool show = m_service->buttonVisible();
-    setVisible(show);
+    const bool wasVisible = !isHidden();
+    const QString oldText = text();
 
     const auto headline = m_service->headline();
     if (headline) {
@@ -71,9 +75,27 @@ void UsageButton::onServiceChanged()
         setToolTip(tr("Usage"));
         applyTone(Tone::Ok);
     }
+    setVisible(show);
+
+    if (show != wasVisible || text() != oldText)
+        relayoutMenuBar();
 
     if (m_popover->isVisible())
         pushDataToPopover();
+}
+
+// QMenuBar lays its corner widget out only when that widget is shown/hidden or
+// the bar is resized, never when the chip's text (and so its sizeHint) changes.
+// Without this nudge "5%" -> "23%" keeps the old width and paints as "...".
+void UsageButton::relayoutMenuBar()
+{
+    for (QWidget *p = parentWidget(); p; p = p->parentWidget()) {
+        if (auto *bar = qobject_cast<QMenuBar *>(p)) {
+            QResizeEvent resize(bar->size(), bar->size());
+            QCoreApplication::sendEvent(bar, &resize);
+            return;
+        }
+    }
 }
 
 void UsageButton::pushDataToPopover()

@@ -620,6 +620,8 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.h
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.h
     ${CMAKE_SOURCE_DIR}/src/AcpTurnFolding.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTurnFolding.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
@@ -720,6 +722,8 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.h
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.h
     ${CMAKE_SOURCE_DIR}/src/AcpTurnFolding.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTurnFolding.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
@@ -816,6 +820,8 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.h
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.h
     ${CMAKE_SOURCE_DIR}/src/AcpTurnFolding.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTurnFolding.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
@@ -2192,6 +2198,24 @@ target_sources(test_acp_turn_folding PRIVATE
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
 )
 add_test(NAME AcpTurnFolding COMMAND test_acp_turn_folding)
+
+# --- AcpConversationCopy: final-report detection + "Copy conversation" markdown ---
+qt_add_executable(test_acp_conversation_copy test_acp_conversation_copy.cpp)
+target_include_directories(test_acp_conversation_copy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_conversation_copy PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_conversation_copy PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpConversationCopy.h
+    ${CMAKE_SOURCE_DIR}/src/AcpHistoryStore.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpHistoryStore.h
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
+    ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
+    ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
+    ${CMAKE_SOURCE_DIR}/src/DataPaths.h
+)
+add_test(NAME AcpConversationCopy COMMAND test_acp_conversation_copy)
 
 # --- MarkdownPreprocessor: math delimiters + allowlisted HTML -> markdown ---
 qt_add_executable(test_markdown_preprocessor test_markdown_preprocessor.cpp)

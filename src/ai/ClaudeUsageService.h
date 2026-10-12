@@ -106,6 +106,10 @@ public:
     void startPolling();
 
     void setClock(std::function<qint64()> clock) { m_clock = std::move(clock); }
+    // Switches to another Claude config folder (`dir` empty = $CLAUDE_CONFIG_DIR /
+    // ~/.claude). It is a different account, so the snapshot, the cooldown and
+    // any request in flight are dropped and a fresh fetch starts right away.
+    void setConfigDir(const QString &dir);
     // 0..1 source for the backoff jitter; tests pin it.
     void setJitter(std::function<double()> jitter) { m_jitter = std::move(jitter); }
 

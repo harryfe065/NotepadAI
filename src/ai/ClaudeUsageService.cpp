@@ -151,6 +151,20 @@ void ClaudeUsageService::refresh(bool force)
         readKeychainAsync();
 }
 
+void ClaudeUsageService::setConfigDir(const QString &dir)
+{
+    m_credentialsFile = claudeusage::credentialsPath(
+        dir.isEmpty() ? qEnvironmentVariable("CLAUDE_CONFIG_DIR") : dir, QDir::homePath());
+
+    m_transport->cancel();
+    m_inflight = false;
+    m_usage = {};
+    m_health = {};
+    m_loaded = false;
+    m_lastCompletedMs = 0;
+    refresh(true);
+}
+
 void ClaudeUsageService::sendWithToken(const QString &token)
 {
     m_transport->get({usageUrl(), token});

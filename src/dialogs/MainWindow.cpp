@@ -1593,7 +1593,13 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
     cornerLayout->setContentsMargins(0, 0, 0, 0);
     cornerLayout->setSpacing(0);
 
-    auto *usageService = new ai::ClaudeUsageService(new ai::ClaudeUsageHttpTransport(this), QString(), this);
+    const QString usageConfigDir = app->getSettings()->usageClaudeConfigDir();
+    auto *usageService = new ai::ClaudeUsageService(
+        new ai::ClaudeUsageHttpTransport(this),
+        usageConfigDir.isEmpty() ? QString() : ai::claudeusage::credentialsPath(usageConfigDir, QDir::homePath()),
+        this);
+    connect(app->getSettings(), &ApplicationSettings::usageClaudeConfigDirChanged, usageService,
+            &ai::ClaudeUsageService::setConfigDir);
     auto *usageButton = new UsageButton(usageService, cornerHost);
     usageButton->setPercentMode(app->getSettings()->usagePercentRemaining()
                                     ? ai::claudeusage::PercentMode::Remaining

@@ -36,6 +36,7 @@ private:
     void togglePopover();
     void applyTone(ai::claudeusage::Tone tone);
     void rebuildIcon();
+    void relayoutMenuBar();
     void pushDataToPopover();
 
     ai::ClaudeUsageService *m_service = nullptr;

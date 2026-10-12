@@ -20,13 +20,18 @@
 
 #include "GoalAgent.h"
 #include "MarkdownView.h"
+#include "UsageStyle.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
+#include <QClipboard>
 #include <QCursor>
 #include <QEvent>
 #include <QFont>
 #include <QFontMetrics>
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QIcon>
 #include <QImage>
 #include <QLabel>
 #include <QPainter>
@@ -42,6 +47,7 @@
 #include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -70,6 +76,14 @@ constexpr int kThoughtBrowserPadLeft = 4;
 constexpr int kUserBubblePadH = 14;
 constexpr int kUserBubbleGap = 32; // space kept free to the left of a full-width user bubble
 constexpr int kThoughtItalicRightSlack = 4;
+// Final-report action row: square icon buttons, glyph per ui-dna toolbar chrome.
+constexpr int kResponseActionsH = 22;
+constexpr int kResponseActionIcon = 14;
+constexpr int kCopiedTipMs = 1500;
+constexpr const char *kResponseActionButtonStyle =
+    "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 0; }"
+    "QToolButton:hover { border-color: palette(mid); }"
+    "QToolButton:pressed { background: rgba(128, 128, 128, 60); }";
 constexpr const char *kFrameStyleSystem =
     "AcpMessageWidget[role=\"system\"] { background: rgba(212, 175, 55, 32); border: 1px solid rgba(212, 175, 55, 60); border-radius: 6px; }";
 
@@ -478,6 +492,9 @@ void AcpMessageWidget::refitBrowserHeight()
         bubbleH += m_layout->spacing();
     }
 
+    if (m_responseActionsEnabled && m_responseActions)
+        bubbleH += m_layout->spacing() + kResponseActionsH;
+
     const int w = width() - marginL - marginR;
     if (w <= 0) {
         // Width not settled (never-shown stack page). Keep whatever height we
@@ -541,6 +558,8 @@ void AcpMessageWidget::changeEvent(QEvent *event)
     }
     // Palette changes: the MarkdownView re-skins itself (copy glyph, code surface,
     // math tint) and emits rendered(), which re-fits the bubble.
+    if (event->type() == QEvent::PaletteChange)
+        retintResponseActionIcons();
 }
 
 bool AcpMessageWidget::eventFilter(QObject *watched, QEvent *event)
@@ -550,6 +569,73 @@ bool AcpMessageWidget::eventFilter(QObject *watched, QEvent *event)
         return false;
     }
     return QFrame::eventFilter(watched, event);
+}
+
+void AcpMessageWidget::setResponseActions(bool enabled)
+{
+    if (m_role != QLatin1String("assistant") || enabled == m_responseActionsEnabled)
+        return;
+    m_responseActionsEnabled = enabled;
+    if (enabled)
+        ensureResponseActions();
+    if (m_responseActions)
+        m_responseActions->setVisible(enabled);
+    refitBrowserHeight();
+    scheduleRefit();
+}
+
+void AcpMessageWidget::ensureResponseActions()
+{
+    if (m_responseActions || !m_layout)
+        return;
+    m_responseActions = new QWidget(this);
+    m_responseActions->setFixedHeight(kResponseActionsH);
+    auto *row = new QHBoxLayout(m_responseActions);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(2);
+    auto makeButton = [this, row](const QString &tip) {
+        auto *b = new QToolButton(m_responseActions);
+        b->setAutoRaise(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setToolTip(tip);
+        b->setIconSize(QSize(kResponseActionIcon, kResponseActionIcon));
+        b->setFixedSize(kResponseActionsH, kResponseActionsH);
+        b->setStyleSheet(QString::fromLatin1(kResponseActionButtonStyle));
+        row->addWidget(b);
+        return b;
+    };
+    m_copyResponseBtn = makeButton(tr("Copy response"));
+    m_copyConversationBtn = makeButton(tr("Copy conversation"));
+    row->addStretch(1);
+    m_layout->addWidget(m_responseActions);
+    retintResponseActionIcons();
+
+    // QClipboard::setText has no failure result, so the tip always confirms.
+    auto confirm = [](QToolButton *b, const QString &text) {
+        QToolTip::showText(b->mapToGlobal(QPoint(0, b->height())), text, b, QRect(), kCopiedTipMs);
+    };
+    connect(m_copyResponseBtn, &QToolButton::clicked, this, [this, confirm]() {
+        // The markdown source of what the bubble shows.
+        QGuiApplication::clipboard()->setText(GoalAgent::nativeGoalDisplayText(m_text).trimmed());
+        confirm(m_copyResponseBtn, tr("Copied"));
+    });
+    connect(m_copyConversationBtn, &QToolButton::clicked, this, [this, confirm]() {
+        emit copyConversationRequested();
+        confirm(m_copyConversationBtn, tr("Conversation copied"));
+    });
+}
+
+void AcpMessageWidget::retintResponseActionIcons()
+{
+    if (!m_copyResponseBtn)
+        return;
+    const QColor color = palette().color(QPalette::ButtonText);
+    const qreal dpr = devicePixelRatioF();
+    m_copyResponseBtn->setIcon(QIcon(usagestyle::tintedPixmap(
+        QStringLiteral(":/icons/copy.svg"), color, kResponseActionIcon, dpr)));
+    m_copyConversationBtn->setIcon(QIcon(usagestyle::tintedPixmap(
+        QStringLiteral(":/icons/messages-square.svg"), color, kResponseActionIcon, dpr)));
 }
 
 void AcpMessageWidget::setChatFont(const QFont &font)

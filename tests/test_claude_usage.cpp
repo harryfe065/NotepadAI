@@ -100,6 +100,10 @@ private slots:
     void service_unparsable_body_keeps_snapshot();
     void service_signed_out_replaces_snapshot();
     void service_min_gap_is_one_minute();
+    void service_custom_config_dir_reads_that_dirs_token();
+    void service_config_dir_change_drops_old_snapshot_and_refetches();
+    void service_config_dir_change_clears_cooldown();
+    void service_empty_config_dir_without_credentials_is_signed_out();
 };
 
 void TestClaudeUsage::timestamp_forms()
@@ -724,6 +728,81 @@ void TestClaudeUsage::service_min_gap_is_one_minute()
     for (int i = 0; i < 50; ++i)
         fx.service->refresh();
     QCOMPARE(fx.transport.requests.size(), 2);   // one request, the rest see it in flight
+}
+
+// ------------------------------------------------------ custom config folder
+
+namespace {
+
+// A second Claude config dir (e.g. ~/.claude-sub) holding its own token.
+struct OtherConfigDir {
+    QTemporaryDir dir;
+    explicit OtherConfigDir(const char *token)
+    {
+        QFile f(dir.filePath(QStringLiteral(".credentials.json")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(R"({"claudeAiOauth":{"accessToken":")") + token + R"("}})");
+    }
+    QString path() const { return dir.path(); }
+};
+
+} // namespace
+
+void TestClaudeUsage::service_custom_config_dir_reads_that_dirs_token()
+{
+    ServiceFixture fx;
+    OtherConfigDir other("sub-token");
+
+    fx.service->setConfigDir(other.path());
+
+    QCOMPARE(fx.transport.requests.size(), 1);
+    QCOMPARE(fx.transport.requests[0].token, QStringLiteral("sub-token"));   // not "secret-token"
+}
+
+void TestClaudeUsage::service_config_dir_change_drops_old_snapshot_and_refetches()
+{
+    ServiceFixture fx;
+    OtherConfigDir other("sub-token");
+    primeWithGoodSnapshot(fx);
+
+    fx.service->setConfigDir(other.path());
+
+    // Another account: the old numbers must not linger, even stale.
+    QVERIFY(!fx.service->loaded());
+    QVERIFY(!fx.service->buttonVisible());
+    QVERIFY(fx.service->loading());
+    QCOMPARE(fx.transport.requests.size(), 2);
+
+    fx.transport.reply(200, R"({"five_hour":{"utilization":70.0}})");
+    QCOMPARE(fx.service->usage().session->usedPercent, 70.0);
+    QVERIFY(fx.service->health().error.isEmpty());
+}
+
+void TestClaudeUsage::service_config_dir_change_clears_cooldown()
+{
+    ServiceFixture fx;
+    OtherConfigDir other("sub-token");
+    primeWithGoodSnapshot(fx);
+    fx.service->refresh();
+    fx.transport.reply(429, "{}");
+    QVERIFY(fx.service->health().retryAtMs > fx.clock);
+
+    fx.service->setConfigDir(other.path());   // same instant, still inside the cooldown
+
+    QCOMPARE(fx.transport.requests.size(), 3);
+    QCOMPARE(fx.service->health().failures, 0);
+}
+
+void TestClaudeUsage::service_empty_config_dir_without_credentials_is_signed_out()
+{
+    ServiceFixture fx;
+    QTemporaryDir empty;
+
+    fx.service->setConfigDir(empty.path());   // folder exists but holds no credentials
+
+    QCOMPARE(fx.transport.requests.size(), 0);
+    QCOMPARE(fx.service->usage().status, Status::Unavailable);
+    QVERIFY(!fx.service->buttonVisible());
 }
 
 QTEST_GUILESS_MAIN(TestClaudeUsage)

@@ -203,6 +203,10 @@ private:
     void dropLiveTurnRow();
     void setTurnExpanded(int turnBegin, bool expanded);
     void removeEntryWidget(const AcpTimelineEntry &entry);
+    // Copy buttons under each finished turn's final report.
+    // includeNewest: the newest turn has ended.
+    void refreshResponseActions(bool includeNewest);
+    void attachResponseActions(int messageIndex, AcpMessageWidget *w);
     QWidget *createEntryWidget(const AcpTimelineEntry &entry);
     AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn, AcpTurnFoldRow *adopt = nullptr);
     void setFoldedMask(const QVector<int> &entries, bool folded);
@@ -375,6 +379,7 @@ private:
     QSet<int> m_truncatedMessageIndices;
     QSet<QString> m_truncatedToolCallIds;
     QVector<QLabel *> m_truncationPlaceholders;
+    QSet<int> m_reportMessages; // message indices of final reports (copy buttons)
 
     struct FoldedTurn
     {

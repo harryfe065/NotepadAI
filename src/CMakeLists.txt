@@ -6,6 +6,7 @@ qt_add_executable(NotepadAI
 	AcpAgentPicker.h
 	AcpAgentRegistry.h
 	AcpConnection.h
+	AcpConversationCopy.h
 	AcpErrorClassifier.h
 	AcpHistoryStore.h
 	AcpPromptQueue.h
@@ -126,6 +127,7 @@ qt_add_executable(NotepadAI
 	AcpAgentManager.cpp
 	AcpAgentRegistry.cpp
 	AcpConnection.cpp
+	AcpConversationCopy.cpp
 	AcpErrorClassifier.cpp
 	AcpHistoryStore.cpp
 	AcpPromptQueue.cpp

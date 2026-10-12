@@ -20,6 +20,7 @@
 
 #include "AcpAgentRegistry.h"
 #include "AcpConnection.h"
+#include "AcpConversationCopy.h"
 #include "AcpImageAttachmentList.h"
 #include "AcpMessageWidget.h"
 #include "AcpPermissionPrompt.h"
@@ -858,6 +859,7 @@ void AcpSessionView::hydrateFromModel()
         timeline, messages, toolCalls, !m_model->isProcessing());
     m_foldedMask.fill(0, timeline.size());
     m_foldedCount = 0;
+    refreshResponseActions(!m_model->isProcessing()); // before widgets exist: they pick it up
     QHash<int, const AcpTurnFolding::Turn *> foldAt; // first folded entry -> its turn
     for (const AcpTurnFolding::Turn &turn : turns) {
         // The row sits above the first folded entry, or above the report when
@@ -993,6 +995,7 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_truncationPlaceholders.clear();
     m_truncatedMessageIndices.clear();
     m_truncatedToolCallIds.clear();
+    m_reportMessages.clear();
     m_foldedTurns.clear();
     m_foldedMask.clear();
     m_foldedCount = 0;
@@ -1135,6 +1138,7 @@ QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry)
         }
         w->setContent(msg.content);
         m_messageWidgets.insert(entry.messageIndex, w);
+        attachResponseActions(entry.messageIndex, w);
         return w;
     }
     const auto it = m_model->toolCalls().constFind(entry.toolCallId);
@@ -1160,6 +1164,40 @@ void AcpSessionView::removeEntryWidget(const AcpTimelineEntry &entry)
         m_currentGroupCards.removeAll(c);
         removeTranscriptWidget(c);
     }
+}
+
+void AcpSessionView::refreshResponseActions(bool includeNewest)
+{
+    if (!m_model) return;
+    const QVector<int> reports = AcpConversationCopy::finalReports(
+        m_model->timeline(), m_model->messages(), includeNewest);
+    QSet<int> next(reports.cbegin(), reports.cend());
+    for (int idx : std::as_const(m_reportMessages)) {
+        if (next.contains(idx))
+            continue;
+        if (AcpMessageWidget *w = m_messageWidgets.value(idx, nullptr))
+            w->setResponseActions(false);
+    }
+    m_reportMessages = std::move(next);
+    // Unchanged widgets return early; a report without a widget (truncated,
+    // not yet built) picks its state up in attachResponseActions.
+    for (int idx : reports) {
+        if (AcpMessageWidget *w = m_messageWidgets.value(idx, nullptr))
+            w->setResponseActions(true);
+    }
+}
+
+void AcpSessionView::attachResponseActions(int messageIndex, AcpMessageWidget *w)
+{
+    if (w->role() != QLatin1String("assistant"))
+        return;
+    connect(w, &AcpMessageWidget::copyConversationRequested, this, [this, messageIndex]() {
+        if (!m_model) return;
+        QGuiApplication::clipboard()->setText(AcpConversationCopy::buildMarkdown(
+            m_model->timeline(), m_model->messages(), messageIndex));
+    });
+    if (m_reportMessages.contains(messageIndex))
+        w->setResponseActions(true);
 }
 
 void AcpSessionView::setFoldedMask(const QVector<int> &entries, bool folded)
@@ -1525,11 +1563,13 @@ void AcpSessionView::appendMessageWidget(int idx)
     w->setContent(msg.content);
     insertTimelineWidget(w);
     m_messageWidgets.insert(idx, w);
+    attachResponseActions(idx, w);
 
     // A new prompt closes the previous turn for review: fold it to "Worked for Xs".
     if (msg.role == QLatin1String("user")) {
         foldCompletedTurns();
         ensureLiveTurnRow();
+        refreshResponseActions(false);
     }
 
     // If a thought was streaming and an assistant message starts, collapse it.
@@ -1913,6 +1953,7 @@ void AcpSessionView::onTurnEnded(int groupId)
 {
     Q_UNUSED(groupId);
     foldCompletedTurns(true); // the turn is over: fold it like every other
+    refreshResponseActions(true);
     scrollToBottomDeferred();
     if (m_currentGroupCards.size() > 3) {
         for (auto *card : m_currentGroupCards) {

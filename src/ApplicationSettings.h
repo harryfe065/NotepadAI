@@ -225,6 +225,10 @@ signals:
     // Storage key Ai/UsagePercentRemaining.
     DEFINE_SETTING(UsagePercentRemaining, usagePercentRemaining, bool)
 
+    // Claude config folder the usage chip reads `.credentials.json` from.
+    // Empty = $CLAUDE_CONFIG_DIR, else ~/.claude. Storage key Ai/UsageClaudeConfigDir.
+    DEFINE_SETTING(UsageClaudeConfigDir, usageClaudeConfigDir, QString)
+
     // AI / ACP agent settings. Stored under the "Ai/" group.
 public:
     QString defaultAiAgentId() const;
