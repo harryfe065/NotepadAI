@@ -43,6 +43,8 @@ public:
     // `active` is 0-based; -1 with total 0 shows "No results".
     void setCount(int active, int total);
     void setInvalid(bool invalid);
+    // The regular expression took too long on this output; searching stopped.
+    void setTooSlow();
 
 signals:
     void optionsChanged();

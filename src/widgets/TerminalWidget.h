@@ -185,6 +185,13 @@ private slots:
     void toggleCursorBlink();
     void runSearch();
     void searchSlice();
+    // Searches m_rowCells as `line`; false (search abandoned) when a regex
+    // spent kRegexRowLimit on it.
+    bool searchRowCells(qint64 line, QString &text, std::vector<int> &colOf);
+    // A default QRegularExpression is valid (empty pattern): "no search" is
+    // an empty pattern, not an invalid one.
+    bool searchActive() const { return m_searchRe.isValid() && !m_searchRe.pattern().isEmpty(); }
+    void abandonSlowSearch();
 
 private:
     // Geometry. Cell sizes are whole device pixels so every row and column

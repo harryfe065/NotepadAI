@@ -77,6 +77,11 @@ constexpr int kResizeSettleMs = 24;
 constexpr qint64 kMissingPathRecheckMs = 3000;
 // Search slices on the UI thread stay under this budget per event-loop pass.
 constexpr auto kSearchSliceBudget = std::chrono::milliseconds(4);
+// A user regex can backtrack catastrophically on some output. One row taking
+// this long, or one incremental pass taking kRegexPassLimit, ends the search
+// instead of stalling the UI thread on every row.
+constexpr auto kRegexRowLimit = std::chrono::milliseconds(20);
+constexpr auto kRegexPassLimit = std::chrono::milliseconds(50);
 constexpr int kCursorBlinkMs = 500;
 // Wheel: three lines per notch, as on every platform default.
 constexpr int kWheelLines = 3;
@@ -961,7 +966,7 @@ void TerminalWidget::processPendingInput()
     }
 
     scheduleFrame();
-    if (m_searchBar && m_searchBar->isVisible() && m_searchRe.isValid() && !m_searchFollow->isActive()) {
+    if (m_searchBar && m_searchBar->isVisible() && searchActive() && !m_searchFollow->isActive()) {
         m_searchFollow->start();
     }
 
@@ -2604,8 +2609,8 @@ void TerminalWidget::closeSearch()
     setFocus(Qt::OtherFocusReason);
 }
 
-// Full search: history on a worker (over a snapshot of the compact buffer),
-// then the tail and the live screen on the UI thread when it returns.
+// Full search: history in slices (searchSlice), then the tail and the live
+// screen (searchNewOutput).
 void TerminalWidget::runSearch()
 {
     if (!m_searchBar) return;
@@ -2649,7 +2654,7 @@ void TerminalWidget::runSearch()
 // scrollback, no locking, and the UI stays responsive on 100k lines.
 void TerminalWidget::searchSlice()
 {
-    if (!m_searchScanning || !m_searchRe.isValid()) return;
+    if (!m_searchScanning || !searchActive()) return;
     const auto start = std::chrono::steady_clock::now();
     const qint64 historyEnd = m_linesDropped + m_scrollback.size();
     m_searchScanNext = std::max(m_searchScanNext, m_linesDropped);
@@ -2660,12 +2665,14 @@ void TerminalWidget::searchSlice()
     std::vector<int> colOf;
     int scanned = 0;
     while (m_searchScanNext < historyEnd) {
-        if (m_scrollback.lineAt(absoluteRowForLineId(m_searchScanNext), m_cols, m_rowCells.data())) {
-            searchTerminalRow(m_searchRe, m_searchScanNext, m_rowCells.data(), m_cols, m_matches, text, colOf,
-                              m_searchSkipBlank);
+        if (m_scrollback.lineAt(absoluteRowForLineId(m_searchScanNext), m_cols, m_rowCells.data())
+            && !searchRowCells(m_searchScanNext, text, colOf)) {
+            return;
         }
         ++m_searchScanNext;
-        if ((++scanned & 63) == 0 && std::chrono::steady_clock::now() - start > kSearchSliceBudget) {
+        // A regex row can take milliseconds, so the clock is read after each.
+        if (((++scanned & 63) == 0 || m_searchOptions.regex)
+            && std::chrono::steady_clock::now() - start > kSearchSliceBudget) {
             break;
         }
     }
@@ -2701,7 +2708,7 @@ void TerminalWidget::searchSlice()
 void TerminalWidget::searchNewOutput()
 {
     // While history is still being sliced, the slice reaches the new lines.
-    if (!m_searchRe.isValid() || m_searchScanning) return;
+    if (!searchActive() || m_searchScanning) return;
     const qint64 historyEnd = m_linesDropped + m_scrollback.size();
     // History can shrink (a taller window pops lines back): clamp.
     const qint64 from = std::clamp(m_searchedHistoryEnd, m_linesDropped, historyEnd);
@@ -2730,9 +2737,18 @@ void TerminalWidget::searchNewOutput()
     }
     QString text;
     std::vector<int> colOf;
+    const auto passStart = std::chrono::steady_clock::now();
+    const auto overPassLimit = [this, passStart]() {
+        return m_searchOptions.regex && std::chrono::steady_clock::now() - passStart > kRegexPassLimit;
+    };
     for (qint64 id = from; id < historyEnd; ++id) {
-        if (m_scrollback.lineAt(absoluteRowForLineId(id), m_cols, m_rowCells.data())) {
-            searchTerminalRow(m_searchRe, id, m_rowCells.data(), m_cols, m_matches, text, colOf, m_searchSkipBlank);
+        if (m_scrollback.lineAt(absoluteRowForLineId(id), m_cols, m_rowCells.data())
+            && !searchRowCells(id, text, colOf)) {
+            return;
+        }
+        if (overPassLimit()) {
+            abandonSlowSearch();
+            return;
         }
     }
     m_searchedHistoryEnd = historyEnd;
@@ -2742,9 +2758,12 @@ void TerminalWidget::searchNewOutput()
         for (pos.col = 0; pos.col < m_cols && ok; ++pos.col) {
             ok = vterm_screen_get_cell(m_screen, pos, &m_rowCells[static_cast<std::size_t>(pos.col)]) != 0;
         }
-        if (ok) {
-            searchTerminalRow(m_searchRe, historyEnd + pos.row, m_rowCells.data(), m_cols, m_matches, text, colOf,
-                              m_searchSkipBlank);
+        if (ok && !searchRowCells(historyEnd + pos.row, text, colOf)) {
+            return;
+        }
+        if (overPassLimit()) {
+            abandonSlowSearch();
+            return;
         }
     }
 
@@ -2761,6 +2780,35 @@ void TerminalWidget::searchNewOutput()
         m_activeMatch = static_cast<int>(m_matches.size()) - 1;
     }
     if (m_searchBar) m_searchBar->setCount(m_activeMatch, static_cast<int>(m_matches.size()));
+    syncSearchMarks();
+    markAllDirty();
+    scheduleFrame();
+}
+
+bool TerminalWidget::searchRowCells(qint64 line, QString &text, std::vector<int> &colOf)
+{
+    if (!m_searchOptions.regex) {
+        // Literal patterns are escaped: linear time, nothing to watch.
+        searchTerminalRow(m_searchRe, line, m_rowCells.data(), m_cols, m_matches, text, colOf, m_searchSkipBlank);
+        return true;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    searchTerminalRow(m_searchRe, line, m_rowCells.data(), m_cols, m_matches, text, colOf, m_searchSkipBlank);
+    if (std::chrono::steady_clock::now() - start <= kRegexRowLimit) return true;
+    abandonSlowSearch();
+    return false;
+}
+
+void TerminalWidget::abandonSlowSearch()
+{
+    m_searchScanning = false;
+    m_searchSlice->stop();
+    m_searchFollow->stop();
+    m_matches.clear();
+    m_activeMatch = -1;
+    // An invalid expression also stops the incremental search on new output.
+    m_searchRe = QRegularExpression();
+    if (m_searchBar) m_searchBar->setTooSlow();
     syncSearchMarks();
     markAllDirty();
     scheduleFrame();

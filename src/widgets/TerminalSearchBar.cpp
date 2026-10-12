@@ -138,6 +138,7 @@ void TerminalSearchBar::focusQuery()
 
 void TerminalSearchBar::setCount(int active, int total)
 {
+    m_count->setToolTip(QString());
     if (m_edit->text().isEmpty()) {
         m_count->clear();
     } else if (total == 0) {
@@ -153,7 +154,16 @@ void TerminalSearchBar::setInvalid(bool invalid)
 {
     if (invalid) {
         m_count->setText(tr("Invalid"));
+        m_count->setToolTip(QString());
     }
+}
+
+void TerminalSearchBar::setTooSlow()
+{
+    m_count->setText(tr("Too slow"));
+    m_count->setToolTip(tr("This regular expression takes too long on this output. Simplify it to search."));
+    m_prev->setEnabled(false);
+    m_next->setEnabled(false);
 }
 
 bool TerminalSearchBar::eventFilter(QObject *watched, QEvent *event)
