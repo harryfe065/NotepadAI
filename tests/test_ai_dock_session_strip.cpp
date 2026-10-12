@@ -169,9 +169,18 @@ void TestAiDockSessionStrip::size_matchesHint_buttonsDoNotShrink()
     QCOMPARE(strip.size().width(), strip.sizeHint().width());
 }
 
+namespace {
+// tabSizeHint is protected in QTabBar.
+class ProbeTabBar : public QTabBar
+{
+public:
+    using QTabBar::tabSizeHint;
+};
+} // namespace
+
 void TestAiDockSessionStrip::tabBar_tabSizeHint_includesFullStripWidth()
 {
-    QTabBar bar;
+    ProbeTabBar bar;
     bar.addTab(QStringLiteral("notepad-ade"));
     const int textOnly = bar.tabSizeHint(0).width();
 

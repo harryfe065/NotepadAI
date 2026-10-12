@@ -216,8 +216,10 @@ void TestEditMiniAppsDialog::advancedOff_persistsTimeoutAndRestoresOnRecheck()
 void TestEditMiniAppsDialog::legacyJson_withoutFlag_treatsCustomTimeoutAsEnabled()
 {
     ApplicationSettings settings;
+    // Not a raw string: moc's preprocessor reads the `//` in a raw-string URL
+    // inside a macro as a comment and fails ("missing ')' in macro usage").
     settings.setMiniAppsGlobalJson(QStringLiteral(
-        R"([{"id":"a","name":"Old","url":"https://example.com","healthTimeoutMs":120000}])"));
+        "[{\"id\":\"a\",\"name\":\"Old\",\"url\":\"https://example.com\",\"healthTimeoutMs\":120000}]"));
     MiniAppRegistry registry(&settings);
     const QList<MiniAppDefinition> apps = registry.globalApps();
     QCOMPARE(apps.size(), 1);
