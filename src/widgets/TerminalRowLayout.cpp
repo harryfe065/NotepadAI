@@ -185,7 +185,7 @@ void layoutTerminalRow(const VTermScreenCell *cells, int cols,
                     if (out.runs.empty() || out.runs.back().fg != textFg || out.runs.back().font != font) {
                         out.runs.push_back({static_cast<int>(out.glyphs.size()), 0, textFg, font});
                     }
-                    out.glyphs.push_back({col, ch});
+                    out.glyphs.push_back({col, ch, width});
                     ++out.runs.back().glyphCount;
                 }
             }

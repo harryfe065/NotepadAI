@@ -62,7 +62,7 @@ enum TerminalFontStyle : uint8_t {
 struct TerminalRowLayout
 {
     struct Background { int col; int span; QRgb color; };
-    struct Glyph { int col; char32_t cp; };
+    struct Glyph { int col; char32_t cp; int width = 1; };
     struct Run { int firstGlyph; int glyphCount; QRgb fg; uint8_t font; };
     // Multi-codepoint cells (combining marks, ZWJ sequences); drawn shaped.
     struct Cluster { int col; int width; QRgb fg; uint8_t font; char32_t chars[VTERM_MAX_CHARS_PER_CELL]; };

@@ -127,6 +127,21 @@ target_sources(test_terminal_process_stats PRIVATE
 add_test(NAME TerminalProcessStats COMMAND test_terminal_process_stats)
 
 
+# --- TerminalGlyphCache tiles: same pixels as drawing each glyph through Qt ---
+qt_add_executable(test_terminal_glyph_tiles test_terminal_glyph_tiles.cpp)
+target_include_directories(test_terminal_glyph_tiles PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_terminal_glyph_tiles PRIVATE Qt6::Core Qt6::Gui Qt6::Test libvterm)
+target_sources(test_terminal_glyph_tiles PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalGlyphCache.h
+)
+add_test(NAME TerminalGlyphTiles COMMAND test_terminal_glyph_tiles)
+set_tests_properties(TerminalGlyphTiles PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+
 # --- terminalTabTitle: cwd as the ADS tab label, never the PTY process image ---
 qt_add_executable(test_terminal_tab_title test_terminal_tab_title.cpp)
 target_include_directories(test_terminal_tab_title PRIVATE ${CMAKE_SOURCE_DIR}/src)

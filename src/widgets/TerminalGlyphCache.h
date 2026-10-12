@@ -54,7 +54,91 @@ public:
     void drawCluster(QPainter &p, const TerminalRowLayout::Cluster &cluster,
                      qreal originX, qreal baselineY, qreal cellW);
 
+    // --- Tiles -------------------------------------------------------------
+    // Qt blends every glyph through its raster engine (~1 us each at 100%,
+    // 6-10 us through a scaled painter), so a full 200x60 frame cost 40-90 ms.
+    // Instead each (glyph, font, colour, background) is drawn by Qt once onto
+    // a tile and from then on copied into the frame (~50 ns per glyph).
+    // Tiles are rendered in device pixels with raw fonts sized for the
+    // device, through unscaled painters: Qt's cached glyph path at any scale.
+    //
+    // A glyph that stays inside its cell gets an opaque cell-sized tile and
+    // is copied as is: pixel-identical to Qt. One that reaches outside (italic
+    // overhang, wide fallback glyphs) gets an extended tile covering the cells
+    // it reaches, merged in: pixels it leaves at the background are skipped,
+    // pixels drawn onto untouched background are copied (identical to Qt);
+    // only where two glyphs overlap is the colour blended by estimate.
+
+    // An opaque RGB32 frame in device pixels.
+    struct Frame {
+        uint32_t *bits = nullptr;
+        qsizetype stride = 0;   // pixels per scanline
+        int width = 0;
+        int height = 0;
+    };
+    // Cell size and baseline in device pixels; tiles are dropped when any of
+    // them changes.
+    void setTileGeometry(int cellW, int cellH, qreal baseline, qreal dpr);
+    // Cells of the row being painted, and of the row below, that a glyph
+    // already reached from outside: an opaque tile copied there would erase
+    // those pixels, so glyphs in them are merged instead.
+    struct Touched {
+        uint8_t *row = nullptr;    // cols + 2 entries, index = col + 1
+        uint8_t *below = nullptr;
+        int cols = 0;
+        bool any(int from, int to) const;
+        void mark(int from, int to);
+        void markBelow(int from, int to);
+    };
+    // Call once per paint: bounds the tiles created in one frame, so output
+    // with ever-changing colours (rainbow text) degrades to drawing through Qt
+    // instead of rasterising thousands of tiles.
+    void beginFrame() { m_tileBudget = kTileBudgetPerFrame; }
+    // Draws one run into `frame` at device position (x0 + col * cellW, y),
+    // in column order; `cellBg[col]` is each cell's background.
+    // `devicePainter` paints the same frame unscaled; it draws the glyphs
+    // left over once the frame's tile budget is spent.
+    void blitRun(QPainter &devicePainter, const Frame &frame, const TerminalRowLayout::Glyph *glyphs,
+                 int count, uint8_t style, QRgb fg, const QRgb *cellBg, Touched &touched, int x0, int y);
+    // Frees every tile (hidden terminals keep no pixels).
+    void releaseTiles();
+
 private:
+    static constexpr int kTileBudgetPerFrame = 384;
+    static constexpr std::size_t kMaxTilePixels = (4u << 20) / sizeof(uint32_t);   // 4 MiB
+
+    struct TileKey {
+        quint64 glyph;   // glyph << 24 | font slot << 8 | cell width
+        quint64 colors;  // fg << 32 | bg
+        bool operator==(const TileKey &o) const { return glyph == o.glyph && colors == o.colors; }
+    };
+    friend size_t qHash(const TileKey &k, size_t seed) { return qHashMulti(seed, k.glyph, k.colors); }
+    // Whole cells a glyph's pixels (antialiasing included) reach beyond its
+    // own.
+    struct Spill {
+        int8_t left = 0;
+        int8_t right = 0;
+        bool up = false;
+        bool down = false;
+        bool any() const { return left || right || up || down; }
+    };
+    // A tile's pixels in m_tilePixels; `x`/`y` place its top-left corner
+    // relative to the cell (negative when it reaches left of or above it).
+    struct Tile {
+        uint32_t offset = 0;
+        int16_t x = 0;
+        int16_t y = 0;
+        int16_t width = 0;
+        int16_t height = 0;
+        bool extended = false;
+    };
+
+    Spill spillFor(quint32 glyph, uint16_t font, int width);
+    bool makeTile(const TileKey &key, quint32 glyph, uint16_t font, int width, QRgb fg, QRgb bg, Tile *out);
+    static void copyTile(const Frame &frame, const uint32_t *src, const Tile &tile, int x, int y);
+    static void mergeTile(const Frame &frame, const uint32_t *src, const Tile &tile, int x, int y,
+                          QRgb fg, QRgb bg);
+
     struct Ref {
         uint32_t glyph = 0;
         uint16_t font = 0;
@@ -64,10 +148,12 @@ private:
     Ref lookup(char32_t cp, uint8_t style);
     Ref resolve(char32_t cp, uint8_t style);
     uint16_t slotFor(const QRawFont &raw);
-    void flush(QPainter &p, uint16_t font, qreal originX, qreal baselineY);
+    void flush(QPainter &p, const QRawFont &font, qreal originX, qreal baselineY);
+    const QRawFont &deviceFont(uint16_t slot);
 
     QFont m_fonts[4];
     std::vector<QRawFont> m_raw;   // [0..3] primary variants, then fallbacks
+    std::vector<QRawFont> m_rawDevice;   // m_raw at the tile scale, built on demand
     Ref m_ascii[4][128] = {};
     QHash<quint64, Ref> m_map;
     // Multi-codepoint clusters are shaped once (QTextLayout) and replayed.
@@ -79,6 +165,16 @@ private:
 
     std::vector<quint32> m_indexes;
     std::vector<QPointF> m_positions;
+
+    QHash<TileKey, Tile> m_tiles;
+    std::vector<uint32_t> m_tilePixels;
+    QHash<quint64, Spill> m_spill;
+    int m_tileCellW = 0;
+    int m_tileCellH = 0;
+    qreal m_tileBaseline = 0;
+    int m_tileBaselineDevice = 0;
+    qreal m_tileDpr = 1;
+    int m_tileBudget = kTileBudgetPerFrame;
 };
 
 #endif

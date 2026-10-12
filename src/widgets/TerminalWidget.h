@@ -24,6 +24,7 @@
 #include "TerminalColorScheme.h"
 #include "TerminalContrast.h"
 #include "TerminalGlyphCache.h"
+#include <QImage>
 #include "TerminalRowLayout.h"
 #include "TerminalSearch.h"
 #include "TerminalTaskLauncher.h"
@@ -274,7 +275,7 @@ private:
     void syncScrollbar();
 
     bool fetchViewportRow(int viewportRow, VTermScreenCell *out);
-    void paintRow(QPainter &p, int viewportRow);
+    void paintRow(QPainter &p, QPainter &devicePainter, const TerminalGlyphCache::Frame &frame, int viewportRow);
     void paintDecorations(QPainter &p, qreal y);
     void paintCursor(QPainter &p);
     void paintPreedit(QPainter &p);
@@ -422,6 +423,12 @@ private:
 
     std::vector<VTermScreenCell> m_rowCells;
     TerminalRowLayout m_layout;
+    // Paint target: rows render here, then one blit to the viewport. Freed
+    // (with the glyph tiles) while the terminal is hidden.
+    QImage m_frame;
+    std::vector<QRgb> m_rowBg;
+    std::vector<uint8_t> m_touchedRow;
+    std::vector<uint8_t> m_touchedBelow;
 };
 
 #endif

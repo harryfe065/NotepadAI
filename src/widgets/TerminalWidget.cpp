@@ -1023,7 +1023,11 @@ void TerminalWidget::recomputeMetrics()
     const QFontMetricsF fm(m_font);
     const qreal advance = fm.horizontalAdvance(QLatin1Char('M'));
     const qreal fontHeight = fm.ascent() + fm.descent();
-    m_cellW = std::max<qreal>(1.0, std::round(advance * m_dpr)) / m_dpr;
+    // Whole device pixels, rounded up: at fractional scales the font's
+    // advance (11.42 px at 150%) is narrower than its glyphs' ink (11.64 px),
+    // so rounding down would make neighbouring glyphs overlap and every glyph
+    // a slow untiled draw. The 1e-3 keeps exact advances (8.000 at 100%).
+    m_cellW = std::max<qreal>(1.0, std::ceil(advance * m_dpr - 1e-3)) / m_dpr;
     m_cellH = std::max<qreal>(1.0, std::round(fontHeight * m_lineHeight * m_dpr)) / m_dpr;
     // Extra line height is split evenly above and below the glyphs.
     m_baseline = snapTo(fm.ascent() + (m_cellH - fontHeight) / 2, m_dpr);
@@ -1186,15 +1190,16 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
 
     QPainter p(viewport());
     const QRect bounds = event->rect();
-    p.fillRect(bounds, QColor::fromRgb(m_palette.defaultBg));
 
     if (!m_errorMessage.isEmpty() && (!m_pty || m_pty->pid() == 0)) {
+        p.fillRect(bounds, QColor::fromRgb(m_palette.defaultBg));
         p.setPen(QColor::fromRgb(m_palette.defaultFg));
         p.setFont(m_font);
         p.drawText(viewport()->rect().adjusted(8, 8, -8, -8), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, m_errorMessage);
         return;
     }
     if (!m_screen) {
+        p.fillRect(bounds, QColor::fromRgb(m_palette.defaultBg));
         return;
     }
 
@@ -1202,24 +1207,65 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         m_rowCells.resize(static_cast<std::size_t>(m_cols));
     }
 
-    const qreal top = originY();
-    const int first = std::max(0, static_cast<int>(std::floor((bounds.top() - top) / m_cellH)));
-    const int last = std::min(m_rows - 1, static_cast<int>(std::floor((bounds.bottom() - top) / m_cellH)));
-    const QRegion &region = event->region();
-    const int width = viewport()->width();
-    for (int row = first; row <= last; ++row) {
-        const QRect rowRect(0, static_cast<int>(std::floor(rowTop(row))), width,
-                            static_cast<int>(std::ceil(m_cellH)) + 1);
-        if (region.intersects(rowRect)) {
-            paintRow(p, row);
+    // Rows are rendered into an opaque frame in device pixels (tiles are
+    // copied straight into its memory), then the frame is blitted once.
+    const QSize deviceSize(static_cast<int>(std::ceil(viewport()->width() * m_dpr)),
+                           static_cast<int>(std::ceil(viewport()->height() * m_dpr)));
+    if (m_frame.size() != deviceSize || m_frame.devicePixelRatio() != m_dpr) {
+        m_frame = QImage(deviceSize, QImage::Format_RGB32);
+        m_frame.setDevicePixelRatio(m_dpr);
+    }
+    m_glyphs.setTileGeometry(static_cast<int>(std::lround(m_cellW * m_dpr)),
+                             static_cast<int>(std::lround(m_cellH * m_dpr)), m_baseline, m_dpr);
+    m_glyphs.beginFrame();
+    TerminalGlyphCache::Frame frame;
+    frame.bits = reinterpret_cast<uint32_t *>(m_frame.bits());
+    frame.stride = m_frame.bytesPerLine() / 4;
+    frame.width = m_frame.width();
+    frame.height = m_frame.height();
+    {
+        QPainter fp(&m_frame);
+        // The same pixels without the scale: glyphs are drawn in device
+        // pixels, which keeps Qt on its cached glyph path at every scale.
+        QImage deviceView(m_frame.bits(), m_frame.width(), m_frame.height(), m_frame.bytesPerLine(),
+                          QImage::Format_RGB32);
+        QPainter dp(&deviceView);
+        fp.fillRect(bounds, QColor::fromRgb(m_palette.defaultBg));
+
+        const qreal top = originY();
+        const int first = std::max(0, static_cast<int>(std::floor((bounds.top() - top) / m_cellH)));
+        const int last = std::min(m_rows - 1, static_cast<int>(std::floor((bounds.bottom() - top) / m_cellH)));
+        const QRegion &region = event->region();
+        const int width = viewport()->width();
+        const auto touchedSize = static_cast<std::size_t>(m_cols) + 2;
+        m_touchedRow.assign(touchedSize, 0);
+        m_touchedBelow.assign(touchedSize, 0);
+        int previous = -2;
+        for (int row = first; row <= last; ++row) {
+            const QRect rowRect(0, static_cast<int>(std::floor(rowTop(row))), width,
+                                static_cast<int>(std::ceil(m_cellH)) + 1);
+            if (!region.intersects(rowRect)) continue;
+            // What Qt drew into this row from the row above, if that one was
+            // painted in this pass.
+            if (row == previous + 1) {
+                std::swap(m_touchedRow, m_touchedBelow);
+            } else {
+                std::fill(m_touchedRow.begin(), m_touchedRow.end(), uint8_t(0));
+            }
+            std::fill(m_touchedBelow.begin(), m_touchedBelow.end(), uint8_t(0));
+            paintRow(fp, dp, frame, row);
+            previous = row;
         }
     }
+    // Same device scale on both sides: a clipped 1:1 copy.
+    p.drawImage(QPointF(0, 0), m_frame);
 
     paintCursor(p);
     paintPreedit(p);
 }
 
-void TerminalWidget::paintRow(QPainter &p, int viewportRow)
+void TerminalWidget::paintRow(QPainter &p, QPainter &devicePainter, const TerminalGlyphCache::Frame &frame,
+                              int viewportRow)
 {
     if (!fetchViewportRow(viewportRow, m_rowCells.data())) return;
 
@@ -1246,20 +1292,36 @@ void TerminalWidget::paintRow(QPainter &p, int viewportRow)
                       m_rowHighlights.data(), highlightCount);
 
     const qreal y = rowTop(viewportRow);
+    const int cellW = static_cast<int>(std::lround(m_cellW * m_dpr));
+    const int cellH = static_cast<int>(std::lround(m_cellH * m_dpr));
+    const int x0 = static_cast<int>(std::lround(m_padX * m_dpr));
+    const int y0 = static_cast<int>(std::lround(y * m_dpr));
+    // Per-cell background: tiles are pre-blended onto it.
+    m_rowBg.assign(static_cast<std::size_t>(m_cols) + 1, m_palette.defaultBg);
     for (const auto &bg : m_layout.backgrounds) {
-        p.fillRect(QRectF(columnX(bg.col), y, bg.span * m_cellW, m_cellH), QColor::fromRgb(bg.color));
+        std::fill_n(m_rowBg.begin() + bg.col, std::min(bg.span, m_cols - bg.col), bg.color);
+        const int x = x0 + bg.col * cellW;
+        const int right = std::min(frame.width, x + bg.span * cellW);
+        const int bottom = std::min(frame.height, y0 + cellH);
+        for (int yy = std::max(0, y0); yy < bottom; ++yy) {
+            uint32_t *line = frame.bits + static_cast<qsizetype>(yy) * frame.stride;
+            std::fill(line + std::max(0, x), line + std::max(0, right), 0xFF000000u | bg.color);
+        }
     }
     for (const auto &special : m_layout.specials) {
         TerminalBoxDrawing::paint(p, QRectF(columnX(special.col), y, special.width * m_cellW, m_cellH),
                                   special.cp, QColor::fromRgb(special.fg), m_lineWidth, m_dpr);
     }
     const qreal baseline = y + m_baseline;
+    TerminalGlyphCache::Touched touched{m_touchedRow.data(), m_touchedBelow.data(), m_cols};
     for (const auto &run : m_layout.runs) {
-        m_glyphs.drawRun(p, m_layout.glyphs.data() + run.firstGlyph, run.glyphCount,
-                         run.font, run.fg, m_padX, baseline, m_cellW);
+        m_glyphs.blitRun(devicePainter, frame, m_layout.glyphs.data() + run.firstGlyph, run.glyphCount,
+                         run.font, run.fg, m_rowBg.data(), touched, x0, y0);
     }
     for (const auto &cluster : m_layout.clusters) {
         m_glyphs.drawCluster(p, cluster, m_padX, baseline, m_cellW);
+        // Shaped clusters may reach into the row below; keep its tiles off them.
+        touched.markBelow(cluster.col - 1, cluster.col + cluster.width + 1);
     }
     paintDecorations(p, y);
 
@@ -1557,6 +1619,11 @@ bool TerminalWidget::appCommand(Qt::KeyboardModifiers mods) const
 
 bool TerminalWidget::event(QEvent *event)
 {
+    if (event->type() == QEvent::Hide) {
+        // A hidden terminal keeps no pixels; the first paint rebuilds them.
+        m_frame = QImage();
+        m_glyphs.releaseTiles();
+    }
     if (event->type() == QEvent::ShortcutOverride && m_vt && m_pty) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         const int key = ke->key();
