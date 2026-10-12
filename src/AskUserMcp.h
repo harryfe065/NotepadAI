@@ -22,9 +22,9 @@ class AskUserMcp
 public:
     static constexpr const char *kCliFlag = "--ask-user-mcp";
     static constexpr const char *kShownGuide =
-        "Form shown to the user. End your turn now: do not call another tool and do not "
-        "continue the work. The answers arrive as the next user message, beginning with "
-        "[ask_user answers].";
+        "Form shown to the user. End your turn now: do not restate the questions as text, do "
+        "not call another tool and do not continue the work. The answers arrive as the next "
+        "user message, beginning with [ask_user answers].";
 
     static int run();
     // One request or notification. Empty object = no response.

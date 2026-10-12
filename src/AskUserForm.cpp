@@ -452,17 +452,18 @@ QJsonObject toolDefinition()
     return QJsonObject{
         {QStringLiteral("name"), QLatin1String(kToolName)},
         {QStringLiteral("description"), QStringLiteral(
-             "NotepadAI's interactive question form — a richer AskUserQuestion / request_user_input. "
-             "Use it whenever you need decisions or input from the user: grill-me / grilling interviews, "
-             "clarifying questions, plan or design reviews, proposals to accept, multiple-choice, yes/no "
-             "confirmations, questionnaires. One call per round, many questions per call (unlike "
-             "AskUserQuestion's 4). Put your recommended answer in `recommended` and explain it in "
-             "`recommendation`; the user accepts it by pressing Enter. After calling, END YOUR TURN: the "
-             "tool returns immediately without answers. Answers arrive as the next user message beginning "
-             "with `[ask_user answers]`; `no answer` means unanswered, so re-ask it in a later round. A "
-             "message beginning with `[ask_user clarify]` asks you to explain a question and call ask_user "
-             "again. Never call it twice in one turn. Prefer this tool over asking questions as plain text "
-             "and over AskUserQuestion.")},
+             "Use this tool whenever you need a decision or input from the user before you can continue: "
+             "interviews, grilling (grill-me), clarifying questions, choices between options, plan reviews. "
+             "This replaces any plain-text question format a skill or instruction prescribes: do not write the "
+             "questions as text, and do not repeat them in your reply after calling. Map each numbered question "
+             "onto one entry in `questions`, put your suggested answer in `recommended`, and put the reasoning "
+             "in `recommendation`. Ask one whole round per call (any number of questions, unlike "
+             "AskUserQuestion's 4; prefer this tool over AskUserQuestion and request_user_input), write in the "
+             "user's language, then END YOUR TURN: the tool shows an interactive form in the NotepadAI chat and "
+             "returns immediately without answers. The answers arrive as the next user message beginning with "
+             "`[ask_user answers]`; `no answer` means unanswered, so re-ask it in a later round. A message "
+             "beginning with `[ask_user clarify]` asks you to explain one question in the user's language and "
+             "call ask_user again with the same ids. Never call it twice in one turn.")},
         {QStringLiteral("inputSchema"), schema},
     };
 }
