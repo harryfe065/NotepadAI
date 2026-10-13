@@ -33,6 +33,7 @@
 
 #include "TerminalTaskRegistry.h"
 #include "TerminalProcessStats.h"
+#include "WorkspaceTaskScanner.h"
 
 
 class NotepadNextApplication;
@@ -65,12 +66,18 @@ public:
     void setTasks(const QString &workspacePath, const QList<TerminalTask> &tasks);
 
 public slots:
-    void openTerminal(const QString &cwd);
+    // Both return the new terminal, or nullptr when it could not be opened.
+    TerminalDock *openTerminal(const QString &cwd);
     // Remote terminal: PTY over an SSH channel on `ctx` (captured at spawn into
     // the dock). `remoteCwd` is a POSIX path on the host; `shell` empty → the
     // remote default ($SHELL). No local PTY probe (the backend is remote).
-    void openRemoteTerminal(remote::ExecutionContext *ctx, const QString &remoteCwd,
-                            const QString &shell = QString());
+    TerminalDock *openRemoteTerminal(remote::ExecutionContext *ctx, const QString &remoteCwd,
+                                     const QString &shell = QString());
+    // New terminal (over SSH when `ctx` is remote, else local) with `text`
+    // typed at the prompt once the shell first prints, not entered: tasks
+    // whose arguments the user still has to supply.
+    TerminalDock *openTerminalWithInput(remote::ExecutionContext *ctx, const QString &cwd,
+                                        const QString &text);
     void openTask(const QString &workspaceCwd, const TerminalTask &task);
     // Remote task execution: run `task` on the remote host via an SSH PTY channel.
     // `ctx` must be Connected. `remoteCwd` is the POSIX workspace root on the host.
@@ -145,6 +152,9 @@ private:
     void updateEmptyPanel();
     void hideEmptyPanel();
     void applyEmptyPanelColors();
+    // Rescans `workspaceRoot`'s task files on a worker; the result lands in
+    // m_discoveredTasks[key] and, when it changed, in the panel.
+    void startTaskScan(const QString &key, const QString &workspaceRoot);
     void refreshProcessStats();
     bool syncStatsPoll();
 
@@ -161,6 +171,10 @@ private:
     QSet<QString> m_emptySuppressed;
     QString m_emptyPanelKey;
     bool m_emptyPanelDirty = true;
+    // Last discovered tasks per workspaceKey, for open workspaces only
+    // (dropped in closeTerminalsForWorkspace; never persisted).
+    QHash<QString, QList<WorkspaceTaskGroup>> m_discoveredTasks;
+    quint64 m_taskScanGeneration = 0;
     QTimer *m_statsTimer = nullptr;
     QVector<TerminalProcessStats::ProcessSample> m_processSnapshot;
     QVector<TerminalProcessStats::ProcessorTick> m_processorNow;

@@ -47,6 +47,9 @@ public:
     void setContent(const QString &workspaceDisplayPath, bool remote,
                     const QList<TerminalTask> &configuredTasks,
                     const QList<WorkspaceTaskGroup> &discoveredGroups);
+    // Replaces only the discovered task groups (a worker's rescan landing);
+    // no-op when they did not change. Private just recipes are not listed.
+    void setDiscoveredGroups(QList<WorkspaceTaskGroup> groups);
     // Terminal colour scheme colours (background/foreground/selection), so
     // the panel reads as the terminal surface it reserves space for.
     void setSchemeColors(const QColor &background, const QColor &foreground,
@@ -60,6 +63,9 @@ signals:
 
 private:
     void rebuild();
+    // One style sheet on the panel for every row and button (selected by
+    // object name / property), so a rebuild never parses per-widget sheets.
+    void applyStyleSheet();
     QWidget *makeTaskRow(const QString &name, const QString &command, const QString &source);
     void clearContent();
 

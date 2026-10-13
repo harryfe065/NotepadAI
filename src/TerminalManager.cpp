@@ -58,9 +58,11 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
+#include <QFutureWatcher>
 #include <QIcon>
 #include <QMenu>
 #include <QMessageBox>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QScopedPointer>
 #include <QStandardPaths>
 #include <QCoreApplication>
@@ -136,7 +138,7 @@ QString TerminalManager::resolveShellCommand() const
 #endif
 }
 
-void TerminalManager::openTerminal(const QString &cwd)
+TerminalDock *TerminalManager::openTerminal(const QString &cwd)
 {
     // Fail fast if the platform PTY backend is unavailable (e.g. Windows
     // pre-1809 without ConPTY). Probing here avoids creating an empty dock
@@ -155,7 +157,7 @@ void TerminalManager::openTerminal(const QString &cwd)
                 tr("Terminal"),
                 tr("Cannot open terminal: the platform PTY backend is unavailable."));
 #endif
-            return;
+            return nullptr;
         }
     }
 
@@ -173,7 +175,7 @@ void TerminalManager::openTerminal(const QString &cwd)
             m_mainWindow,
             tr("Terminal"),
             tr("Cannot launch terminal: shell '%1' was not found. Set Terminal/ShellCommand in Preferences.").arg(configured));
-        return;
+        return nullptr;
     }
 
     auto *dock = new TerminalDock(shell, cwd, m_mainWindow);
@@ -182,13 +184,14 @@ void TerminalManager::openTerminal(const QString &cwd)
 
     configureDock(dock);
     placeInEditor(dock);
+    return dock;
 }
 
-void TerminalManager::openRemoteTerminal(remote::ExecutionContext *ctx,
-                                         const QString &remoteCwd, const QString &shell)
+TerminalDock *TerminalManager::openRemoteTerminal(remote::ExecutionContext *ctx,
+                                                  const QString &remoteCwd, const QString &shell)
 {
     if (!ctx) {
-        return;
+        return nullptr;
     }
     // No local PTY probe — the backend is an SSH channel on `ctx`. Pass an empty
     // shell through as-is so SshPtyProcess defaults to the remote $SHELL.
@@ -198,6 +201,22 @@ void TerminalManager::openRemoteTerminal(remote::ExecutionContext *ctx,
 
     configureDock(dock);
     placeInEditor(dock);
+    return dock;
+}
+
+TerminalDock *TerminalManager::openTerminalWithInput(remote::ExecutionContext *ctx,
+                                                     const QString &cwd, const QString &text)
+{
+    TerminalDock *dock = ctx && ctx->isRemote() ? openRemoteTerminal(ctx, cwd)
+                                                : openTerminal(cwd);
+    if (!dock)
+        return nullptr;
+    if (TerminalWidget *w = dock->terminalWidget()) {
+        const QByteArray bytes = text.toUtf8();
+        connect(w, &TerminalWidget::firstOutputReceived, w,
+                [w, bytes]() { w->writeToPty(bytes); }, Qt::SingleShotConnection);
+    }
+    return dock;
 }
 
 static QStringList parseEnvText(const QString &envText)
@@ -1146,7 +1165,10 @@ void TerminalManager::closeTerminalsForWorkspace(const QString &workspaceRoot,
 
     // The workspace is going away: its "panel closed" suppression dies with
     // it, so re-opening the workspace shows the panel again.
-    m_emptySuppressed.remove(TerminalEmptyPanelPolicy::workspaceKey(workspaceRoot));
+    const QString emptyKey = TerminalEmptyPanelPolicy::workspaceKey(workspaceRoot);
+    m_emptySuppressed.remove(emptyKey);
+    m_discoveredTasks.remove(emptyKey);
+    ++m_taskScanGeneration; // an in-flight scan must not re-cache it
     m_emptyPanelDirty = true;
 
     QStringList cwds;
@@ -1257,17 +1279,9 @@ void TerminalManager::ensureEmptyPanel()
         if (cwd.isEmpty())
             return;
         if (task.hasRequiredParams) {
-            // Like the task gutter: open a plain terminal with the command
-            // typed but not entered, so the user supplies the arguments.
-            const int before = m_docks.size();
-            openTerminal(cwd);
-            if (m_docks.size() > before && !m_docks.last().isNull()) {
-                if (TerminalWidget *w = m_docks.last()->terminalWidget()) {
-                    const QByteArray cmd = (task.command + QLatin1Char(' ')).toUtf8();
-                    connect(w, &TerminalWidget::firstOutputReceived, w,
-                            [w, cmd]() { w->writeToPty(cmd); }, Qt::SingleShotConnection);
-                }
-            }
+            // Like the task gutter: the command typed but not entered, so the
+            // user supplies the arguments.
+            openTerminalWithInput(nullptr, cwd, task.command + QLatin1Char(' '));
             return;
         }
         TerminalTask t;
@@ -1334,8 +1348,11 @@ void TerminalManager::updateEmptyPanel()
     if (!m_emptyPanel || !m_emptyDock)
         return;
 
-    // Rescan on every (re)show and on workspace switch: four small root
-    // files, so the lists are always fresh after edits elsewhere.
+    // Refresh on every (re)show and on workspace switch, so the lists are
+    // fresh after edits elsewhere. Discovered tasks are stale-while-
+    // revalidate: the last scan of this workspace shows at once and a
+    // worker rescans the root files (file I/O never runs on the UI thread —
+    // a workspace on a dead network share would freeze the window).
     if (m_emptyDock->isClosed())
         m_emptyPanelDirty = true;
     if (m_emptyPanelDirty || m_emptyPanelKey != key) {
@@ -1344,14 +1361,36 @@ void TerminalManager::updateEmptyPanel()
         m_emptyPanel->setContent(
             remoteWs && ssh.valid ? ssh.remotePath : m_filterActiveRoot, remoteWs,
             remoteWs ? QList<TerminalTask>() : tasksForWorkspace(m_filterActiveRoot),
-            remoteWs ? QList<WorkspaceTaskGroup>()
-                     : WorkspaceTaskScanner::scanRoot(m_filterActiveRoot));
+            remoteWs ? QList<WorkspaceTaskGroup>() : m_discoveredTasks.value(key));
         m_emptyPanelKey = key;
         m_emptyPanelDirty = false;
+        if (!remoteWs)
+            startTaskScan(key, m_filterActiveRoot);
     }
 
     if (m_emptyDock->isClosed()) {
         m_emptyDock->toggleView(true);
         m_emptyDock->raise();
     }
+}
+
+void TerminalManager::startTaskScan(const QString &key, const QString &workspaceRoot)
+{
+    const quint64 generation = ++m_taskScanGeneration;
+    auto *watcher = new QFutureWatcher<QList<WorkspaceTaskGroup>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, key, generation]() {
+        watcher->deleteLater();
+        // A newer scan, or the workspace closing, supersedes this one.
+        if (generation != m_taskScanGeneration || m_shuttingDown)
+            return;
+        QList<WorkspaceTaskGroup> groups = watcher->result();
+        const auto cached = m_discoveredTasks.constFind(key);
+        if (cached != m_discoveredTasks.cend() && *cached == groups)
+            return;
+        m_discoveredTasks.insert(key, groups);
+        if (m_emptyPanel && m_emptyPanelKey == key)
+            m_emptyPanel->setDiscoveredGroups(std::move(groups));
+    });
+    watcher->setFuture(QtConcurrent::run(
+        [workspaceRoot]() { return WorkspaceTaskScanner::scanRoot(workspaceRoot); }));
 }

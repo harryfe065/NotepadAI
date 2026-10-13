@@ -28,7 +28,12 @@ struct WorkspaceTask
     QString name;
     QString command; // full command line, e.g. "npm run dev"
     bool hasRequiredParams = false; // just recipes with a param lacking a default
+    // just recipes hidden from `just --list`: `_name` or a `[private]`
+    // attribute. The empty panel skips them; the gutter still marks them.
+    bool isPrivate = false;
     int line = -1; // 0-based line in the source file (gutter markers), -1 if unknown
+
+    bool operator==(const WorkspaceTask &) const = default;
 };
 
 // All tasks from one source file, in declaration order.
@@ -36,6 +41,8 @@ struct WorkspaceTaskGroup
 {
     QString source; // display label: "Justfile" | "Makefile" | "package.json" | "deno.json"
     QList<WorkspaceTask> tasks;
+
+    bool operator==(const WorkspaceTaskGroup &) const = default;
 };
 
 // Parsers for the four task-file kinds plus the workspace-root scan the

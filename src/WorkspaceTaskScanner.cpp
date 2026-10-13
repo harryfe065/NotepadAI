@@ -21,12 +21,14 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 namespace {
 
@@ -54,10 +56,51 @@ private:
     int m_line = 0;
 };
 
+// Positions of the keys directly inside the JSON object whose '{' is at
+// `open`, first occurrence wins. One linear pass that tracks strings and
+// nesting, so a value equal to a key name ("lint": "test") or a key of a
+// nested object is never taken for the key. Keys are compared raw: one
+// written with escapes is simply not found (line -1).
+QHash<QString, qsizetype> objectKeyPositions(const QString &s, qsizetype open)
+{
+    QHash<QString, qsizetype> keys;
+    if (open < 0)
+        return keys;
+    const qsizetype n = s.size();
+    int depth = 0;
+    for (qsizetype i = open; i < n; ++i) {
+        const QChar c = s.at(i);
+        if (c == u'"') {
+            const qsizetype start = i;
+            for (++i; i < n && s.at(i) != u'"'; ++i) {
+                if (s.at(i) == u'\\')
+                    ++i;
+            }
+            if (depth != 1 || i >= n)
+                continue;
+            qsizetype j = i + 1;
+            while (j < n && s.at(j).isSpace())
+                ++j;
+            if (j < n && s.at(j) == u':') {
+                const QString key = s.mid(start + 1, i - start - 1);
+                if (!keys.contains(key))
+                    keys.insert(key, start);
+            }
+        } else if (c == u'{' || c == u'[') {
+            ++depth;
+        } else if (c == u'}' || c == u']') {
+            if (--depth <= 0)
+                break;
+        }
+    }
+    return keys;
+}
+
 // Tasks of a JSON `"block": { "name": "…" }` object (package.json "scripts",
 // deno.json "tasks") in declaration order. QJsonObject loses that order, so
-// entries are placed by the byte position of their quoted key after the
-// block's key — which is also their line for gutter markers.
+// entries are placed by the position of their key inside the block — which
+// is also their line for gutter markers. A key that cannot be placed sorts
+// last with line -1.
 QList<WorkspaceTask> parseJsonTaskBlock(const QByteArray &text, const char *blockKey,
                                         const std::function<QString(const QString &)> &commandFor)
 {
@@ -67,38 +110,72 @@ QList<WorkspaceTask> parseJsonTaskBlock(const QByteArray &text, const char *bloc
     if (doc.isNull() || !doc.isObject())
         return entries;
 
-    const QJsonObject block = doc.object().value(QLatin1String(blockKey)).toObject();
+    const QString blockName = QLatin1String(blockKey);
+    const QJsonObject block = doc.object().value(blockName).toObject();
     if (block.isEmpty())
         return entries;
 
     const QString content = QString::fromUtf8(text);
-    int searchFrom = content.indexOf(QLatin1Char('"') + QLatin1String(blockKey) + QLatin1Char('"'));
-    if (searchFrom < 0)
-        searchFrom = 0;
+    QHash<QString, qsizetype> taskKeys;
+    const QHash<QString, qsizetype> rootKeys =
+        objectKeyPositions(content, content.indexOf(QLatin1Char('{')));
+    if (const auto it = rootKeys.constFind(blockName); it != rootKeys.cend()) {
+        // Past `"block"`, then `:`, to the block's own '{'.
+        qsizetype j = *it + blockName.size() + 2;
+        while (j < content.size() && content.at(j) != u'{')
+            ++j;
+        taskKeys = objectKeyPositions(content, j < content.size() ? j : -1);
+    }
 
     struct Placed {
-        int pos;
+        qsizetype pos;
         WorkspaceTask task;
     };
     QList<Placed> placed;
     placed.reserve(block.size());
     for (auto it = block.begin(); it != block.end(); ++it) {
         const QString key = it.key();
-        const int pos = content.indexOf(QLatin1Char('"') + key + QLatin1Char('"'), searchFrom);
         WorkspaceTask task;
         task.name = key;
         task.command = commandFor(key);
-        placed.append({pos, task});
+        placed.append({taskKeys.value(key, -1), task});
     }
-    std::sort(placed.begin(), placed.end(),
-              [](const Placed &a, const Placed &b) { return a.pos < b.pos; });
+    const auto order = [](qsizetype pos) {
+        return pos < 0 ? std::numeric_limits<qsizetype>::max() : pos;
+    };
+    std::stable_sort(placed.begin(), placed.end(), [&order](const Placed &a, const Placed &b) {
+        return order(a.pos) < order(b.pos);
+    });
     LineCounter lines(content);
-    for (Placed &pl : placed)
-        pl.task.line = pl.pos >= 0 ? lines.lineAt(pl.pos) : -1;
     entries.reserve(placed.size());
-    for (const Placed &p : placed)
-        entries.append(p.task);
+    for (Placed &pl : placed) {
+        pl.task.line = pl.pos >= 0 ? lines.lineAt(int(pl.pos)) : -1;
+        entries.append(pl.task);
+    }
     return entries;
+}
+
+// True when the `[...]` attribute lines right above the recipe header that
+// starts at `lineStart` include `private` (`[private]`, `[private, no-cd]`,
+// stacked lines). Comment lines among them are skipped; anything else ends
+// the run.
+bool hasPrivateAttribute(const QString &s, qsizetype lineStart)
+{
+    qsizetype end = lineStart;
+    while (end > 0) {
+        const qsizetype nl = end - 1; // the '\n' ending the previous line
+        const qsizetype begin = nl > 0 ? s.lastIndexOf(QLatin1Char('\n'), nl - 1) + 1 : 0;
+        const QStringView line = QStringView(s).mid(begin, nl - begin).trimmed();
+        end = begin;
+        if (line.startsWith(u'#'))
+            continue;
+        if (!line.startsWith(u'[') || !line.endsWith(u']'))
+            return false;
+        for (const QStringView attr : line.mid(1, line.size() - 2).split(u','))
+            if (attr.trimmed() == u"private")
+                return true;
+    }
+    return false;
 }
 
 QByteArray readFile(const QDir &dir, const QString &name)
@@ -149,8 +226,10 @@ QList<WorkspaceTask> WorkspaceTaskScanner::parseJustfile(const QByteArray &text)
     static const QRegularExpression re(
         QStringLiteral(R"(^@?([A-Za-z_][A-Za-z0-9_-]*)(?:[\t ]+([^:\r\n]*))?[\t ]*:(?!=))"),
         QRegularExpression::MultilineOption);
+    // [*|+][$]name[=default]: a param without a default must be supplied by
+    // the caller, except `*` variadics, which may be empty.
     static const QRegularExpression paramRe(
-        QStringLiteral(R"(([A-Za-z_][A-Za-z0-9_-]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|\S+))?)"));
+        QStringLiteral(R"(([+*]?)\$?[A-Za-z_][A-Za-z0-9_-]*(\s*=\s*(?:"[^"]*"|'[^']*'|\S+))?)"));
 
     const QString content = QString::fromUtf8(text);
     LineCounter lines(content);
@@ -161,13 +240,15 @@ QList<WorkspaceTask> WorkspaceTaskScanner::parseJustfile(const QByteArray &text)
         task.name = m.captured(1);
         task.command = QStringLiteral("just %1").arg(task.name);
         task.line = lines.lineAt(m.capturedStart(0));
+        task.isPrivate = task.name.startsWith(QLatin1Char('_'))
+                         || hasPrivateAttribute(content, m.capturedStart(0));
 
-        // A param without an `=` default must be supplied by the caller.
         const QString params = m.captured(2).trimmed();
         if (!params.isEmpty()) {
             QRegularExpressionMatchIterator pit = paramRe.globalMatch(params);
             while (pit.hasNext()) {
-                if (!pit.next().captured(0).trimmed().contains(QLatin1Char('='))) {
+                const QRegularExpressionMatch p = pit.next();
+                if (!p.hasCaptured(2) && p.capturedView(1) != u"*") {
                     task.hasRequiredParams = true;
                     break;
                 }

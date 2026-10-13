@@ -236,6 +236,11 @@ private slots:
     void handleEditorAreaEmptied();
 
 private:
+    // Terminal > Edit Tasks and the terminal empty panel's "Configure
+    // tasks…": the task dialog for the active local workspace (no-op for SSH
+    // workspaces or when the workspace directory is gone).
+    void editTasksForActiveWorkspace();
+
     Ui::MainWindow *ui = Q_NULLPTR;
     NotepadNextApplication *app = Q_NULLPTR;
     DockedEditor *dockedEditor = Q_NULLPTR;

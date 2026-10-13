@@ -1882,29 +1882,12 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
         }
     });
 
-    connect(ui->actionEditTasks, &QAction::triggered, this, [this]() {
-        const QString rawWorkspaceRoot = currentWorkspaceRoot();
-        if (remote::isSshUri(rawWorkspaceRoot)) return;
-        const QString workspaceRoot = TerminalTaskRegistry::normalizeWorkspacePath(rawWorkspaceRoot);
-        const QString cwd = TerminalCwdResolver::resolveWorkspace(workspaceRoot);
-        if (cwd.isEmpty()) return;
-
-        const QList<TerminalTask> existing = terminalManager->tasksForWorkspace(workspaceRoot);
-        EditTasksDialog dlg(cwd, existing, this);
-        if (dlg.exec() == QDialog::Accepted) {
-            terminalManager->setTasks(workspaceRoot, dlg.tasks());
-            terminalManager->refreshEmptyPanel();
-        }
-    });
-
-    // The terminal empty panel's "Configure tasks…" reuses this dialog flow.
-    // The action's enabled state is only refreshed when the Terminal menu is
-    // about to show, so don't let a stale disabled state swallow the click —
-    // the handler itself re-validates the workspace.
-    connect(terminalManager, &TerminalManager::editTasksRequested, this, [this]() {
-        ui->actionEditTasks->setEnabled(true);
-        ui->actionEditTasks->trigger();
-    });
+    connect(ui->actionEditTasks, &QAction::triggered, this,
+            &MainWindow::editTasksForActiveWorkspace);
+    // Called directly, not through the action: its enabled state is only
+    // refreshed when the Terminal menu is about to show.
+    connect(terminalManager, &TerminalManager::editTasksRequested, this,
+            &MainWindow::editTasksForActiveWorkspace);
 
     setupSshMenu();
 
@@ -2258,6 +2241,22 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
     {
         PROFILE_SCOPE("MainWindow::ctor.initUpdateCheck");
         initUpdateCheck();
+    }
+}
+
+void MainWindow::editTasksForActiveWorkspace()
+{
+    const QString rawWorkspaceRoot = currentWorkspaceRoot();
+    if (remote::isSshUri(rawWorkspaceRoot)) return;
+    const QString workspaceRoot = TerminalTaskRegistry::normalizeWorkspacePath(rawWorkspaceRoot);
+    const QString cwd = TerminalCwdResolver::resolveWorkspace(workspaceRoot);
+    if (cwd.isEmpty()) return;
+
+    const QList<TerminalTask> existing = terminalManager->tasksForWorkspace(workspaceRoot);
+    EditTasksDialog dlg(cwd, existing, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        terminalManager->setTasks(workspaceRoot, dlg.tasks());
+        terminalManager->refreshEmptyPanel();
     }
 }
 

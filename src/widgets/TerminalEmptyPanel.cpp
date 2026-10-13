@@ -31,6 +31,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace {
 
 QString argb(const QColor &c)
@@ -44,11 +46,10 @@ QColor withAlpha(QColor c, int alpha)
     return c;
 }
 
-QLabel *mutedLabel(const QString &text, const QColor &foreground, QWidget *parent)
+QLabel *mutedLabel(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
-    label->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-                             .arg(argb(withAlpha(foreground, 150))));
+    label->setProperty("nnMuted", true);
     return label;
 }
 
@@ -63,8 +64,6 @@ TerminalEmptyPanel::TerminalEmptyPanel(QWidget *parent)
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setWidgetResizable(true);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"
-                                           "QScrollArea > QWidget > QWidget { background: transparent; }"));
 
     m_content = new QWidget(m_scroll);
     m_contentLayout = new QVBoxLayout(m_content);
@@ -74,6 +73,37 @@ TerminalEmptyPanel::TerminalEmptyPanel(QWidget *parent)
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->addWidget(m_scroll);
+    applyStyleSheet();
+}
+
+void TerminalEmptyPanel::applyStyleSheet()
+{
+    // Transparent surfaces always; colours only once the scheme is known.
+    QString sheet = QStringLiteral(
+        "QScrollArea { background: transparent; border: none; }"
+        "QScrollArea > QWidget > QWidget { background: transparent; }"
+        "QLabel { background: transparent; }"
+        "QPushButton[nnTaskRow=\"true\"] { background: transparent;"
+        " border: 1px solid transparent; border-radius: 6px; text-align: left; }"
+        "QToolButton#nnConfigureTasks { background: transparent;"
+        " border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; }");
+    if (m_foreground.isValid() && m_selection.isValid()) {
+        const QString border = argb(withAlpha(m_foreground, 60));
+        sheet += QStringLiteral(
+                     "QLabel[nnMuted=\"true\"] { color: %1; }"
+                     "QPushButton[nnTaskRow=\"true\"]:hover { background: %2; border-color: %3; }"
+                     "QPushButton[nnTaskRow=\"true\"]:focus { border-color: %3; }"
+                     "QPushButton#nnNewTerminal { background: %4; border: 1px solid %5;"
+                     " border-radius: 6px; padding: 6px 14px; }"
+                     "QPushButton#nnNewTerminal:hover { background: %6; }"
+                     "QToolButton#nnConfigureTasks { color: %7; }"
+                     "QToolButton#nnConfigureTasks:hover { border-color: %3; }")
+                     .arg(argb(withAlpha(m_foreground, 150)), argb(withAlpha(m_selection, 70)),
+                          border, argb(withAlpha(m_selection, 90)),
+                          argb(withAlpha(m_foreground, 70)), argb(withAlpha(m_selection, 140)),
+                          argb(withAlpha(m_foreground, 170)));
+    }
+    setStyleSheet(sheet);
 }
 
 void TerminalEmptyPanel::setSchemeColors(const QColor &background, const QColor &foreground,
@@ -84,6 +114,31 @@ void TerminalEmptyPanel::setSchemeColors(const QColor &background, const QColor 
     m_background = background;
     m_foreground = foreground;
     m_selection = selection;
+
+    // The panel is the terminal area before a terminal exists, so it wears
+    // the terminal scheme (ui-dna: no hard-coded hex; these come from the
+    // live TerminalColorScheme).
+    if (m_background.isValid()) {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, m_background);
+        pal.setColor(QPalette::WindowText, m_foreground);
+        pal.setColor(QPalette::ButtonText, m_foreground);
+        pal.setColor(QPalette::Text, m_foreground);
+        pal.setColor(QPalette::Base, m_background);
+        setPalette(pal);
+        m_content->setPalette(pal);
+        m_scroll->viewport()->setPalette(pal);
+    }
+    applyStyleSheet();
+    // Icons are tinted pixmaps, so they need the rebuild.
+    rebuild();
+}
+
+void TerminalEmptyPanel::setDiscoveredGroups(QList<WorkspaceTaskGroup> groups)
+{
+    if (groups == m_discoveredGroups)
+        return;
+    m_discoveredGroups = std::move(groups);
     rebuild();
 }
 
@@ -123,14 +178,7 @@ QWidget *TerminalEmptyPanel::makeTaskRow(const QString &name, const QString &com
     auto *row = new QPushButton(m_content);
     row->setCursor(Qt::PointingHandCursor);
     row->setFocusPolicy(Qt::StrongFocus);
-    const QString hover = argb(withAlpha(m_selection, 70));
-    const QString border = argb(withAlpha(m_foreground, 60));
-    row->setStyleSheet(QStringLiteral(
-                           "QPushButton { background: transparent; border: 1px solid transparent;"
-                           " border-radius: 6px; text-align: left; }"
-                           "QPushButton:hover { background: %1; border-color: %2; }"
-                           "QPushButton:focus { border-color: %2; }")
-                           .arg(hover, border));
+    row->setProperty("nnTaskRow", true);
 
     auto *layout = new QHBoxLayout(row);
     layout->setContentsMargins(8, 4, 8, 4);
@@ -141,17 +189,15 @@ QWidget *TerminalEmptyPanel::makeTaskRow(const QString &name, const QString &com
     play->setPixmap(terminalTintedIcon(QStringLiteral(":/icons/play.svg"),
                                        withAlpha(m_foreground, 170))
                         .pixmap(14, 14));
-    play->setStyleSheet(QStringLiteral("background: transparent;"));
     layout->addWidget(play);
 
     auto *texts = new QVBoxLayout;
     texts->setSpacing(0);
     auto *nameLabel = new QLabel(name, row);
     nameLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-    nameLabel->setStyleSheet(QStringLiteral("background: transparent;"));
     texts->addWidget(nameLabel);
     if (!command.isEmpty() && command != name) {
-        auto *cmdLabel = mutedLabel(command, m_foreground, row);
+        auto *cmdLabel = mutedLabel(command, row);
         cmdLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
         QFont small = cmdLabel->font();
         if (small.pointSizeF() > 1)
@@ -164,7 +210,7 @@ QWidget *TerminalEmptyPanel::makeTaskRow(const QString &name, const QString &com
     layout->addLayout(texts);
     layout->addStretch(1);
 
-    auto *sourceLabel = mutedLabel(source, m_foreground, row);
+    auto *sourceLabel = mutedLabel(source, row);
     sourceLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     layout->addWidget(sourceLabel);
 
@@ -181,21 +227,6 @@ void TerminalEmptyPanel::rebuild()
 {
     if (!m_contentLayout)
         return;
-
-    // Surface colours: the panel is the terminal area before a terminal
-    // exists, so it wears the terminal scheme (ui-dna: no hard-coded hex;
-    // these come from the live TerminalColorScheme).
-    if (m_background.isValid()) {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, m_background);
-        pal.setColor(QPalette::WindowText, m_foreground);
-        pal.setColor(QPalette::ButtonText, m_foreground);
-        pal.setColor(QPalette::Text, m_foreground);
-        pal.setColor(QPalette::Base, m_background);
-        setPalette(pal);
-        m_content->setPalette(pal);
-        m_scroll->viewport()->setPalette(pal);
-    }
 
     clearContent();
     m_scroll->verticalScrollBar()->setValue(0);
@@ -219,7 +250,6 @@ void TerminalEmptyPanel::rebuild()
     icon->setPixmap(terminalTintedIcon(QStringLiteral(":/icons/square-terminal.svg"),
                                        withAlpha(m_foreground, 130))
                         .pixmap(40, 40));
-    icon->setStyleSheet(QStringLiteral("background: transparent;"));
     col->addWidget(icon);
 
     auto *title = new QLabel(tr("No terminal open"), column);
@@ -228,13 +258,12 @@ void TerminalEmptyPanel::rebuild()
     titleFont.setBold(true);
     titleFont.setPointSizeF(titleFont.pointSizeF() + 2);
     title->setFont(titleFont);
-    title->setStyleSheet(QStringLiteral("background: transparent;"));
     col->addWidget(title);
 
     if (!m_workspaceDisplayPath.isEmpty()) {
         const QString elided = QFontMetrics(font()).elidedText(
             m_workspaceDisplayPath, Qt::ElideMiddle, 600);
-        auto *path = mutedLabel(elided, m_foreground, column);
+        auto *path = mutedLabel(elided, column);
         path->setAlignment(Qt::AlignCenter);
         path->setToolTip(m_workspaceDisplayPath);
         col->addWidget(path);
@@ -244,17 +273,9 @@ void TerminalEmptyPanel::rebuild()
     auto *newButton = new QPushButton(
         terminalTintedIcon(QStringLiteral(":/icons/square-terminal.svg"), m_foreground),
         tr("New terminal"), column);
+    newButton->setObjectName(QStringLiteral("nnNewTerminal"));
     newButton->setMinimumWidth(180);
     newButton->setCursor(Qt::PointingHandCursor);
-    if (m_selection.isValid()) {
-        newButton->setStyleSheet(QStringLiteral(
-                                     "QPushButton { background: %1; border: 1px solid %2;"
-                                     " border-radius: 6px; padding: 6px 14px; }"
-                                     "QPushButton:hover { background: %3; }")
-                                     .arg(argb(withAlpha(m_selection, 90)),
-                                          argb(withAlpha(m_foreground, 70)),
-                                          argb(withAlpha(m_selection, 140))));
-    }
     connect(newButton, &QPushButton::clicked, this, &TerminalEmptyPanel::newTerminalRequested);
     newRow->addStretch(1);
     newRow->addWidget(newButton);
@@ -270,20 +291,14 @@ void TerminalEmptyPanel::rebuild()
             QFont f = label->font();
             f.setBold(true);
             label->setFont(f);
-            label->setStyleSheet(QStringLiteral("background: transparent;"));
             header->addWidget(label);
             header->addStretch(1);
             if (withEdit) {
                 auto *edit = new QToolButton(column);
                 edit->setText(tr("Configure tasks…"));
                 edit->setAutoRaise(true);
+                edit->setObjectName(QStringLiteral("nnConfigureTasks"));
                 edit->setCursor(Qt::PointingHandCursor);
-                edit->setStyleSheet(QStringLiteral(
-                    "QToolButton { color: %1; background: transparent; border: 1px solid transparent;"
-                    " border-radius: 4px; padding: 2px 6px; }"
-                    "QToolButton:hover { border-color: %2; }")
-                                        .arg(argb(withAlpha(m_foreground, 170)),
-                                             argb(withAlpha(m_foreground, 60))));
                 connect(edit, &QToolButton::clicked, this, &TerminalEmptyPanel::editTasksRequested);
                 header->addWidget(edit);
             }
@@ -293,8 +308,7 @@ void TerminalEmptyPanel::rebuild()
         col->addSpacing(4);
         addGroupHeader(tr("Configured tasks"), true);
         if (m_configuredTasks.isEmpty()) {
-            auto *none = mutedLabel(tr("No tasks configured for this workspace."), m_foreground,
-                                    column);
+            auto *none = mutedLabel(tr("No tasks configured for this workspace."), column);
             col->addWidget(none);
         } else {
             for (const TerminalTask &task : m_configuredTasks) {
@@ -306,11 +320,17 @@ void TerminalEmptyPanel::rebuild()
         }
 
         for (const WorkspaceTaskGroup &group : m_discoveredGroups) {
-            if (group.tasks.isEmpty())
+            // Private just recipes (`_name`, `[private]`) are helpers, hidden
+            // like `just --list` hides them; a group of only those is skipped.
+            const bool anyPublic = std::any_of(group.tasks.cbegin(), group.tasks.cend(),
+                                               [](const WorkspaceTask &t) { return !t.isPrivate; });
+            if (!anyPublic)
                 continue;
             col->addSpacing(4);
             addGroupHeader(group.source, false);
             for (const WorkspaceTask &task : group.tasks) {
+                if (task.isPrivate)
+                    continue;
                 QWidget *row = makeTaskRow(task.name, task.command, group.source);
                 connect(static_cast<QPushButton *>(row), &QPushButton::clicked, this,
                         [this, task] { emit discoveredTaskRequested(task); });

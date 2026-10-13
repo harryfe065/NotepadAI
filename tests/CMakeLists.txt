@@ -137,6 +137,23 @@ target_sources(test_terminal_empty_panel_policy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/remote/SshProfile.h
 )
 add_test(NAME TerminalEmptyPanelPolicy COMMAND test_terminal_empty_panel_policy)
+
+# --- TerminalEmptyPanel: widget rebuild, row geometry, private-recipe filter ---
+qt_add_executable(test_terminal_empty_panel test_terminal_empty_panel.cpp)
+target_include_directories(test_terminal_empty_panel PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_terminal_empty_panel PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_terminal_empty_panel PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalEmptyPanel.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalEmptyPanel.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.h
+    ${CMAKE_SOURCE_DIR}/src/WorkspaceTaskScanner.h
+)
+add_test(NAME TerminalEmptyPanel COMMAND test_terminal_empty_panel)
+set_tests_properties(TerminalEmptyPanel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 # --- TerminalProcessStats: PTY process-tree CPU/RAM aggregation ---
 qt_add_executable(test_terminal_process_stats test_terminal_process_stats.cpp)
 target_include_directories(test_terminal_process_stats PRIVATE ${CMAKE_SOURCE_DIR}/src)

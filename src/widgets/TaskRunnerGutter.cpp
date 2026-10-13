@@ -23,7 +23,6 @@
 #include "Scintilla.h"
 #include "TerminalManager.h"
 #include "TerminalTaskRegistry.h"
-#include "TerminalWidget.h"
 #include "WorkspaceTaskScanner.h"
 #include "remote/ExecutionContext.h"
 #include "remote/ExecutionContextRegistry.h"
@@ -160,8 +159,9 @@ bool TaskRunnerGutter::isTaskFile(const QString &filename)
 
 // The parsers live in WorkspaceTaskScanner (shared with the terminal empty
 // panel's root scan); these wrappers only adapt the shared result to the
-// gutter's TaskEntry and, for package.json, supply the package manager
-// detected for the editor file's folder.
+// gutter's TaskEntry (dropping entries with no line to mark) and, for
+// package.json, supply the package manager detected for the editor file's
+// folder.
 
 QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parsePackageJson(const QByteArray &text)
 {
@@ -170,8 +170,10 @@ QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parsePackageJson(const QB
         WorkspaceTaskScanner::parsePackageJson(text, detectPackageManager(dir));
     QVector<TaskEntry> entries;
     entries.reserve(tasks.size());
-    for (const WorkspaceTask &t : tasks)
-        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    for (const WorkspaceTask &t : tasks) {
+        if (t.line >= 0)
+            entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    }
     return entries;
 }
 
@@ -180,8 +182,10 @@ QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parseJustfile(const QByte
     const QList<WorkspaceTask> tasks = WorkspaceTaskScanner::parseJustfile(text);
     QVector<TaskEntry> entries;
     entries.reserve(tasks.size());
-    for (const WorkspaceTask &t : tasks)
-        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    for (const WorkspaceTask &t : tasks) {
+        if (t.line >= 0)
+            entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    }
     return entries;
 }
 
@@ -190,8 +194,10 @@ QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parseMakefile(const QByte
     const QList<WorkspaceTask> tasks = WorkspaceTaskScanner::parseMakefile(text);
     QVector<TaskEntry> entries;
     entries.reserve(tasks.size());
-    for (const WorkspaceTask &t : tasks)
-        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    for (const WorkspaceTask &t : tasks) {
+        if (t.line >= 0)
+            entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    }
     return entries;
 }
 
@@ -200,8 +206,10 @@ QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parseDenoJson(const QByte
     const QList<WorkspaceTask> tasks = WorkspaceTaskScanner::parseDenoJson(text);
     QVector<TaskEntry> entries;
     entries.reserve(tasks.size());
-    for (const WorkspaceTask &t : tasks)
-        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    for (const WorkspaceTask &t : tasks) {
+        if (t.line >= 0)
+            entries.append({t.line, t.name, t.command, t.hasRequiredParams});
+    }
     return entries;
 }
 
@@ -349,31 +357,10 @@ void TaskRunnerGutter::onMarginClick(int margin, int line)
     }
 
     if (found->hasRequiredParams) {
-        if (context && context->isRemote()) {
-            // For remote tasks with required params, open a remote terminal and
-            // inject the command with a trailing space (no Enter) so the user
-            // can complete the arguments.
-            m_termMgr->openRemoteTerminal(context, cwd, QString());
-            const QByteArray cmd = (found->command + QLatin1Char(' ')).toUtf8();
-            if (auto *focused = qApp->focusWidget()) {
-                if (auto *tw = qobject_cast<TerminalWidget *>(focused)) {
-                    connect(tw, &TerminalWidget::firstOutputReceived, this,
-                            [tw, cmd]() { tw->writeToPty(cmd); },
-                            Qt::SingleShotConnection);
-                }
-            }
-        } else {
-            // Local: open a plain terminal and inject the command text
-            m_termMgr->openTerminal(cwd);
-            const QByteArray cmd = (found->command + QLatin1Char(' ')).toUtf8();
-            if (auto *focused = qApp->focusWidget()) {
-                if (auto *tw = qobject_cast<TerminalWidget *>(focused)) {
-                    connect(tw, &TerminalWidget::firstOutputReceived, this,
-                            [tw, cmd]() { tw->writeToPty(cmd); },
-                            Qt::SingleShotConnection);
-                }
-            }
-        }
+        // Open a terminal (remote over SSH when the editor is remote) with
+        // the command typed and a trailing space, not entered, so the user
+        // can complete the arguments.
+        m_termMgr->openTerminalWithInput(context, cwd, found->command + QLatin1Char(' '));
         return;
     }
 
