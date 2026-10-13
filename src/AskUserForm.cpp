@@ -83,22 +83,63 @@ int optionIndex(const Question &q, const QString &value)
     return -1;
 }
 
+// The option `pick` names: its value, else (agents mix them up) its value or
+// label ignoring case and surrounding spaces. -1 when none does.
+int pickedOption(const Question &q, const QString &pick)
+{
+    if (const int exact = optionIndex(q, pick); exact >= 0)
+        return exact;
+    const QString loose = pick.trimmed();
+    for (int i = 0; i < q.options.size(); ++i) {
+        const Option &opt = q.options.at(i);
+        if (opt.value.compare(loose, Qt::CaseInsensitive) == 0 || opt.label.compare(loose, Qt::CaseInsensitive) == 0)
+            return i;
+    }
+    return -1;
+}
+
+// `"a", "b", "c"`: the values a `recommended` may name, for error messages.
+QString optionValuesText(const Question &q)
+{
+    QStringList values;
+    values.reserve(q.options.size());
+    for (const Option &opt : q.options)
+        values.append(QLatin1Char('"') + opt.value + QLatin1Char('"'));
+    return values.join(QStringLiteral(", "));
+}
+
+bool isEmptyValue(const QJsonValue &v)
+{
+    if (v.isUndefined() || v.isNull())
+        return true;
+    if (v.isString())
+        return v.toString().trimmed().isEmpty();
+    if (v.isArray())
+        return v.toArray().isEmpty();
+    return false;
+}
+
 // Normalise `recommended` to the type's shape. False = invalid value.
 bool normaliseRecommended(Question &q, const QJsonValue &raw, QString *error)
 {
     const QString where = QStringLiteral("question \"%1\": ").arg(q.id);
-    if (raw.isUndefined() || raw.isNull()) {
+    if (isEmptyValue(raw)) {
         if (q.type == QuestionType::Proposal)
             q.recommended = QStringLiteral("accept");
         return true;
     }
+    const auto notAnOption = [&](const QString &v) {
+        return fail(error, where + QStringLiteral("recommended \"%1\" is not an option value; use one of: %2")
+                                       .arg(v, optionValuesText(q)));
+    };
     switch (q.type) {
     case QuestionType::Single:
     case QuestionType::Select: {
-        const QString v = scalarToString(raw);
-        if (optionIndex(q, v) < 0)
-            return fail(error, where + QStringLiteral("recommended \"%1\" is not one of the option values").arg(v));
-        q.recommended = v;
+        const QString v = scalarToString(raw.isArray() ? raw.toArray().first() : raw);
+        const int i = pickedOption(q, v);
+        if (i < 0)
+            return notAnOption(v);
+        q.recommended = q.options.at(i).value;
         return true;
     }
     case QuestionType::Multi: {
@@ -106,10 +147,11 @@ bool normaliseRecommended(Question &q, const QJsonValue &raw, QString *error)
         const QJsonArray items = raw.isArray() ? raw.toArray() : QJsonArray{raw};
         for (const auto &item : items) {
             const QString v = scalarToString(item);
-            if (optionIndex(q, v) < 0)
-                return fail(error, where + QStringLiteral("recommended \"%1\" is not one of the option values").arg(v));
-            if (!picked.contains(v))
-                picked.append(v);
+            const int i = pickedOption(q, v);
+            if (i < 0)
+                return notAnOption(v);
+            if (!picked.contains(q.options.at(i).value))
+                picked.append(q.options.at(i).value);
         }
         q.recommended = picked;
         return true;
@@ -154,38 +196,94 @@ bool normaliseRecommended(Question &q, const QJsonValue &raw, QString *error)
     return true;
 }
 
-bool containsWord(const QString &text, const QString &word)
+// Position of the first whole-word `word` in `text`, or -1.
+qsizetype wordAt(const QString &text, const QString &word)
 {
     if (word.isEmpty())
-        return false;
+        return -1;
     qsizetype from = 0;
     while ((from = text.indexOf(word, from, Qt::CaseInsensitive)) >= 0) {
         const qsizetype end = from + word.size();
         const bool startOk = from == 0 || !text.at(from - 1).isLetterOrNumber();
         const bool endOk = end >= text.size() || !text.at(end).isLetterOrNumber();
         if (startOk && endOk)
-            return true;
+            return from;
         from = end;
     }
-    return false;
+    return -1;
 }
 
-// Index of the only option the recommendation text names (by value or
-// label), or -1 when none or several do.
+// First position where `text` names the option (value, or a label of 3+
+// characters), or -1.
+qsizetype optionMentionAt(const QString &text, const Option &opt)
+{
+    const qsizetype byValue = wordAt(text, opt.value);
+    const qsizetype byLabel = opt.label.size() >= 3 ? wordAt(text, opt.label) : -1;
+    if (byValue < 0 || byLabel < 0)
+        return std::max(byValue, byLabel);
+    return std::min(byValue, byLabel);
+}
+
+// Markdown bold spans (`**x**`, `__x__`) joined by newlines: where agents put
+// the pick ("Chọn **review**, vì ...").
+QString boldSpans(const QString &text)
+{
+    QString out;
+    for (const QLatin1String marker : {QLatin1String("**"), QLatin1String("__")}) {
+        qsizetype from = 0;
+        while ((from = text.indexOf(marker, from)) >= 0) {
+            const qsizetype end = text.indexOf(marker, from + 2);
+            if (end < 0)
+                break;
+            out += text.mid(from + 2, end - from - 2) + QLatin1Char('\n');
+            from = end + 2;
+        }
+    }
+    return out;
+}
+
+// The option the recommendation text picks, or -1. In order: the only option
+// it names; the only one it names in bold; the only one named in its first
+// clause (up to . : ; — or a line break), since the pick usually leads.
 int mentionedOption(const Question &q)
 {
-    int found = -1;
-    for (int i = 0; i < q.options.size(); ++i) {
-        const Option &opt = q.options.at(i);
-        const bool named = containsWord(q.recommendation, opt.value)
-            || (opt.label.size() >= 3 && containsWord(q.recommendation, opt.label));
-        if (!named)
-            continue;
-        if (found >= 0)
-            return -1;
-        found = i;
+    const QString &text = q.recommendation;
+    qsizetype clauseEnd = text.size();
+    static constexpr char16_t kClauseBreaks[] = {u'.', u':', u';', u'—', u'\n'};
+    for (const char16_t c : kClauseBreaks) {
+        const qsizetype at = text.indexOf(c);
+        if (at >= 0)
+            clauseEnd = std::min(clauseEnd, at);
     }
-    return found;
+    const QString bold = boldSpans(text);
+    int named = -1;
+    int inBold = -1;
+    int leading = -1;
+    int namedCount = 0;
+    int boldCount = 0;
+    int leadingCount = 0;
+    for (int i = 0; i < q.options.size(); ++i) {
+        const qsizetype at = optionMentionAt(text, q.options.at(i));
+        if (at < 0)
+            continue;
+        named = i;
+        ++namedCount;
+        if (optionMentionAt(bold, q.options.at(i)) >= 0) {
+            inBold = i;
+            ++boldCount;
+        }
+        if (at < clauseEnd) {
+            leading = i;
+            ++leadingCount;
+        }
+    }
+    if (namedCount == 1)
+        return named;
+    if (boldCount == 1)
+        return inBold;
+    if (leadingCount == 1)
+        return leading;
+    return -1;
 }
 
 bool parseQuestion(const QJsonValue &value, int index, Question *out, QString *error)
@@ -224,6 +322,7 @@ bool parseQuestion(const QJsonValue &value, int index, Question *out, QString *e
     if (const auto mx = numberOf(o.value(QStringLiteral("max"))))
         q.max = *mx;
 
+    QJsonArray flagged; // options carrying `"recommended": true`
     if (q.isChoice()) {
         const QJsonArray opts = o.value(QStringLiteral("options")).toArray();
         if (opts.isEmpty())
@@ -240,6 +339,9 @@ bool parseQuestion(const QJsonValue &value, int index, Question *out, QString *e
                 opt.description = oo.value(QStringLiteral("description")).toString();
                 if (opt.value.isEmpty())
                     opt.value = opt.label;
+                // Some agents flag the pick on the option itself.
+                if (oo.value(QStringLiteral("recommended")).toBool(false))
+                    flagged.append(opt.value.isEmpty() ? opt.label : opt.value);
             } else {
                 opt.value = scalarToString(ov).trimmed();
             }
@@ -257,21 +359,40 @@ bool parseQuestion(const QJsonValue &value, int index, Question *out, QString *e
 
     if (q.min && q.max && *q.min > *q.max)
         return fail(error, QStringLiteral("question \"%1\": min is greater than max").arg(q.id));
-    if (!normaliseRecommended(q, o.value(QStringLiteral("recommended")), error))
+    // The pick under the names agents use for it, then flags on the options.
+    QJsonValue recommended = o.value(QStringLiteral("recommended"));
+    for (const char *alias : {"default", "suggested", "recommend", "preselected"}) {
+        if (!isEmptyValue(recommended))
+            break;
+        recommended = o.value(QLatin1String(alias));
+    }
+    if (isEmptyValue(recommended) && !flagged.isEmpty())
+        recommended = q.type == QuestionType::Multi ? QJsonValue(flagged) : flagged.first();
+    if (!normaliseRecommended(q, recommended, error))
         return false;
     // A choice question whose reasoning names a pick must preselect it: take
-    // the one option the reasoning mentions, else ask the agent to say which.
-    const auto unset = [&q]() { return q.recommended.isNull() || q.recommended.isUndefined(); };
-    if (q.isChoice() && unset() && !q.recommendation.trimmed().isEmpty()) {
-        if (q.type != QuestionType::Multi) {
-            if (const int pick = mentionedOption(q); pick >= 0)
-                q.recommended = q.options.at(pick).value;
+    // the option the reasoning picks, else ask the agent to say which.
+    if (q.isChoice() && isEmptyValue(q.recommended) && !q.recommendation.trimmed().isEmpty()) {
+        if (q.type == QuestionType::Multi) {
+            QJsonArray picked;
+            const QString bold = boldSpans(q.recommendation);
+            for (const Option &opt : std::as_const(q.options)) {
+                if (optionMentionAt(bold, opt) >= 0)
+                    picked.append(opt.value);
+            }
+            if (!picked.isEmpty())
+                q.recommended = picked;
+        } else if (const int pick = mentionedOption(q); pick >= 0) {
+            q.recommended = q.options.at(pick).value;
         }
-        if (unset()) {
+        if (isEmptyValue(q.recommended)) {
+            const QString example = q.type == QuestionType::Multi
+                ? QStringLiteral("[\"%1\"]").arg(q.options.first().value)
+                : QStringLiteral("\"%1\"").arg(q.options.first().value);
             return fail(error, QStringLiteral("question \"%1\": `recommendation` explains a pick but "
-                                              "`recommended` is missing; set `recommended` to the option "
-                                              "value you suggest (an array of values for multi)")
-                                   .arg(q.id));
+                                              "`recommended` is missing. Add it to this question, e.g. "
+                                              "\"recommended\": %2, using one of the option values: %3")
+                                   .arg(q.id, example, optionValuesText(q)));
         }
     }
     *out = std::move(q);
@@ -467,8 +588,8 @@ QJsonObject toolDefinition()
                      "values (multi), \"accept\" or \"change\" (proposal, default accept), true/false "
                      "(confirm), a string (text/textarea) or a number.")},
             }},
-            {QStringLiteral("recommendation"), str("Markdown: your recommendation and why, shown under the "
-                                                   "question.")},
+            {QStringLiteral("recommendation"), str("Markdown: why you recommend it, shown under the question. "
+                                                   "The pick itself goes in `recommended`.")},
             {QStringLiteral("yesLabel"), str("confirm: label for yes.")},
             {QStringLiteral("noLabel"), str("confirm: label for no.")},
             {QStringLiteral("allowOther"), QJsonObject{
@@ -504,21 +625,21 @@ QJsonObject toolDefinition()
     return QJsonObject{
         {QStringLiteral("name"), QLatin1String(kToolName)},
         {QStringLiteral("description"), QStringLiteral(
-             "Use this tool whenever you need a decision or input from the user before you can continue: "
-             "interviews, grilling (grill-me), clarifying questions, choices between options, plan reviews. "
-             "This replaces any plain-text question format a skill or instruction prescribes: do not write the "
-             "questions as text, and do not repeat them in your reply after calling. Map each numbered question "
-             "onto one entry in `questions`, put your suggested answer in `recommended` (always set it on "
-             "choice questions: the option value, which is preselected), and put the reasoning in "
-             "`recommendation`. Ask one whole round per call (any number of questions, unlike "
-             "AskUserQuestion's 4; prefer this tool over AskUserQuestion and request_user_input), write in the "
-             "user's language, then END YOUR TURN: the tool shows an interactive form in the NotepadAI chat and "
-             "returns immediately without answers. The answers arrive as the next user message beginning with "
-             "`[ask_user answers]`; `no answer` means unanswered, so re-ask it in a later round. "
-             "`needs clarification` means the user did not understand that question: treat the other answers "
-             "as final, explain each such question in the user's language, then call ask_user again with only "
-             "those questions, keeping their ids. If the user writes in the chat instead, that message replaces "
-             "the form: act on it as written. Never call it twice in one turn.")},
+             "Ask the user questions as an interactive form (clickable choices and text boxes) shown in the "
+             "chat UI. This is how every question round reaches the user: when a skill or instruction (grill-me, "
+             "grilling, brainstorming, a spec interview, a plan review) tells you to ask numbered questions in a "
+             "text format such as \"❓ **Q1** - ... ➡️ recommended answer\", that format describes the round's "
+             "content, not its delivery, so put the round in one ask_user call instead of writing it as text, "
+             "even for a single question such as what to grill. One entry per question, your suggested answer in "
+             "`recommended` (always set it on choice questions: the option value), its reasoning in "
+             "`recommendation`; prefer this over AskUserQuestion. One call per round, in the user's language, "
+             "then END YOUR TURN: it returns at once without answers, so never call it twice in one turn and do "
+             "not repeat the questions as text. Answers arrive as the next user message starting "
+             "`[ask_user answers]`; `no answer` = skipped, re-ask later; `needs clarification` = explain and "
+             "re-ask only those questions (same ids), the other answers are final. A chat reply replaces the "
+             "form. Do not use it once the plan is settled or the user said to implement: decide from the plan "
+             "and sensible defaults, and never ask how or whether to proceed or offer invented next-step "
+             "menus.")},
         {QStringLiteral("inputSchema"), schema},
     };
 }
@@ -532,17 +653,6 @@ bool isAskUserToolCall(const QString &name, const QString &title, const QJsonObj
 }
 
 namespace {
-
-bool isEmptyValue(const QJsonValue &v)
-{
-    if (v.isUndefined() || v.isNull())
-        return true;
-    if (v.isString())
-        return v.toString().trimmed().isEmpty();
-    if (v.isArray())
-        return v.toArray().isEmpty();
-    return false;
-}
 
 QString formatNumber(double d)
 {

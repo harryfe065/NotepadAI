@@ -83,6 +83,17 @@ void TestAskUserMcp::listsAskUserTool()
     const QString description = tool.value(QStringLiteral("description")).toString();
     QVERIFY(description.contains(QLatin1String("AskUserQuestion")));
     QVERIFY(description.contains(QLatin1String("grill")));
+    // A skill's plain-text question format must map onto the tool (probed: without
+    // this, Haiku answered /grill-me with "Q1" text every time).
+    QVERIFY(description.contains(QLatin1String("describes the round's content, not its delivery")));
+    QVERIFY(description.contains(QLatin1String("never call it twice in one turn")));
+    QVERIFY(description.contains(QLatin1String("plan is settled")));
+    QVERIFY(description.contains(QLatin1String("how or whether to proceed")));
+    QVERIFY(description.contains(QLatin1String("[ask_user answers]")));
+    QVERIFY(description.contains(QLatin1String("needs clarification")));
+    QVERIFY(description.contains(QLatin1String("no answer")));
+    QVERIFY(description.contains(QLatin1String("`recommended`")));
+    QVERIFY(description.size() < 1700); // one dense paragraph, not a rulebook
     QVERIFY(description.contains(QLatin1String("END YOUR TURN")));
     const QJsonObject schema = tool.value(QStringLiteral("inputSchema")).toObject();
     QCOMPARE(schema.value(QStringLiteral("required")).toArray(), QJsonArray{QStringLiteral("questions")});

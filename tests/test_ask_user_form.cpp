@@ -34,6 +34,7 @@ private slots:
     void parsesGrillRound();
     void rejectsInvalidInputWithReason();
     void acceptsLenientShapes();
+    void acceptsOtherWaysToNameThePick();
     void formatsAnswersForTheAgent();
     void summaryLine();
     void reportsQuestionsToClarify();
@@ -137,6 +138,35 @@ void TestAskUserForm::acceptsLenientShapes()
     QCOMPARE(spec->questions.at(0).recommended.toArray(), QJsonArray{QStringLiteral("y")});
     QCOMPARE(spec->questions.at(1).recommended.toDouble(), 12.0);
     QCOMPARE(spec->questions.at(2).recommended, QJsonValue(true));
+}
+
+// Agents name the pick in other ways than `recommended` set to a value.
+void TestAskUserForm::acceptsOtherWaysToNameThePick()
+{
+    QString error;
+    const auto spec = parseAskUserInput(obj(R"({"questions":[
+        {"id":"Q1","title":"Alias","type":"single","options":["x","y"],"default":"y"},
+        {"id":"Q2","title":"Flag","type":"single",
+         "options":[{"value":"x"},{"value":"y","recommended":true}]},
+        {"id":"Q3","title":"Flags","type":"multi",
+         "options":[{"value":"x","recommended":true},{"value":"y"},{"value":"z","recommended":true}]},
+        {"id":"Q4","title":"Label","type":"single",
+         "options":[{"value":"a","label":"Keep it"},{"value":"b","label":"Drop it"}],"recommended":"drop it"},
+        {"id":"Q5","title":"Case","type":"multi","options":["Radio","Checkbox"],"recommended":[" radio"]},
+        {"id":"Q6","title":"Blank","type":"single","options":["x","y"],"recommended":"","suggested":"x"}
+    ]})"), &error);
+    QVERIFY2(spec.has_value(), qPrintable(error));
+    QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("y"));
+    QCOMPARE(spec->questions.at(1).recommended.toString(), QStringLiteral("y"));
+    QCOMPARE(spec->questions.at(2).recommended.toArray(), QJsonArray({QStringLiteral("x"), QStringLiteral("z")}));
+    QCOMPARE(spec->questions.at(3).recommended.toString(), QStringLiteral("b"));
+    QCOMPARE(spec->questions.at(4).recommended.toArray(), QJsonArray{QStringLiteral("Radio")});
+    QCOMPARE(spec->questions.at(5).recommended.toString(), QStringLiteral("x"));
+
+    // A value that names no option lists the ones that do.
+    QVERIFY(!parseAskUserInput(obj(R"({"questions":[{"id":"A","title":"x","type":"single",
+        "options":["a","b"],"recommended":"c"}]})"), &error));
+    QVERIFY2(error.contains(QLatin1String("use one of: \"a\", \"b\"")), qPrintable(error));
 }
 
 namespace {
@@ -475,9 +505,33 @@ void TestAskUserForm::infersRecommendedFromRecommendation()
         "options":[{"value":"review","label":"Review the code"},{"value":"redesign","label":"Reopen the design"},
                    {"value":"archive","label":"Archive now"}],
         "recommendation":"Chọn **review**. Code đã có, nên kiểm chứng trước khi archive."}]})"), &error);
-    // "archive" also appears in the reason, but "review" is the pick: ambiguous.
+    // "archive" also appears in the reason, but only "review" is in bold.
+    QVERIFY2(spec.has_value(), qPrintable(error));
+    QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("review"));
+
+    // The pick leads; the reason names another option ("a" is also an article).
+    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Cache?","type":"single",
+        "options":["a","b","c"],
+        "recommendation":"b — a separate cache adds a second source of truth, c is too slow."}]})"), &error);
+    QVERIFY2(spec.has_value(), qPrintable(error));
+    QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("b"));
+
+    // Multi: the options named in bold.
+    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Controls","type":"multi",
+        "options":["radio","checkbox","textarea"],
+        "recommendation":"**radio** and **checkbox**; a textarea is overkill."}]})"), &error);
+    QVERIFY2(spec.has_value(), qPrintable(error));
+    QCOMPARE(spec->questions.at(0).recommended.toArray(),
+             QJsonArray({QStringLiteral("radio"), QStringLiteral("checkbox")}));
+
+    // No way to tell: the error shows the fix and the values to use.
+    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"State?","type":"single",
+        "options":["review","archive"],
+        "recommendation":"Either review or archive works here."}]})"), &error);
     QVERIFY(!spec.has_value());
-    QVERIFY2(error.contains(QLatin1String("recommended")), qPrintable(error));
+    QVERIFY2(error.contains(QLatin1String("\"recommended\": \"review\""))
+                 && error.contains(QLatin1String("\"review\", \"archive\"")),
+             qPrintable(error));
 
     spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Size gate?","type":"single",
         "options":[{"value":"accept","label":"Accept for v1"},{"value":"now","label":"Support big files now"}],
