@@ -351,6 +351,9 @@ void TestDockTabContextMenu::populateMenu_closeAll_survivesDestroyedDock()
     QPointer<QDockWidget> a = docks.at(0);
     QPointer<QDockWidget> b = docks.at(1);
     QPointer<QDockWidget> c = docks.at(2);
+    // Shown first, or isHidden() would hold whatever Close All did.
+    b->show();
+    c->show();
 
     QMenu menu;
     DockTabContextMenu::populateMenu(&menu, docks, 1);

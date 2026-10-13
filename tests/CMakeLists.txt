@@ -699,6 +699,26 @@ add_test(NAME SendWithGoalDialog COMMAND test_send_with_goal_dialog)
 
 
 # Sources AcpMessageWidget.cpp now depends on (preprocessor + math renderer).
+# What AcpSessionView links beyond the ACP core: the prompt queue and the
+# prompt improver with its LLM client.
+set(ACP_SESSION_VIEW_DEPS
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
+)
+
 set(MARKDOWN_RENDER_SOURCES
     ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.cpp
     ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.h
@@ -768,21 +788,7 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
-    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
-    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
-    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
-    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
-    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
-    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
-    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
-    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
-    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
-    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
+    ${ACP_SESSION_VIEW_DEPS}
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
@@ -893,21 +899,7 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
-    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
-    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
-    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
-    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
-    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
-    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
-    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
-    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
-    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
-    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
+    ${ACP_SESSION_VIEW_DEPS}
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
@@ -1018,21 +1010,7 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/McpStdio.h
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
-    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
-    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
-    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
-    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
-    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
-    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
-    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
-    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
-    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
-    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
+    ${ACP_SESSION_VIEW_DEPS}
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h

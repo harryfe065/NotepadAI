@@ -37,6 +37,7 @@ private slots:
     void formatsAnswersForTheAgent();
     void summaryLine();
     void reportsQuestionsToClarify();
+    void changedAnswerShowsRecommendedLabels();
     void carriesAnswersOverById();
     void mapsClaudeAskUserQuestion();
     void mapsCodexRequestUserInput();
@@ -209,6 +210,26 @@ void TestAskUserForm::summaryLine()
         "[ask_user clarify]\nThe user does not understand question Q2 \"Controls\". Explain it in the "
         "user's language (the language the user writes in), then call ask_user again with the revised form.");
     QCOMPARE(summaryFromAnswersText(legacyClarify), QStringLiteral("Asked to clarify Q2 \"Controls\""));
+}
+
+// A changed answer names the recommendation the way answers are named:
+// choices and yes/no with their labels.
+void TestAskUserForm::changedAnswerShowsRecommendedLabels()
+{
+    const Spec spec = grillSpec();
+    const QVector<Answer> answers{
+        answer("Q1", QStringLiteral("a")),
+        answer("Q2", QJsonArray{QStringLiteral("radio"), QStringLiteral("checkbox")}),
+        answer("Q3", QStringLiteral("accept")),
+        answer("Q4", true),
+        answer("Q5", QJsonValue()),
+        answer("Q6", 30.0),
+    };
+    const QString text = formatAnswers(spec, answers);
+    QVERIFY2(text.contains(QStringLiteral("Q1 \"Architecture\": a (Elicitation) — changed (recommended: b2 (No-op tool))\n")),
+             qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("Q4 \"Scan inside?\": yes (Scan) — changed (recommended: no (Skip))\n")),
+             qPrintable(text));
 }
 
 void TestAskUserForm::reportsQuestionsToClarify()

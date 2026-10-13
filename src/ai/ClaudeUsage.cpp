@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QTimeZone>
 
 #include <algorithm>
 #include <cmath>
@@ -297,15 +298,50 @@ std::optional<qint64> parseRetryAfter(const QByteArray &header, qint64 nowMs)
         return std::min(seconds, kMaxSeconds) * 1000;
     }
 
-    // HTTP dates always end in "GMT" (RFC 9110), which Qt 6.5's RFC 2822
-    // parser rejects: spell it as the offset it means.
-    QString text = QString::fromLatin1(s);
-    if (text.endsWith(QLatin1String(" GMT")))
-        text.replace(text.size() - 3, 3, QStringLiteral("+0000"));
-    const QDateTime at = QDateTime::fromString(text, Qt::RFC2822Date);
-    if (!at.isValid())
+    const std::optional<qint64> at = parseHttpDate(s, nowMs);
+    if (!at)
         return std::nullopt;
-    return std::clamp<qint64>(at.toMSecsSinceEpoch() - nowMs, 0, kMaxSeconds * 1000);
+    return std::clamp<qint64>(*at - nowMs, 0, kMaxSeconds * 1000);
+}
+
+std::optional<qint64> parseHttpDate(const QByteArray &value, qint64 nowMs)
+{
+    // RFC 9110 5.6.7: IMF-fixdate, plus the obsolete RFC 850 and asctime
+    // forms recipients must accept. Always UTC, so the date and the clock are
+    // read apart (no local time, no DST gap). The weekday is redundant, and
+    // unverifiable against RFC 850's two-digit year: it is dropped.
+    QString text = QString::fromLatin1(value).simplified();
+    const qsizetype comma = text.indexOf(QLatin1Char(','));
+    const qsizetype space = text.indexOf(QLatin1Char(' '));
+    if (space <= 0)
+        return std::nullopt;
+    text = comma > 0 && comma < space ? text.mid(comma + 1).trimmed() : text.mid(space + 1);
+    const QStringList t = text.split(QLatin1Char(' '));
+    const QLatin1String gmt("GMT");
+    QDate date;
+    QString clock;
+    if (t.size() == 5 && t.at(4) == gmt) {          // 06 Nov 1994 08:49:37 GMT
+        date = QDate::fromString(t.at(0) + QLatin1Char(' ') + t.at(1) + QLatin1Char(' ') + t.at(2),
+                                 QStringLiteral("dd MMM yyyy"));
+        clock = t.at(3);
+    } else if (t.size() == 3 && t.at(2) == gmt) {   // 06-Nov-94 08:49:37 GMT
+        date = QDate::fromString(t.at(0), QStringLiteral("dd-MMM-yy"));   // 19yy
+        // A two-digit year more than 50 years ahead is in the past century.
+        const int nowYear = QDateTime::fromMSecsSinceEpoch(nowMs, QTimeZone::utc()).date().year();
+        int year = date.year();
+        while (year + 100 <= nowYear + 50)
+            year += 100;
+        date = date.addYears(year - date.year());
+        clock = t.at(1);
+    } else if (t.size() == 4) {                     // Nov 6 08:49:37 1994
+        date = QDate::fromString(t.at(0) + QLatin1Char(' ') + t.at(1) + QLatin1Char(' ') + t.at(3),
+                                 QStringLiteral("MMM d yyyy"));
+        clock = t.at(2);
+    }
+    const QTime time = QTime::fromString(clock, QStringLiteral("HH:mm:ss"));
+    if (!date.isValid() || !time.isValid())
+        return std::nullopt;
+    return QDateTime(date, time, QTimeZone::utc()).toMSecsSinceEpoch();
 }
 
 qint64 backoffDelayMs(int failures, std::optional<qint64> retryAfterMs, double jitterUnit)

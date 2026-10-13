@@ -86,7 +86,8 @@ public:
     //   if command -v <cmd> >/dev/null 2>&1; then
     //     cd <cwd> && exec <cmd> <args>
     //   elif bash -lc 'command -v "$0"' <cmd> </dev/null >/dev/null 2>&1; then
-    //     exec bash -lc 'exec 0<&4 4<&- 1>&3 3>&-; cd <cwd> && exec <cmd> <args>'     //       4<&0 3>&1 0</dev/null 1>/dev/null
+    //     exec bash -lc 'exec 0<&4 4<&- 1>&3 3>&-; cd <cwd> && exec <cmd> <args>' \
+    //       4<&0 3>&1 0</dev/null 1>/dev/null
     //   elif bash -ic 'command -v "$0"' <cmd> </dev/null >/dev/null 2>&1; then
     //     exec bash -ic 'exec 0<&4 4<&- 1>&3 3>&-; cd <cwd> && exec <cmd> <args>' \
     //       4<&0 3>&1 0</dev/null 1>/dev/null

@@ -23,7 +23,6 @@
 #include "ScintillaCommenter.h"
 
 #include "remote/IFileSystemBackend.h"
-#include "remote/IFileSystemBackend.h"
 
 #include "ByteArrayUtils.h"
 #include "uchardet.h"

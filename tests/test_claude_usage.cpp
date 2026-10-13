@@ -357,6 +357,18 @@ void TestClaudeUsage::retry_after_http_date()
     QCOMPARE(parseRetryAfter(date, at - 90'000), std::optional<qint64>(90'000));
     // A date already in the past means "retry now", not a negative delay.
     QCOMPARE(parseRetryAfter(date, at + 5'000), std::optional<qint64>(0));
+
+    // RFC 9110's obsolete forms name the same instant.
+    QCOMPARE(parseHttpDate("Wednesday, 21-Oct-15 07:28:00 GMT", at), std::optional<qint64>(at));
+    QCOMPARE(parseHttpDate("Wed Oct 21 07:28:00 2015", at), std::optional<qint64>(at));
+    // asctime pads single-digit days with a space.
+    const qint64 nov6 = 784'111'777'000;   // Sun, 06 Nov 1994 08:49:37 GMT
+    QCOMPARE(parseHttpDate("Sun Nov  6 08:49:37 1994", nov6), std::optional<qint64>(nov6));
+    QCOMPARE(parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT", nov6), std::optional<qint64>(nov6));
+    // A two-digit year is the one within 50 years ahead of now.
+    QCOMPARE(parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT", at), std::optional<qint64>(nov6));
+    QVERIFY(!parseHttpDate("Wed, 21 Oct 2015 07:28:00 PST", at));
+    QVERIFY(!parseHttpDate("Wed, 21 Oct 2015 25:28:00 GMT", at));
 }
 
 void TestClaudeUsage::retry_after_rejects_garbage()

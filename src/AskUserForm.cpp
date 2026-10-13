@@ -586,22 +586,25 @@ QString textBlock(const QString &text)
     return out;
 }
 
-// The recommendation rendered like an answer value.
-QString valueText(const Question &q, const QJsonValue &v)
+// The recommended answer as the agent sees the chosen one: choices and
+// yes/no with their labels.
+QString recommendedText(const Question &q)
 {
+    const QJsonValue &v = q.recommended;
     switch (q.type) {
     case QuestionType::Single:
     case QuestionType::Select:
-    case QuestionType::Proposal:
-        return v.toString();
+        return choiceText(q, v.toString());
     case QuestionType::Multi: {
         QStringList parts;
-        for (const QJsonValue &item : v.toArray())
-            parts.append(item.toString());
+        for (const auto &item : v.toArray())
+            parts.append(choiceText(q, item.toString()));
         return parts.join(QStringLiteral(", "));
     }
+    case QuestionType::Proposal:
+        return v.toString();
     case QuestionType::Confirm:
-        return v.toBool() ? QStringLiteral("yes") : QStringLiteral("no");
+        return confirmText(q, v.toBool());
     case QuestionType::Number:
         return formatNumber(v.toDouble());
     case QuestionType::Text:
@@ -609,25 +612,6 @@ QString valueText(const Question &q, const QJsonValue &v)
         return quoted(v.toString());
     }
     return {};
-}
-
-// The recommended answer as the agent sees the chosen one: choices with
-// their labels.
-QString recommendedText(const Question &q)
-{
-    switch (q.type) {
-    case QuestionType::Single:
-    case QuestionType::Select:
-        return choiceText(q, q.recommended.toString());
-    case QuestionType::Multi: {
-        QStringList parts;
-        for (const auto &item : q.recommended.toArray())
-            parts.append(choiceText(q, item.toString()));
-        return parts.join(QStringLiteral(", "));
-    }
-    default:
-        return valueText(q, q.recommended);
-    }
 }
 
 QString answerText(const Question &q, const Answer &a)

@@ -116,6 +116,9 @@ constexpr qint64 kRetryAfterCapMs = 60 * 60'000;
 // `Retry-After` header: delta-seconds or an HTTP-date -> milliseconds from
 // `nowMs` (a past date is 0). nullopt for empty, negative or malformed values.
 std::optional<qint64> parseRetryAfter(const QByteArray &header, qint64 nowMs);
+// An HTTP-date in any of RFC 9110's three forms -> UTC milliseconds since the
+// epoch. `nowMs` resolves RFC 850's two-digit year.
+std::optional<qint64> parseHttpDate(const QByteArray &value, qint64 nowMs);
 
 // Delay before the next attempt after `failures` consecutive failures: 60 s
 // doubling to a 15 min cap, scaled by 0.9..1.1 from `jitterUnit` (0..1) and

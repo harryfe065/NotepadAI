@@ -1370,10 +1370,17 @@ void AcpToolCallCard::refreshHeader()
     // QLabel + TextSelectableByMouse under-reports sizeHint until a full
     // layout pass (the expand→collapse path). Pin the min height from font
     // metrics so a collapsed card autosizes to 1 or 2 lines on first paint.
-    if (shown.contains(QLatin1Char('\n'))) {
-        m_titleLabel->setMinimumHeight(fm.size(0, shown).height());
-    } else {
-        m_titleLabel->setMinimumHeight(0);
+    const int minTitleH = shown.contains(QLatin1Char('\n')) ? fm.size(0, shown).height() : 0;
+    if (m_titleLabel->minimumHeight() != minTitleH) {
+        m_titleLabel->setMinimumHeight(minTitleH);
+        // The header row (the first child layout) caches its size hint, which
+        // refitBodyHeight reads: drop it only when the title height changed.
+        for (int i = 0; m_outer && i < m_outer->count(); ++i) {
+            if (QLayout *row = m_outer->itemAt(i)->layout()) {
+                row->invalidate();
+                break;
+            }
+        }
     }
     refitBodyHeight();
 }
@@ -1564,17 +1571,12 @@ void AcpToolCallCard::refitBodyHeight()
     // Pin the card's own height. setFixedHeight on the inner browser only
     // clamps the browser; the card's QFrame sizeHint still cascades through
     // QAbstractScrollArea's font-derived default and inflates the card.
-    // Rows up to the header layout: a Goal badge may sit above it. The
-    // header layout caches its hint; a new title (refreshHeader pins the
-    // label's minimum height) only reaches it after an invalidate.
+    // Rows up to the header layout: a Goal badge may sit above it.
     int headerH = 0;
     for (int i = 0; m_outer && i < m_outer->count(); ++i) {
         QLayoutItem *item = m_outer->itemAt(i);
-        QLayout *row = item->layout();
-        if (row)
-            row->invalidate();
         headerH += item->sizeHint().height() + (i > 0 ? m_outer->spacing() : 0);
-        if (row)
+        if (item->layout())
             break;
     }
     int cardH = marginT + marginB + headerH;
