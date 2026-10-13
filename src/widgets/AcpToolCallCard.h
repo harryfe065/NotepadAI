@@ -21,11 +21,13 @@
 
 #include <QFont>
 #include <QFrame>
+#include <QHash>
 #include <QJsonObject>
 #include <QString>
 
 #include "AcpProtocol.h"
 
+class QHBoxLayout;
 class QLabel;
 class QTextBrowser;
 class QTimer;
@@ -64,7 +66,25 @@ public:
     // hardcoded HTML the body renders.
     void setChatFont(const QFont &font);
 
+    // Header title for any tool call ("Command: ls", "Agent Explore: …").
+    static QString enrichedTitle(const AcpProtocol::AcpToolCall &tc);
+
+    // Agent/Task cards: the calls their subagent made nest inside, never in
+    // the transcript. Collapsed, the card shows how many there are and, while
+    // the subagent runs, a muted "now" line (nowLine: its current call's
+    // title). The nested cards are built only once the card is opened.
+    void setSubagentActivity(int toolCount, const QString &nowLine);
+    // Takes ownership; appended in arrival order under the header.
+    void addChildCard(AcpToolCallCard *child);
+    AcpToolCallCard *childCard(const QString &id) const { return m_childCards.value(id, nullptr); }
+    int childCardCount() const { return static_cast<int>(m_childCards.size()); }
+
+signals:
+    // Opened with fewer nested cards built than the subagent made calls.
+    void childCardsRequested();
+
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     // QStackedWidget (session tabs) hides inactive pages without a size change,
     // so resizeEvent does not re-run on tab switch. Re-fit on show so an
@@ -86,6 +106,9 @@ private:
     QString statusGlyph() const;
     QString computeEnrichedTitle() const;
     void refreshDuration();
+    int headerRowIndex() const;
+    void refreshNowLine();
+    void refreshSubagentRows();
 
     QString m_id;
     QString m_title;
@@ -119,6 +142,14 @@ private:
     QToolButton *m_expandBtn = nullptr;
     QTextBrowser *m_body = nullptr;      // null until first expand (ensureBody)
     QVBoxLayout *m_outer = nullptr;
+    QHBoxLayout *m_headerLayout = nullptr;
+
+    // Subagent (Agent/Task) state; all null/empty on ordinary cards.
+    int m_subagentToolCount = 0;
+    QString m_subagentNowLine;
+    QLabel *m_nowLabel = nullptr;         // built with the first activity
+    QFrame *m_childHost = nullptr;        // built with the first nested card
+    QHash<QString, AcpToolCallCard *> m_childCards; // owned via m_childHost
 };
 
 #endif // ACP_TOOL_CALL_CARD_H

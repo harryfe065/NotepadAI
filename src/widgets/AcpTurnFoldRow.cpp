@@ -75,14 +75,14 @@ void AcpTurnFoldRow::startLive(qint64 startMs)
     onLiveTick();
 }
 
-void AcpTurnFoldRow::finishLive()
+void AcpTurnFoldRow::finishLive(qint64 endMs)
 {
     if (!m_live)
         return;
     m_live = false;
     if (m_liveTimer)
         m_liveTimer->stop();
-    m_workedMs = qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs);
+    m_workedMs = qMax<qint64>(0, (endMs > 0 ? endMs : QDateTime::currentMSecsSinceEpoch()) - m_liveStartMs);
     setCursor(m_expandable ? Qt::PointingHandCursor : Qt::ArrowCursor);
     setFocusPolicy(m_expandable ? Qt::TabFocus : Qt::NoFocus);
     refreshText();

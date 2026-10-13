@@ -40,6 +40,7 @@ private slots:
     void unknownToolCallIsIgnored();
     void newestTurnBeginFindsLastPrompt();
     void toolCallsAreCounted();
+    void lateAttributedSubagentCallIsSkipped();
     void reportOnlyTurnKeepsDurationRow();
 };
 
@@ -333,6 +334,24 @@ void TestAcpTurnFolding::toolCallsAreCounted()
     const auto turns = f.run();
     QCOMPARE(turns.size(), 1);
     QCOMPARE(turns.at(0).toolCalls, 2);
+}
+
+void TestAcpTurnFolding::lateAttributedSubagentCallIsSkipped()
+{
+    Fx f;
+    f.msg("user", QStringLiteral("q1"));
+    const int agent = f.tool(QStringLiteral("agent"));
+    // Got its entry before the adapter named its subagent: it renders inside
+    // the Agent card, so the turn neither folds nor counts it.
+    f.tool(QStringLiteral("child"));
+    f.tools[QStringLiteral("child")].parentToolCallId = QStringLiteral("agent");
+    f.msg("assistant", QStringLiteral("report"));
+    f.msg("user", QStringLiteral("q2"));
+
+    const auto turns = f.run();
+    QCOMPARE(turns.size(), 1);
+    QCOMPARE(turns.at(0).folded, (QVector<int>{agent}));
+    QCOMPARE(turns.at(0).toolCalls, 1);
 }
 
 void TestAcpTurnFolding::reportOnlyTurnKeepsDurationRow()

@@ -30,7 +30,8 @@ class QTimer;
 //
 // While its turn is still running the row is "live": a non-interactive
 // "Worked for Xs" whose seconds tick once per second, no chevron. finishLive()
-// freezes the total and turns it into the regular collapsible row.
+// freezes the total and turns it into the regular collapsible row. A finished
+// row can go live again (a background wake-up continues its turn).
 class AcpTurnFoldRow : public QPushButton
 {
     Q_OBJECT
@@ -50,7 +51,8 @@ public:
 
     // startMs: epoch ms the turn began (<= 0 = now).
     void startLive(qint64 startMs);
-    void finishLive();
+    // endMs: epoch ms the turn ended (<= 0 = now).
+    void finishLive(qint64 endMs = 0);
     bool isLive() const { return m_live; }
 
     // Styled widget: the transcript host's font does not reach it, so the

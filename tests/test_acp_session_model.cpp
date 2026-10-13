@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
 #include <QPair>
@@ -41,6 +42,9 @@ private slots:
     void blankOpeningChunkDoesNotCreateBubble();
     void thoughtStreamAutoClosesOnAssistantChunk();
     void toolCallMerge();
+    void subagentCallsNestUnderTheirAgentCall();
+    void lateSubagentAttributionKeepsTimeline();
+    void subagentChildrenSurviveRoundTrip();
     void terminalPlaceholderStrippedOnReceive();
     void terminalOutputDeltasAccumulate();
     void ompWriteSynthesizesDiffAndPreservesOnComplete();
@@ -271,6 +275,95 @@ void TestAcpSessionModel::toolCallMerge()
     QCOMPARE(spy.count(), 2);
     QCOMPARE(spy.at(0).at(0).toString(), QStringLiteral("call-1"));
     QCOMPARE(spy.at(1).at(0).toString(), QStringLiteral("call-1"));
+}
+
+namespace {
+
+AcpProtocol::AcpToolCall makeToolCall(const QString &id, const QString &parent = {})
+{
+    AcpProtocol::AcpToolCall tc;
+    tc.id = id;
+    tc.title = id;
+    tc.status = QStringLiteral("pending");
+    tc.parentToolCallId = parent;
+    return tc;
+}
+
+} // namespace
+
+void TestAcpSessionModel::subagentCallsNestUnderTheirAgentCall()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+    model.onPromptStarted();
+    model.onMessageChunk(QStringLiteral("Spawning two "));
+    model.onToolCallReceived(makeToolCall(QStringLiteral("agentA")));
+    model.onToolCallReceived(makeToolCall(QStringLiteral("agentB")));
+    model.onMessageChunk(QStringLiteral("Waiting on "));
+    // Interleaved subagent calls: no timeline entries, arrival order per parent.
+    model.onToolCallReceived(makeToolCall(QStringLiteral("a1"), QStringLiteral("agentA")));
+    model.onToolCallReceived(makeToolCall(QStringLiteral("b1"), QStringLiteral("agentB")));
+    model.onToolCallReceived(makeToolCall(QStringLiteral("a2"), QStringLiteral("agentA")));
+    AcpProtocol::AcpToolCallUpdate early; // an update that outran its tool_call
+    early.id = QStringLiteral("b2");
+    early.status = QStringLiteral("in_progress");
+    early.parentToolCallId = QStringLiteral("agentB");
+    model.onToolCallUpdated(early);
+    // ...and do not split the main agent's streaming bubble.
+    model.onMessageChunk(QStringLiteral("them."));
+
+    QCOMPARE(model.timeline().size(), 4); // text, agentA, agentB, text
+    QCOMPARE(model.subagentChildren(QStringLiteral("agentA")),
+             (QStringList{QStringLiteral("a1"), QStringLiteral("a2")}));
+    QCOMPARE(model.subagentChildren(QStringLiteral("agentB")),
+             (QStringList{QStringLiteral("b1"), QStringLiteral("b2")}));
+    QCOMPARE(model.toolCalls().value(QStringLiteral("b2")).parentToolCallId, QStringLiteral("agentB"));
+    QCOMPARE(model.messages().size(), 2);
+    QCOMPARE(model.messages().at(1).content.first().text, QStringLiteral("Waiting on them."));
+}
+
+void TestAcpSessionModel::lateSubagentAttributionKeepsTimeline()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+    model.onToolCallReceived(makeToolCall(QStringLiteral("agent")));
+    // An eager permission tool_call before the adapter knew its subagent.
+    model.onToolCallReceived(makeToolCall(QStringLiteral("eager")));
+    QCOMPARE(model.timeline().size(), 2);
+
+    AcpProtocol::AcpToolCallUpdate up;
+    up.id = QStringLiteral("eager");
+    up.parentToolCallId = QStringLiteral("agent");
+    model.onToolCallUpdated(up);
+
+    // The entry stays (view indices hold); readers skip it by its parent.
+    QCOMPARE(model.timeline().size(), 2);
+    QCOMPARE(model.toolCalls().value(QStringLiteral("eager")).parentToolCallId, QStringLiteral("agent"));
+    QCOMPARE(model.subagentChildren(QStringLiteral("agent")), QStringList{QStringLiteral("eager")});
+    // A repeated update does not list it twice.
+    model.onToolCallUpdated(up);
+    QCOMPARE(model.subagentChildren(QStringLiteral("agent")).size(), 1);
+}
+
+void TestAcpSessionModel::subagentChildrenSurviveRoundTrip()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel a(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+    a.onToolCallReceived(makeToolCall(QStringLiteral("agent")));
+    // Ids out of hash order: the parent's list keeps arrival order.
+    for (const char *id : {"z", "m", "a", "q"})
+        a.onToolCallReceived(makeToolCall(QLatin1String(id), QStringLiteral("agent")));
+
+    QFile f(tmp.path() + QStringLiteral("/s2.json"));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QJsonDocument(a.toHistoryJson()).toJson());
+    f.close();
+
+    AcpSessionModel b(QStringLiteral("s2"), QStringLiteral("proj"), tmp.path());
+    QCOMPARE(b.timeline().size(), 1);
+    QCOMPARE(b.subagentChildren(QStringLiteral("agent")),
+             (QStringList{QStringLiteral("z"), QStringLiteral("m"), QStringLiteral("a"), QStringLiteral("q")}));
+    QCOMPARE(b.toolCalls().value(QStringLiteral("q")).parentToolCallId, QStringLiteral("agent"));
 }
 
 void TestAcpSessionModel::terminalPlaceholderStrippedOnReceive()

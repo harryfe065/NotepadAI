@@ -961,10 +961,17 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
             return;
         m_promptProducedOutput = true;
         noteStreamingActivity();
+        // A subagent's narration is not the agent's answer: its result comes
+        // back through the Agent tool call, and its chunks would interleave
+        // with (and split) the main agent's bubble.
+        if (!AcpProtocol::subagentParentToolCallId(update).isEmpty())
+            return;
         emit messageChunk(text, update.value(QStringLiteral("messageId")).toString());
     } else if (kind == QLatin1String("agent_thought_chunk")) {
         m_promptProducedOutput = true;
         noteStreamingActivity();
+        if (!AcpProtocol::subagentParentToolCallId(update).isEmpty())
+            return; // same as a subagent's message chunk
         const QString text = AcpProtocol::contentBlockToChunkText(
             update.value(QStringLiteral("content")).toObject());
         emit thoughtChunk(text);
@@ -981,6 +988,7 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
         tc.rawInput = update.value(QStringLiteral("rawInput")).toObject();
         tc.rawOutput = AcpProtocol::rawOutputToObject(update.value(QStringLiteral("rawOutput")));
         tc.groupId = update.value(QStringLiteral("groupId")).toInt(0);
+        tc.parentToolCallId = AcpProtocol::subagentParentToolCallId(update);
         if (AcpProtocol::isAdvisorToolName(tc.name)) {
             m_advisorToolCallIds.insert(tc.id);
         }
@@ -1020,6 +1028,9 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
         }
         if (AcpProtocol::toolCallUpdateIsBackgrounded(update)) {
             u.backgrounded = true;
+        }
+        if (QString parent = AcpProtocol::subagentParentToolCallId(update); !parent.isEmpty()) {
+            u.parentToolCallId = std::move(parent);
         }
         noteScheduledJobUpdate(update);
         const QJsonValue c = update.value(QStringLiteral("content"));

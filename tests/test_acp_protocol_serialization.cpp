@@ -33,6 +33,7 @@ private slots:
     void resourceLinkFallsBackToNameWhenUriMissing();
     void resourceLinkFallsBackToTitleWhenNameMissing();
     void terminalOutputDeltaFromMeta();
+    void subagentParentToolCallIdReadsMetaKeys();
     void stripTerminalContentBlocks();
     void appendToolCallTextDeltaAccumulates();
     void toolCallStatusForUiMapsOmpPending();
@@ -194,6 +195,39 @@ void TestAcpProtocolSerialization::terminalOutputDeltaFromMeta()
     meta.insert(QStringLiteral("terminal_output"), output);
     QCOMPARE(AcpProtocol::terminalOutputDeltaFromMeta(meta), QStringLiteral("hello"));
     QCOMPARE(AcpProtocol::terminalOutputDeltaFromMeta(QJsonObject()), QString());
+}
+
+void TestAcpProtocolSerialization::subagentParentToolCallIdReadsMetaKeys()
+{
+    auto updateWith = [](const QJsonObject &meta, const QString &toolCallId = {}) {
+        QJsonObject u;
+        u.insert(QStringLiteral("sessionUpdate"), QStringLiteral("tool_call"));
+        if (!toolCallId.isEmpty())
+            u.insert(QStringLiteral("toolCallId"), toolCallId);
+        u.insert(QStringLiteral("_meta"), meta);
+        return u;
+    };
+    // claude-agent-acp
+    const QJsonObject claude{{QStringLiteral("claudeCode"),
+                              QJsonObject{{QStringLiteral("parentToolUseId"), QStringLiteral("toolu_A")}}}};
+    QCOMPARE(AcpProtocol::subagentParentToolCallId(updateWith(claude, QStringLiteral("toolu_B"))),
+             QStringLiteral("toolu_A"));
+    // Generic key wins over the Claude one.
+    QJsonObject both = claude;
+    both.insert(QStringLiteral("parentToolCallId"), QStringLiteral("p1"));
+    QCOMPARE(AcpProtocol::subagentParentToolCallId(updateWith(both)), QStringLiteral("p1"));
+    QCOMPARE(AcpProtocol::subagentParentToolCallId(
+                 updateWith(QJsonObject{{QStringLiteral("parentToolUseId"), QStringLiteral("p2")}})),
+             QStringLiteral("p2"));
+    // The main agent: no meta, or meta without a parent.
+    QCOMPARE(AcpProtocol::subagentParentToolCallId(QJsonObject{}), QString());
+    QCOMPARE(AcpProtocol::subagentParentToolCallId(
+                 updateWith(QJsonObject{{QStringLiteral("claudeCode"),
+                                         QJsonObject{{QStringLiteral("toolName"), QStringLiteral("Bash")}}}})),
+             QString());
+    // A call never parents itself.
+    QCOMPARE(AcpProtocol::subagentParentToolCallId(updateWith(claude, QStringLiteral("toolu_A"))),
+             QString());
 }
 
 void TestAcpProtocolSerialization::stripTerminalContentBlocks()

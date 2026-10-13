@@ -204,7 +204,9 @@ private:
     // (nothing to lay out or paint); expanding instantiates them, collapsing
     // destroys them. A running turn is not folded: it is headed by a live
     // ticking row (ensureLiveTurnRow) that foldTurn adopts when the turn ends,
-    // so every finished turn, newest included, looks the same.
+    // so every finished turn, newest included, looks the same. A background
+    // wake-up turn continues the newest turn: its fold row goes live again and
+    // the turn refolds once the wake-up stays over (m_wakeFoldTimer).
     void foldCompletedTurns(bool includeNewest = false);
     void foldTurn(const AcpTurnFolding::Turn &turn);
     void ensureLiveTurnRow();
@@ -215,6 +217,13 @@ private:
     bool materializeTurnSlice(int turnBegin, const QFont &font);
     void pumpExpandQueue();
     void removeEntryWidget(const AcpTimelineEntry &entry);
+    // Subagent calls (tool calls with a parentToolCallId) nest inside their
+    // Agent card: never a transcript widget, never counted by folding.
+    void onSubagentToolCallChanged(const AcpProtocol::AcpToolCall &tc);
+    AcpToolCallCard *toolCallCard(const QString &id, int depth = 0) const;
+    void wireToolCallCard(AcpToolCallCard *card);
+    void refreshSubagentActivity(AcpToolCallCard *card);
+    void materializeSubagentChildren(const QString &parentId);
     // Copy buttons under each finished turn's final report.
     // includeNewest: the newest turn has ended.
     void refreshResponseActions(bool includeNewest);
@@ -438,6 +447,11 @@ private:
     QPointer<AcpTurnFoldRow> m_liveRow; // heads the running turn; ticks once per second
     int m_liveTurnBegin = -1;           // timeline index of that turn's anchor
     int m_liveToolCalls = 0;            // tool calls so far in that turn
+    // The live row is a folded turn's row gone live again: a wake-up turn
+    // (background task result, no new prompt) continues the newest turn.
+    bool m_liveRowReopened = false;
+    QTimer *m_wakeFoldTimer = nullptr;  // single-shot: fold once a wake-up turn stays over
+    qint64 m_wakeTurnEndedMs = 0;       // when that wait began (the turn's end)
     AcpPlanWidget *m_planWidget = nullptr;
     QPointer<AcpMessageWidget> m_activeThought;
     QPointer<AcpPermissionPrompt> m_activePermissionPrompt;

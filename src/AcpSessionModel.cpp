@@ -242,12 +242,29 @@ void AcpSessionModel::loadFromDisk()
         tc.groupId = to.value(QStringLiteral("groupId")).toInt();
         tc.backgrounded = to.value(QStringLiteral("backgrounded")).toBool(false);
         tc.durationMs = static_cast<qint64>(to.value(QStringLiteral("durationMs")).toDouble(-1));
+        tc.parentToolCallId = to.value(QStringLiteral("parentToolCallId")).toString();
         if (!tc.id.isEmpty()) {
             m_toolCalls.insert(tc.id, tc);
             if (tc.groupId > m_currentGroupId) {
                 m_currentGroupId = tc.groupId;
             }
+            // Arrival order lives on the parent (m_toolCalls is unordered).
+            const QJsonArray children = to.value(QStringLiteral("subagentChildren")).toArray();
+            if (!children.isEmpty()) {
+                QStringList &ids = m_subagentChildren[tc.id];
+                ids.reserve(children.size());
+                for (const auto cv : children) {
+                    if (QString id = cv.toString(); !id.isEmpty())
+                        ids.append(std::move(id));
+                }
+            }
         }
+    }
+    // Children whose id the parent's list lacks (hand-edited or older file).
+    for (auto it = m_toolCalls.cbegin(); it != m_toolCalls.cend(); ++it) {
+        const QString &parent = it.value().parentToolCallId;
+        if (!parent.isEmpty() && !m_subagentChildren.value(parent).contains(it.key()))
+            m_subagentChildren[parent].append(it.key());
     }
 
     // timeline
@@ -334,6 +351,13 @@ QJsonObject AcpSessionModel::toHistoryJson() const
         }
         if (tc.durationMs >= 0) {
             to.insert(QStringLiteral("durationMs"), static_cast<double>(tc.durationMs));
+        }
+        if (!tc.parentToolCallId.isEmpty()) {
+            to.insert(QStringLiteral("parentToolCallId"), tc.parentToolCallId);
+        }
+        if (const auto children = m_subagentChildren.constFind(tc.id);
+            children != m_subagentChildren.constEnd() && !children->isEmpty()) {
+            to.insert(QStringLiteral("subagentChildren"), QJsonArray::fromStringList(*children));
         }
         if (AskUserForm::isAskUserToolCall(tc.name, tc.title, tc.rawInput)) {
             // Small (validated: <= 30 questions) and needed to restore the form.
@@ -642,15 +666,34 @@ void AcpSessionModel::onThoughtChunk(const QString &text)
     schedulePersistIfNeeded();
 }
 
+void AcpSessionModel::attachSubagentChild(const QString &parentToolCallId, const QString &childId)
+{
+    QStringList &ids = m_subagentChildren[parentToolCallId];
+    if (!ids.contains(childId))
+        ids.append(childId);
+}
+
 void AcpSessionModel::onToolCallReceived(const AcpToolCall &tc)
 {
+    // A re-sent tool_call without the meta keeps the attribution it had.
+    QString parentToolCallId = tc.parentToolCallId;
+    if (parentToolCallId.isEmpty()) {
+        const auto prior = m_toolCalls.constFind(tc.id);
+        if (prior != m_toolCalls.constEnd())
+            parentToolCallId = prior->parentToolCallId;
+    }
+    const bool subagentChild = !parentToolCallId.isEmpty();
     // A tool-call card is a new timeline peer — close any active streaming
     // assistant text or thought so a subsequent text/thought chunk opens a
     // fresh bubble below the card instead of merging into the previous one.
-    m_streamingAssistantMessageIndex = -1;
-    m_streamingThoughtMessageIndex = -1;
+    // A subagent's call nests under its Agent card instead: not a peer.
+    if (!subagentChild) {
+        m_streamingAssistantMessageIndex = -1;
+        m_streamingThoughtMessageIndex = -1;
+    }
 
     AcpToolCall copy = tc;
+    copy.parentToolCallId = parentToolCallId;
     copy.groupId = m_currentGroupId;
     if (!AcpProtocol::toolCallStatusIsTerminal(copy.status)) {
         copy.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -658,13 +701,18 @@ void AcpSessionModel::onToolCallReceived(const AcpToolCall &tc)
     AcpProtocol::injectToolCallPath(copy.rawInput, QJsonArray{});
     AcpProtocol::stripTerminalContentBlocks(copy.content);
     copy.content = AcpProtocol::ensureDiffContent(copy.content, copy.rawInput, copy.rawOutput);
+    const bool known = m_toolCalls.contains(copy.id);
     m_toolCalls.insert(copy.id, copy);
 
-    AcpTimelineEntry entry;
-    entry.kind = AcpTimelineEntry::Kind::ToolCall;
-    entry.toolCallId = copy.id;
-    entry.groupId = m_currentGroupId;
-    m_timeline.append(entry);
+    if (subagentChild) {
+        attachSubagentChild(copy.parentToolCallId, copy.id);
+    } else if (!known) {
+        AcpTimelineEntry entry;
+        entry.kind = AcpTimelineEntry::Kind::ToolCall;
+        entry.toolCallId = copy.id;
+        entry.groupId = m_currentGroupId;
+        m_timeline.append(entry);
+    }
 
     emit toolCallAddedOrUpdated(copy.id);
     schedulePersistIfNeeded();
@@ -678,11 +726,17 @@ void AcpSessionModel::onToolCallUpdated(const AcpToolCallUpdate &update)
         // initial tool_call. We still want it in the timeline.
         // Also close any active streaming text/thought, since this branch
         // adds a fresh timeline peer (same rule as onToolCallReceived).
-        m_streamingAssistantMessageIndex = -1;
-        m_streamingThoughtMessageIndex = -1;
+        const bool subagentChild = update.parentToolCallId.has_value();
+        if (!subagentChild) {
+            m_streamingAssistantMessageIndex = -1;
+            m_streamingThoughtMessageIndex = -1;
+        }
 
         AcpToolCall tc;
         tc.id = update.id;
+        if (subagentChild) {
+            tc.parentToolCallId = *update.parentToolCallId;
+        }
         if (update.title.has_value()) {
             tc.title = *update.title;
         }
@@ -716,12 +770,23 @@ void AcpSessionModel::onToolCallUpdated(const AcpToolCallUpdate &update)
         }
         m_toolCalls.insert(update.id, tc);
 
-        AcpTimelineEntry entry;
-        entry.kind = AcpTimelineEntry::Kind::ToolCall;
-        entry.toolCallId = update.id;
-        entry.groupId = m_currentGroupId;
-        m_timeline.append(entry);
+        if (subagentChild) {
+            attachSubagentChild(tc.parentToolCallId, tc.id);
+        } else {
+            AcpTimelineEntry entry;
+            entry.kind = AcpTimelineEntry::Kind::ToolCall;
+            entry.toolCallId = update.id;
+            entry.groupId = m_currentGroupId;
+            m_timeline.append(entry);
+        }
     } else {
+        // Late attribution: an eager (permission) tool_call can arrive before
+        // the adapter knows its subagent. The call keeps its timeline entry;
+        // every reader skips entries whose call has a parent.
+        if (update.parentToolCallId.has_value() && it.value().parentToolCallId.isEmpty()) {
+            it.value().parentToolCallId = *update.parentToolCallId;
+            attachSubagentChild(*update.parentToolCallId, update.id);
+        }
         const QJsonArray previousContent = it.value().content;
         if (update.title.has_value()) {
             it.value().title = *update.title;
@@ -1100,6 +1165,8 @@ void AcpSessionModel::upsertGoalJudgeToolCall(const AcpToolCall &tc)
 {
     AcpToolCall copy = tc;
     copy.id = namespacedGoalJudgeToolId(tc.id);
+    if (!copy.parentToolCallId.isEmpty())
+        copy.parentToolCallId = namespacedGoalJudgeToolId(copy.parentToolCallId);
     closeGoalJudgeStreaming();
     const int assistantIdx = m_streamingAssistantMessageIndex;
     const int thoughtIdx = m_streamingThoughtMessageIndex;
@@ -1114,6 +1181,8 @@ void AcpSessionModel::applyGoalJudgeToolCallUpdate(const AcpToolCallUpdate &upda
 {
     AcpToolCallUpdate u = update;
     u.id = namespacedGoalJudgeToolId(update.id);
+    if (u.parentToolCallId.has_value())
+        u.parentToolCallId = namespacedGoalJudgeToolId(*u.parentToolCallId);
     const bool existed = m_toolCalls.contains(u.id);
     if (!existed)
         closeGoalJudgeStreaming();
@@ -1173,6 +1242,12 @@ void AcpSessionModel::removeGoalJudgeTurn()
             if (e.kind == AcpTimelineEntry::Kind::ToolCall) {
                 removedTools.append(e.toolCallId);
                 m_toolCalls.remove(e.toolCallId);
+                // Its subagent's calls have no timeline entries of their own.
+                const QStringList children = m_subagentChildren.take(e.toolCallId);
+                for (const QString &child : children) {
+                    if (m_toolCalls.remove(child))
+                        removedTools.append(child);
+                }
             } else if (e.messageIndex >= 0) {
                 removedMsg.append(e.messageIndex);
             }

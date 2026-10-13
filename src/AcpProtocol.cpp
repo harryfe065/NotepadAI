@@ -562,6 +562,24 @@ bool toolCallUpdateIsBackgrounded(const QJsonObject &update)
         .value(QStringLiteral("backgrounded")).toBool(false);
 }
 
+QString subagentParentToolCallId(const QJsonObject &update)
+{
+    const QJsonValue metaValue = update.value(QStringLiteral("_meta"));
+    if (!metaValue.isObject())
+        return {}; // the main agent's updates: no lookups past this
+    const QJsonObject meta = metaValue.toObject();
+    QString parent = meta.value(QStringLiteral("parentToolCallId")).toString();
+    if (parent.isEmpty()) {
+        parent = meta.value(QStringLiteral("claudeCode")).toObject()
+                     .value(QStringLiteral("parentToolUseId")).toString();
+    }
+    if (parent.isEmpty())
+        parent = meta.value(QStringLiteral("parentToolUseId")).toString();
+    if (!parent.isEmpty() && parent == update.value(QStringLiteral("toolCallId")).toString())
+        return {};
+    return parent;
+}
+
 QString formatWaitDuration(qint64 ms)
 {
     if (ms < 0) {

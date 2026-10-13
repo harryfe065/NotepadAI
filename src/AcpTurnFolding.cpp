@@ -98,7 +98,10 @@ QVector<Turn> compute(const QVector<AcpTimelineEntry> &timeline,
                 continue;
             const AcpTimelineEntry &e = timeline.at(i);
             if (e.kind == AcpTimelineEntry::Kind::ToolCall) {
-                if (toolCalls.contains(e.toolCallId)) {
+                // A subagent's call attributed after it got its entry renders
+                // inside its Agent card, not here.
+                const auto tc = toolCalls.constFind(e.toolCallId);
+                if (tc != toolCalls.constEnd() && tc->parentToolCallId.isEmpty()) {
                     turn.folded.append(i);
                     ++turn.toolCalls;
                 }

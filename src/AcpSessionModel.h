@@ -122,6 +122,14 @@ public:
     const QVector<AcpMessage> &messages() const { return m_messages; }
     const QHash<QString, AcpProtocol::AcpToolCall> &toolCalls() const { return m_toolCalls; }
     const QVector<AcpTimelineEntry> &timeline() const { return m_timeline; }
+    // Tool calls a subagent made, in arrival order, keyed by the Agent/Task
+    // tool call that spawned it. They live in toolCalls() but get no timeline
+    // entry (a call attributed late keeps the one it already had; readers skip
+    // tool calls with a parentToolCallId).
+    QStringList subagentChildren(const QString &parentToolCallId) const
+    {
+        return m_subagentChildren.value(parentToolCallId);
+    }
     const std::optional<AcpProtocol::AcpUsage> &usage() const { return m_usage; }
     const QList<AcpProtocol::AcpCommandInfo> &availableCommands() const { return m_availableCommands; }
     // True only when the agent advertised `goal`/`/goal`. Host inject does not set this.
@@ -216,6 +224,7 @@ signals:
 private:
     void schedulePersistIfNeeded();
     void flushPendingPersist();
+    void attachSubagentChild(const QString &parentToolCallId, const QString &childId);
     QString resolveHistoryDir() const;
     QString resolveHistoryFilePath() const;
 
@@ -231,6 +240,7 @@ private:
     QVector<AcpMessage> m_messages;
     QHash<QString, AcpProtocol::AcpToolCall> m_toolCalls;
     QVector<AcpTimelineEntry> m_timeline;
+    QHash<QString, QStringList> m_subagentChildren; // parent tool call -> children, arrival order
 
     int m_currentGroupId = 0;
     std::optional<AcpProtocol::AcpUsage> m_usage;

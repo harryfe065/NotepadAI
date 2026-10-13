@@ -21,6 +21,7 @@
 #include "AskUserForm.h"
 
 #include <QAbstractTextDocumentLayout>
+#include <QEvent>
 #include <QFont>
 #include <QFontMetrics>
 #include <QHBoxLayout>
@@ -918,6 +919,7 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     m_outer = outer;
 
     auto *header = new QHBoxLayout();
+    m_headerLayout = header;
     header->setContentsMargins(0, 0, 0, 0);
     header->setSpacing(6);
 
@@ -1060,6 +1062,8 @@ void AcpToolCallCard::apply(const AcpProtocol::AcpToolCallUpdate &update)
     }
     if (headerChanged) {
         refreshHeader();
+        if (m_nowLabel)
+            refreshSubagentRows(); // the now line goes once the subagent ends
     }
     if (bodyChanged) {
         m_bodyDirty = true;
@@ -1120,11 +1124,11 @@ QString AcpToolCallCard::statusGlyph() const
     return QStringLiteral("⏳");
 }
 
-QString AcpToolCallCard::computeEnrichedTitle() const
+QString AcpToolCallCard::enrichedTitle(const AcpProtocol::AcpToolCall &tc)
 {
     // notepadai's ask_user: name it by what it did, not mcp__notepadai__ask_user.
-    if (AskUserForm::isAskUserToolCall(m_name, m_title, m_rawInput)) {
-        const QJsonObject askArgs = AskUserForm::askUserArguments(m_rawInput, m_rawOutput);
+    if (AskUserForm::isAskUserToolCall(tc.name, tc.title, tc.rawInput)) {
+        const QJsonObject askArgs = AskUserForm::askUserArguments(tc.rawInput, tc.rawOutput);
         const QString formTitle = askArgs.value(QStringLiteral("title")).toString().trimmed();
         if (!formTitle.isEmpty())
             return tr("Asked you: %1").arg(formTitle);
@@ -1137,8 +1141,8 @@ QString AcpToolCallCard::computeEnrichedTitle() const
         return count == 1 ? tr("Asked you a question") : tr("Asked you %1 questions").arg(count);
     }
 
-    if (m_title == QLatin1String("TaskOutput")) {
-        return AcpProtocol::toolCallStatusForUi(m_status) == QLatin1String("running")
+    if (tc.title == QLatin1String("TaskOutput")) {
+        return AcpProtocol::toolCallStatusForUi(tc.status) == QLatin1String("running")
             ? tr("Waiting for background jobs...")
             : tr("Background jobs complete");
     }
@@ -1146,9 +1150,9 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     // Agents that report the wire tool name plus a refined title (claude-agent-acp
     // sends a placeholder like "Terminal"/"Find" first, then "echo hi", "Read a.txt")
     // render as `Name: title` rather than being rebuilt from raw params.
-    if (!m_name.isEmpty() && !m_title.isEmpty()
-        && !m_title.contains(QLatin1String("codebase-retrieval"))
-        && !m_title.startsWith(QLatin1String("Tool: "))) {
+    if (!tc.name.isEmpty() && !tc.title.isEmpty()
+        && !tc.title.contains(QLatin1String("codebase-retrieval"))
+        && !tc.title.startsWith(QLatin1String("Tool: "))) {
         static const QStringList placeholders = {
             QStringLiteral("terminal"), QStringLiteral("find"), QStringLiteral("read file"),
             QStringLiteral("preparing file…"), QStringLiteral("preparing file..."),
@@ -1156,23 +1160,23 @@ QString AcpToolCallCard::computeEnrichedTitle() const
             QStringLiteral("grep"), QStringLiteral("search"), QStringLiteral("write"),
             QStringLiteral("read"), QStringLiteral("think")
         };
-        const QString lower = m_title.toLower();
-        if (lower != m_name.toLower() && !placeholders.contains(lower)) {
+        const QString lower = tc.title.toLower();
+        if (lower != tc.name.toLower() && !placeholders.contains(lower)) {
             // "Read a.txt" -> "Read: a.txt": don't repeat the name the title already leads with.
-            if (m_title.startsWith(m_name, Qt::CaseInsensitive)
-                && m_title.size() > m_name.size() && m_title.at(m_name.size()).isSpace()) {
-                return QStringLiteral("%1: %2").arg(m_name, m_title.mid(m_name.size()).trimmed());
+            if (tc.title.startsWith(tc.name, Qt::CaseInsensitive)
+                && tc.title.size() > tc.name.size() && tc.title.at(tc.name.size()).isSpace()) {
+                return QStringLiteral("%1: %2").arg(tc.name, tc.title.mid(tc.name.size()).trimmed());
             }
-            return QStringLiteral("%1: %2").arg(m_name, m_title);
+            return QStringLiteral("%1: %2").arg(tc.name, tc.title);
         }
     }
 
-    QString t = m_title.isEmpty() ? m_id : m_title;
+    QString t = tc.title.isEmpty() ? tc.id : tc.title;
     const QString tLower = t.toLower();
-    const QJsonObject args = m_rawInput.value(QStringLiteral("arguments")).toObject();
+    const QJsonObject args = tc.rawInput.value(QStringLiteral("arguments")).toObject();
 
     if (t.contains(QLatin1String("codebase-retrieval"))) {
-        QString req = m_rawInput.value(QStringLiteral("information_request")).toString();
+        QString req = tc.rawInput.value(QStringLiteral("information_request")).toString();
         if (req.isEmpty()) {
             req = args.value(QStringLiteral("information_request")).toString();
         }
@@ -1182,8 +1186,8 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     }
 
     if (t.startsWith(QLatin1String("Tool: "))) {
-        const QString server = m_rawInput.value(QStringLiteral("server")).toString();
-        const QString tool = m_rawInput.value(QStringLiteral("tool")).toString();
+        const QString server = tc.rawInput.value(QStringLiteral("server")).toString();
+        const QString tool = tc.rawInput.value(QStringLiteral("tool")).toString();
         if (!server.isEmpty() && !tool.isEmpty()) {
             QString detail = args.value(QStringLiteral("information_request")).toString();
             if (detail.isEmpty()) {
@@ -1200,15 +1204,15 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     }
 
     if (tLower == QLatin1String("skill")) {
-        const QString skill = m_rawInput.value(QStringLiteral("skill")).toString();
+        const QString skill = tc.rawInput.value(QStringLiteral("skill")).toString();
         if (!skill.isEmpty())
             return QStringLiteral("Skill: %1").arg(skill);
         return QStringLiteral("Skill");
     }
 
     if (tLower == QLatin1String("agent") || tLower == QLatin1String("task")) {
-        const QString type = m_rawInput.value(QStringLiteral("subagent_type")).toString();
-        const QString desc = m_rawInput.value(QStringLiteral("description")).toString();
+        const QString type = tc.rawInput.value(QStringLiteral("subagent_type")).toString();
+        const QString desc = tc.rawInput.value(QStringLiteral("description")).toString();
         if (!type.isEmpty() && !desc.isEmpty())
             return QStringLiteral("Agent %1: %2").arg(type, desc);
         if (!type.isEmpty())
@@ -1228,12 +1232,12 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     }
 
     const QString mutatedPath = AcpProtocol::toolCallMutatedPath(
-        m_rawInput, m_content, m_rawOutput);
+        tc.rawInput, tc.content, tc.rawOutput);
     const bool writeLike =
-        m_kind == QLatin1String("edit")
-        && m_rawInput.value(QStringLiteral("content")).isString()
-        && !m_rawInput.contains(QStringLiteral("input"))
-        && !m_rawInput.contains(QStringLiteral("edits"));
+        tc.kind == QLatin1String("edit")
+        && tc.rawInput.value(QStringLiteral("content")).isString()
+        && !tc.rawInput.contains(QStringLiteral("input"))
+        && !tc.rawInput.contains(QStringLiteral("edits"));
 
     static const QStringList readTitles = {
         QStringLiteral("read"), QStringLiteral("read file")
@@ -1241,7 +1245,7 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     if (readTitles.contains(tLower)
         || tLower.startsWith(QLatin1String("read:"))
         || tLower.startsWith(QLatin1String("read "))
-        || m_kind == QLatin1String("read")) {
+        || tc.kind == QLatin1String("read")) {
         if (!mutatedPath.isEmpty())
             return QStringLiteral("Read: %1").arg(mutatedPath);
         return t;
@@ -1265,7 +1269,7 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     if (editTitles.contains(tLower)
         || tLower.startsWith(QLatin1String("edit:"))
         || tLower.startsWith(QLatin1String("edit "))
-        || m_kind == QLatin1String("edit")) {
+        || tc.kind == QLatin1String("edit")) {
         if (!mutatedPath.isEmpty())
             return QStringLiteral("Edit: %1").arg(mutatedPath);
         return t;
@@ -1275,14 +1279,14 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     static const QStringList bashTitles = {
         QStringLiteral("bash"), QStringLiteral("terminal")
     };
-    const QString rawCommand = commandFromRaw(m_rawInput);
+    const QString rawCommand = commandFromRaw(tc.rawInput);
     if (bashTitles.contains(tLower)
-        || m_kind == QLatin1String("execute")
-        || (!rawCommand.isEmpty() && m_rawInput.contains(QStringLiteral("cwd")))) {
+        || tc.kind == QLatin1String("execute")
+        || (!rawCommand.isEmpty() && tc.rawInput.contains(QStringLiteral("cwd")))) {
         if (!rawCommand.isEmpty()) {
             return QStringLiteral("Command: %1").arg(firstLines(rawCommand.trimmed(), 2));
         }
-        const QString desc = m_rawInput.value(QStringLiteral("description")).toString();
+        const QString desc = tc.rawInput.value(QStringLiteral("description")).toString();
         if (!desc.isEmpty())
             return QStringLiteral("Command: %1").arg(desc);
         return t;
@@ -1292,7 +1296,7 @@ QString AcpToolCallCard::computeEnrichedTitle() const
         QStringLiteral("grep"), QStringLiteral("search")
     };
     if (grepTitles.contains(tLower)) {
-        const QString pattern = m_rawInput.value(QStringLiteral("pattern")).toString();
+        const QString pattern = tc.rawInput.value(QStringLiteral("pattern")).toString();
         if (!pattern.isEmpty())
             return QStringLiteral("Grep: %1").arg(pattern);
         return t;
@@ -1302,7 +1306,7 @@ QString AcpToolCallCard::computeEnrichedTitle() const
         QStringLiteral("glob"), QStringLiteral("find")
     };
     if (globTitles.contains(tLower)) {
-        const QString pattern = m_rawInput.value(QStringLiteral("pattern")).toString();
+        const QString pattern = tc.rawInput.value(QStringLiteral("pattern")).toString();
         if (!pattern.isEmpty())
             return QStringLiteral("Glob: %1").arg(pattern);
         return t;
@@ -1312,9 +1316,9 @@ QString AcpToolCallCard::computeEnrichedTitle() const
         QStringLiteral("websearch"), QStringLiteral("web search"), QStringLiteral("searching the web")
     };
     if (webSearchTitles.contains(tLower)) {
-        QString query = m_rawInput.value(QStringLiteral("query")).toString();
+        QString query = tc.rawInput.value(QStringLiteral("query")).toString();
         if (query.isEmpty()) {
-            query = m_rawInput.value(QStringLiteral("action")).toObject()
+            query = tc.rawInput.value(QStringLiteral("action")).toObject()
                         .value(QStringLiteral("query")).toString();
         }
         if (!query.isEmpty())
@@ -1327,9 +1331,9 @@ QString AcpToolCallCard::computeEnrichedTitle() const
         QStringLiteral("webfetch"), QStringLiteral("web fetch"), QStringLiteral("searching the web")
     };
     if (webFetchTitles.contains(tLower)) {
-        QString url = m_rawInput.value(QStringLiteral("url")).toString();
+        QString url = tc.rawInput.value(QStringLiteral("url")).toString();
         if (url.isEmpty()) {
-            const QJsonObject action = m_rawInput.value(QStringLiteral("action")).toObject();
+            const QJsonObject action = tc.rawInput.value(QStringLiteral("action")).toObject();
             url = action.value(QStringLiteral("url")).toString();
             if (url.isEmpty()) {
                 url = action.value(QStringLiteral("query")).toString();
@@ -1343,15 +1347,131 @@ QString AcpToolCallCard::computeEnrichedTitle() const
     return t;
 }
 
+QString AcpToolCallCard::computeEnrichedTitle() const
+{
+    // Implicitly shared members: these copies are reference-count bumps.
+    AcpProtocol::AcpToolCall tc;
+    tc.id = m_id;
+    tc.title = m_title;
+    tc.name = m_name;
+    tc.kind = m_kind;
+    tc.status = m_status;
+    tc.content = m_content;
+    tc.rawInput = m_rawInput;
+    tc.rawOutput = m_rawOutput;
+    return enrichedTitle(tc);
+}
+
 void AcpToolCallCard::refreshDuration()
 {
     // Only finished, foreground calls: a backgrounded command is `completed`
     // at hand-off, so its measured time would be misleading.
     const bool show = m_durationMs >= 0 && isTerminalStatus() && !m_backgroundRunning;
-    if (show) {
-        m_durationLabel->setText(AcpProtocol::formatToolDuration(m_durationMs));
+    QString text;
+    if (m_subagentToolCount > 0) {
+        text = m_subagentToolCount == 1 ? tr("1 tool")
+                                        : tr("%1 tools").arg(m_subagentToolCount);
     }
-    m_durationLabel->setVisible(show);
+    if (show) {
+        if (!text.isEmpty())
+            text += QStringLiteral(" · ");
+        text += AcpProtocol::formatToolDuration(m_durationMs);
+    }
+    m_durationLabel->setText(text);
+    m_durationLabel->setVisible(!text.isEmpty());
+}
+
+void AcpToolCallCard::setSubagentActivity(int toolCount, const QString &nowLine)
+{
+    if (toolCount != m_subagentToolCount) {
+        m_subagentToolCount = toolCount;
+        refreshDuration();
+    }
+    if (nowLine != m_subagentNowLine) {
+        m_subagentNowLine = nowLine;
+        if (!m_nowLabel) {
+            m_nowLabel = new QLabel(this);
+            m_nowLabel->setFont(m_titleLabel->font());
+            m_nowLabel->setStyleSheet(QStringLiteral(
+                "QLabel { color: palette(placeholder-text); padding-left: 14px; }"));
+            m_nowLabel->setTextFormat(Qt::PlainText);
+            // Elided to the card's width; its full text must not widen the card.
+            m_nowLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            m_outer->insertWidget(headerRowIndex() + 1, m_nowLabel);
+        }
+        refreshNowLine();
+    }
+    refreshSubagentRows();
+}
+
+int AcpToolCallCard::headerRowIndex() const
+{
+    for (int i = 0; i < m_outer->count(); ++i) {
+        if (m_outer->itemAt(i)->layout() == m_headerLayout)
+            return i;
+    }
+    return 0;
+}
+
+void AcpToolCallCard::refreshNowLine()
+{
+    if (!m_nowLabel) return;
+    // From the card's width: a label that was hidden has a stale one.
+    int marginL = 0, marginT = 0, marginR = 0, marginB = 0;
+    m_outer->getContentsMargins(&marginL, &marginT, &marginR, &marginB);
+    const int w = width() - marginL - marginR - 14; // the padding-left above
+    const QString line = QStringLiteral("↳ ") + firstLine(m_subagentNowLine);
+    m_nowLabel->setText(w > 0 ? m_nowLabel->fontMetrics().elidedText(line, Qt::ElideRight, w)
+                              : line);
+}
+
+// The "now" line only while the subagent runs and its calls are folded away;
+// the nested cards only while the card is open.
+void AcpToolCallCard::refreshSubagentRows()
+{
+    if (m_nowLabel) {
+        // A backgrounded subagent's call is `completed` at hand-off.
+        const bool running = !isTerminalStatus() || m_backgroundRunning;
+        m_nowLabel->setHidden(!m_collapsed || !running || m_subagentNowLine.isEmpty());
+    }
+    if (m_childHost)
+        m_childHost->setHidden(m_collapsed || m_childCards.isEmpty());
+    refitBodyHeight();
+}
+
+void AcpToolCallCard::addChildCard(AcpToolCallCard *child)
+{
+    if (!child) return;
+    if (!m_childHost) {
+        m_childHost = new QFrame(this);
+        m_childHost->setObjectName(QStringLiteral("acpSubagentChildren"));
+        // A guide line down the left edge ties the nested calls to this card.
+        m_childHost->setStyleSheet(QStringLiteral(
+            "QFrame#acpSubagentChildren { border: none; "
+            "border-left: 1px solid palette(mid); }"));
+        auto *layout = new QVBoxLayout(m_childHost);
+        layout->setContentsMargins(8, 0, 0, 0);
+        layout->setSpacing(4);
+        // Below the header and the now line, above the body (the result).
+        const int at = headerRowIndex() + (m_nowLabel ? 2 : 1);
+        m_outer->insertWidget(at, m_childHost);
+        // A nested card pins its own height on expand/collapse; its new size
+        // reaches this card only through the host's layout request.
+        m_childHost->installEventFilter(this);
+    }
+    child->setParent(m_childHost);
+    m_childHost->layout()->addWidget(child);
+    m_childCards.insert(child->id(), child);
+    // One coalesced refit per batch: measuring the host per card is O(n^2).
+    m_childHost->setHidden(m_collapsed);
+    scheduleRefit();
+}
+
+bool AcpToolCallCard::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_childHost && event->type() == QEvent::LayoutRequest)
+        scheduleRefit();
+    return QFrame::eventFilter(watched, event);
 }
 
 void AcpToolCallCard::refreshHeader()
@@ -1597,6 +1717,12 @@ void AcpToolCallCard::refitBodyHeight()
             break;
     }
     int cardH = marginT + marginB + headerH;
+    const int rowGap = m_outer ? m_outer->spacing() : 0;
+    // Subagent rows; isHidden() is the logical flag, set before any show.
+    if (m_nowLabel && !m_nowLabel->isHidden())
+        cardH += rowGap + m_nowLabel->sizeHint().height();
+    if (m_childHost && !m_childHost->isHidden())
+        cardH += rowGap + m_childHost->sizeHint().height();
     if (m_collapsed || !m_body) {
         setFixedHeight(cardH);
         return;
@@ -1626,7 +1752,7 @@ void AcpToolCallCard::refitBodyHeight()
     // card in the transcript (the diff cards' overlap bug). m_collapsed is
     // authoritative and independent of show timing, so the height stays correct
     // whether or not the card is on screen at measure time.
-    cardH += (m_outer ? m_outer->spacing() : 0) + bodyH;
+    cardH += rowGap + bodyH;
     setFixedHeight(cardH);
 }
 
@@ -1655,6 +1781,7 @@ void AcpToolCallCard::resizeEvent(QResizeEvent *event)
 {
     QFrame::resizeEvent(event);
     refreshHeader();
+    refreshNowLine();
     if (!m_collapsed && m_bodyDirty) {
         flushBodyRender();
     } else {
@@ -1696,8 +1823,10 @@ void AcpToolCallCard::setCollapsed(bool collapsed)
     // stale width while hidden, so follow up with a deferred refit once the
     // expanded geometry settles — otherwise the diff clips on first expand.
     if (!collapsed) flushBodyRender();
-    refitBodyHeight();
+    refreshSubagentRows(); // refits
     if (!collapsed) scheduleRefit();
+    if (!collapsed && m_subagentToolCount > m_childCards.size())
+        emit childCardsRequested();
 }
 
 void AcpToolCallCard::setChatFont(const QFont &font)
@@ -1713,7 +1842,11 @@ void AcpToolCallCard::setChatFont(const QFont &font)
     if (m_statusIcon) m_statusIcon->setFont(font);
     if (m_titleLabel) m_titleLabel->setFont(font);
     if (m_durationLabel) m_durationLabel->setFont(font);
+    if (m_nowLabel) m_nowLabel->setFont(font);
     if (m_body) m_body->document()->setDefaultFont(font);
+    for (AcpToolCallCard *child : std::as_const(m_childCards))
+        child->setChatFont(font);
+    refreshNowLine();
 
     // New metrics change the header row's height: drop its cached hint.
     if (QLayout *row = headerRow(m_outer))

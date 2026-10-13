@@ -110,6 +110,9 @@ struct AcpToolCall
     // persisted. -1 = unknown (restored/never observed running).
     qint64 startedAtMs{0};
     qint64 durationMs{-1};
+    // Made by a subagent: the Agent/Task tool call that spawned it. Such calls
+    // render nested under that card, never as transcript peers. Persisted.
+    QString parentToolCallId;
 };
 
 // Needle match for ACP tool name or title. Prefer extra over dropping a write.
@@ -156,6 +159,9 @@ struct AcpToolCallUpdate
     std::optional<bool> backgroundRunning;
     // Host-side (not wire): mirrors AcpToolCall::durationMs once known.
     std::optional<qint64> durationMs;
+    // Late subagent attribution (subagentParentToolCallId of the update): an
+    // eager tool_call can miss it, the refining update carries it.
+    std::optional<QString> parentToolCallId;
 };
 
 struct AcpPlanEntry
@@ -345,6 +351,12 @@ bool asyncTaskStateIsLive(const QString &state);
 
 // `_meta.jetbrains.air.asyncTasks.backgrounded == true` on a tool_call_update.
 bool toolCallUpdateIsBackgrounded(const QJsonObject &update);
+
+// The Agent/Task tool call whose subagent sent this session/update, from its
+// `_meta`: `parentToolCallId`, then `claudeCode.parentToolUseId`
+// (claude-agent-acp), then `parentToolUseId`. Empty for the main agent, and
+// when the id names the update's own tool call.
+QString subagentParentToolCallId(const QJsonObject &update);
 
 // Compact wait clock: "4.2s" under a minute, "2m 05s" under an hour, then "1h 02m".
 QString formatWaitDuration(qint64 ms);

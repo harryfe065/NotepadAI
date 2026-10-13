@@ -42,6 +42,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDialog>
 #include <QElapsedTimer>
 #include <QEvent>
@@ -100,6 +101,39 @@ constexpr int kAtBottomEpsilonPx = 8;
 constexpr int kFormScrollMarginPx = 8;
 constexpr int kFormScrollSettleMs = 60;
 constexpr int kMaxSkillCompletions = 256;
+// A wake-up turn (background task result, no session/prompt) is ended by the
+// connection's 250 ms idle guess, so it "ends" after every tool call while the
+// model thinks. Folding waits this long for it to go on before hiding cards.
+constexpr int kWakeTurnFoldDelayMs = 3000;
+
+// A card update carrying the model's whole current state for one call.
+AcpProtocol::AcpToolCallUpdate cardUpdateFrom(const AcpProtocol::AcpToolCall &tc)
+{
+    AcpProtocol::AcpToolCallUpdate upd;
+    upd.id = tc.id;
+    if (!tc.name.isEmpty()) {
+        upd.name = tc.name;
+    }
+    if (!tc.title.isEmpty()) {
+        upd.title = tc.title;
+    }
+    if (!tc.kind.isEmpty()) {
+        upd.kind = tc.kind;
+    }
+    upd.status = tc.status;
+    upd.backgroundRunning = tc.backgroundRunning;
+    if (tc.durationMs >= 0) {
+        upd.durationMs = tc.durationMs;
+    }
+    upd.content = tc.content;
+    if (!tc.rawInput.isEmpty()) {
+        upd.rawInput = tc.rawInput;
+    }
+    if (!tc.rawOutput.isEmpty()) {
+        upd.rawOutput = tc.rawOutput;
+    }
+    return upd;
+}
 
 bool isEffortConfigOption(const AcpProtocol::AcpConfigOption &opt)
 {
@@ -672,6 +706,16 @@ void AcpSessionView::buildUi()
     m_elapsedTimer->setInterval(100); // 0.1 s precision
     connect(m_elapsedTimer, &QTimer::timeout, this, &AcpSessionView::onElapsedTick);
 
+    m_wakeFoldTimer = new QTimer(this);
+    m_wakeFoldTimer->setSingleShot(true);
+    m_wakeFoldTimer->setInterval(kWakeTurnFoldDelayMs);
+    connect(m_wakeFoldTimer, &QTimer::timeout, this, [this]() {
+        if (!m_model || m_model->isProcessing() || !m_liveRow) return;
+        foldCompletedTurns(true);
+        refreshResponseActions(true);
+        scrollToBottomDeferred();
+    });
+
     m_goalElapsedTimer = new QTimer(this);
     m_goalElapsedTimer->setInterval(100);
     connect(m_goalElapsedTimer, &QTimer::timeout, this, [this]() {
@@ -1021,6 +1065,8 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_foldedCount = 0;
     m_liveRow.clear(); // already queued for deletion with the rest of the layout
     m_liveTurnBegin = -1;
+    m_liveRowReopened = false;
+    m_wakeFoldTimer->stop();
     if (m_advisorBtn) m_advisorBtn->setChecked(false); // new session: advisor state unknown
     if (m_planWidget) {
         m_planWidget->setEntries({});
@@ -1171,10 +1217,13 @@ QWidget *AcpSessionView::createEntryWidget(const AcpTimelineEntry &entry, const 
     const auto it = m_model->toolCalls().constFind(entry.toolCallId);
     if (it == m_model->toolCalls().constEnd())
         return nullptr;
+    if (!it->parentToolCallId.isEmpty())
+        return nullptr; // a subagent's call, attributed late: inside its Agent card
     auto *card = new AcpToolCallCard(it.value(), m_transcriptHost);
     card->setChatFont(font); // styled widget: must set font explicitly
     if (isGoalJudgeToolId(it.key()))
         card->setGoalTint(true);
+    wireToolCallCard(card);
     m_toolCallCards.insert(entry.toolCallId, card);
     return card;
 }
@@ -1333,7 +1382,11 @@ void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
         live = m_liveRow;
         m_liveRow.clear();
         m_liveTurnBegin = -1;
-        live->finishLive();
+        m_liveRowReopened = false;
+        // A deferred wake-up fold: the turn ended when the wait began.
+        const qint64 endedMs = m_wakeFoldTimer->isActive() ? m_wakeTurnEndedMs : 0;
+        m_wakeFoldTimer->stop();
+        live->finishLive(endedMs);
     }
     const int at = before ? m_transcriptLayout->indexOf(before) : -1;
     AcpTurnFoldRow *row = makeFoldRow(turn, live);
@@ -1359,10 +1412,16 @@ void AcpSessionView::ensureLiveTurnRow()
     const auto &timeline = m_model->timeline();
     const auto &messages = m_model->messages();
     const int begin = AcpTurnFolding::newestTurnBegin(timeline, messages);
-    if (begin < 0 || m_foldedTurns.contains(begin)) return;
+    if (begin < 0) return;
     if (m_liveRow) {
-        if (m_liveTurnBegin == begin) return;
-        dropLiveTurnRow();
+        if (m_liveTurnBegin == begin) {
+            m_wakeFoldTimer->stop(); // the wake-up turn went on: keep it live
+            return;
+        }
+        // An older turn's row: fold that turn under it (a reopened row heads
+        // entries that have no widgets, so it must never just be dropped).
+        foldCompletedTurns();
+        if (m_liveRow) dropLiveTurnRow();
     }
     const AcpTimelineEntry &anchor = timeline.at(begin);
     if (anchor.kind != AcpTimelineEntry::Kind::Message
@@ -1371,24 +1430,54 @@ void AcpSessionView::ensureLiveTurnRow()
     }
     const AcpMessage &msg = messages.at(anchor.messageIndex);
     if (msg.role != QLatin1String("user")) return; // agent-only prefix: no prompt to head
+
+    // Tool calls already in the turn (session reopened mid-turn, or a wake-up
+    // turn continuing a folded one); the live count then grows by one per new
+    // card in onToolCallAddedOrUpdated.
+    m_liveToolCalls = 0;
+    for (int i = begin; i < timeline.size(); ++i) {
+        const AcpTimelineEntry &e = timeline.at(i);
+        if (e.kind != AcpTimelineEntry::Kind::ToolCall || isGoalJudgeToolId(e.toolCallId))
+            continue;
+        const auto tc = m_model->toolCalls().constFind(e.toolCallId);
+        if (tc == m_model->toolCalls().constEnd() || tc->parentToolCallId.isEmpty())
+            ++m_liveToolCalls; // a subagent's call counts inside its Agent card
+    }
+
+    // A wake-up turn (a background task finished; no new prompt) continues the
+    // newest turn, which already folded when its prompt returned. Its fold row
+    // goes live again in place: the folded entries stay widgetless, the new
+    // ones render below the old report, and foldTurn adopts the row at the end
+    // so the whole turn folds again under one row.
+    const auto folded = m_foldedTurns.find(begin);
+    if (folded != m_foldedTurns.end()) {
+        AcpTurnFoldRow *row = folded->row;
+        m_expandQueue.removeOne(begin);
+        m_foldedTurns.erase(folded);
+        if (row) {
+            disconnect(row, &AcpTurnFoldRow::expandedChanged, this, nullptr); // makeFoldRow reconnects
+            row->setExpanded(false);
+            row->setToolCallCount(m_liveToolCalls);
+            row->startLive(msg.timestamp);
+            m_liveRow = row;
+            m_liveTurnBegin = begin;
+            m_liveRowReopened = true;
+            refreshResponseActions(false); // the report moves to the turn's new end
+            return;
+        }
+    }
+
     QWidget *anchorWidget = widgetForTimelineEntry(anchor);
     const int at = anchorWidget ? m_transcriptLayout->indexOf(anchorWidget) : -1;
     if (at < 0) return;
 
-    // Tool calls already in the turn (session reopened mid-turn); the live
-    // count then grows by one per new card in onToolCallAddedOrUpdated.
-    m_liveToolCalls = 0;
-    for (int i = begin; i < timeline.size(); ++i) {
-        const AcpTimelineEntry &e = timeline.at(i);
-        if (e.kind == AcpTimelineEntry::Kind::ToolCall && !isGoalJudgeToolId(e.toolCallId))
-            ++m_liveToolCalls;
-    }
     auto *row = new AcpTurnFoldRow(-1, m_liveToolCalls, m_transcriptHost);
     row->setChatFont(chatFont());
     row->startLive(msg.timestamp);
     m_transcriptLayout->insertWidget(at + 1, row);
     m_liveRow = row;
     m_liveTurnBegin = begin;
+    m_liveRowReopened = false;
     syncTranscriptHostWidth();
 }
 
@@ -1398,6 +1487,8 @@ void AcpSessionView::dropLiveTurnRow()
         removeTranscriptWidget(m_liveRow);
     m_liveRow.clear();
     m_liveTurnBegin = -1;
+    m_liveRowReopened = false;
+    m_wakeFoldTimer->stop();
 }
 
 void AcpSessionView::setTurnExpanded(int turnBegin, bool expanded)
@@ -1776,6 +1867,11 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
     const AcpProtocol::AcpToolCall &tc = it.value();
     trackAskUserToolCall(tc);
 
+    if (!tc.parentToolCallId.isEmpty()) {
+        onSubagentToolCallChanged(tc);
+        return;
+    }
+
     auto *card = m_toolCallCards.value(toolCallId, nullptr);
     if (!card) {
         if (m_truncatedToolCallIds.contains(toolCallId)) return;
@@ -1783,6 +1879,7 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
         card->setChatFont(chatFont()); // styled widget: must set font explicitly
         if (isGoalJudgeToolId(toolCallId))
             card->setGoalTint(true);
+        wireToolCallCard(card);
         insertTimelineWidget(card);
         m_toolCallCards.insert(toolCallId, card);
         m_currentGroupCards.append(card);
@@ -1791,31 +1888,101 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
         maybeTruncateTranscript();
         scrollToBottomDeferred();
     } else {
-        // Apply as an update: build an update payload from the latest state.
-        AcpProtocol::AcpToolCallUpdate upd;
-        upd.id = tc.id;
-        if (!tc.name.isEmpty()) {
-            upd.name = tc.name;
+        card->apply(cardUpdateFrom(tc));
+    }
+}
+
+// The subagent's calls render inside the Agent card that spawned it, so they
+// never push the main agent's calls up the transcript.
+void AcpSessionView::onSubagentToolCallChanged(const AcpProtocol::AcpToolCall &tc)
+{
+    // Attributed after it got a transcript card (an eager permission call):
+    // the card moves into its Agent card.
+    if (AcpToolCallCard *stray = m_toolCallCards.take(tc.id)) {
+        m_currentGroupCards.removeAll(stray);
+        removeTranscriptWidget(stray);
+        if (m_liveRow && m_liveToolCalls > 0 && !isGoalJudgeToolId(tc.id))
+            m_liveRow->setToolCallCount(--m_liveToolCalls);
+    }
+    AcpToolCallCard *parent = toolCallCard(tc.parentToolCallId);
+    if (!parent)
+        return; // folded, truncated or not here yet: its card picks this up when built
+    if (AcpToolCallCard *card = parent->childCard(tc.id))
+        card->apply(cardUpdateFrom(tc));
+    refreshSubagentActivity(parent);
+    if (!parent->isCollapsed())
+        materializeSubagentChildren(parent->id());
+}
+
+// Top-level cards are in m_toolCallCards; nested ones live in their Agent card.
+AcpToolCallCard *AcpSessionView::toolCallCard(const QString &id, int depth) const
+{
+    if (AcpToolCallCard *card = m_toolCallCards.value(id, nullptr))
+        return card;
+    if (!m_model || depth > 8) return nullptr; // nesting is shallow; a cycle is not
+    const auto it = m_model->toolCalls().constFind(id);
+    if (it == m_model->toolCalls().constEnd() || it->parentToolCallId.isEmpty())
+        return nullptr;
+    AcpToolCallCard *parent = toolCallCard(it->parentToolCallId, depth + 1);
+    return parent ? parent->childCard(id) : nullptr;
+}
+
+void AcpSessionView::wireToolCallCard(AcpToolCallCard *card)
+{
+    const QString id = card->id();
+    connect(card, &AcpToolCallCard::childCardsRequested, this,
+            [this, id]() { materializeSubagentChildren(id); });
+    refreshSubagentActivity(card);
+}
+
+void AcpSessionView::refreshSubagentActivity(AcpToolCallCard *card)
+{
+    if (!m_model || !card) return;
+    const QStringList children = m_model->subagentChildren(card->id());
+    if (children.isEmpty()) return;
+    // The current call: the newest one still running, else the newest.
+    const auto &toolCalls = m_model->toolCalls();
+    const AcpProtocol::AcpToolCall *now = nullptr;
+    for (auto i = children.size() - 1; i >= 0; --i) {
+        const auto it = toolCalls.constFind(children.at(i));
+        if (it == toolCalls.constEnd()) continue;
+        if (!now) now = &it.value();
+        if (!AcpProtocol::toolCallStatusIsTerminal(it->status)) {
+            now = &it.value();
+            break;
         }
-        if (!tc.title.isEmpty()) {
-            upd.title = tc.title;
+    }
+    card->setSubagentActivity(static_cast<int>(children.size()),
+                              now ? AcpToolCallCard::enrichedTitle(*now) : QString());
+}
+
+// Builds the open Agent card's missing nested cards in arrival order, one
+// ~6 ms slice per event-loop pass (a subagent can make hundreds of calls).
+void AcpSessionView::materializeSubagentChildren(const QString &parentId)
+{
+    constexpr qint64 kSliceBudgetNs = 6'000'000;
+    AcpToolCallCard *parent = toolCallCard(parentId);
+    if (!parent || parent->isCollapsed() || !m_model) return;
+    const QStringList children = m_model->subagentChildren(parentId);
+    if (parent->childCardCount() >= children.size()) return;
+    const auto &toolCalls = m_model->toolCalls();
+    const QFont font = chatFont();
+    QElapsedTimer clock;
+    clock.start();
+    for (const QString &id : children) {
+        if (parent->childCard(id)) continue;
+        const auto it = toolCalls.constFind(id);
+        if (it == toolCalls.constEnd()) continue;
+        auto *card = new AcpToolCallCard(it.value());
+        card->setChatFont(font); // styled widget: must set font explicitly
+        if (isGoalJudgeToolId(id))
+            card->setGoalTint(true);
+        parent->addChildCard(card);
+        wireToolCallCard(card); // a subagent can run its own
+        if (clock.nsecsElapsed() >= kSliceBudgetNs) {
+            QTimer::singleShot(0, parent, [this, parentId]() { materializeSubagentChildren(parentId); });
+            return;
         }
-        if (!tc.kind.isEmpty()) {
-            upd.kind = tc.kind;
-        }
-        upd.status = tc.status;
-        upd.backgroundRunning = tc.backgroundRunning;
-        if (tc.durationMs >= 0) {
-            upd.durationMs = tc.durationMs;
-        }
-        upd.content = tc.content;
-        if (!tc.rawInput.isEmpty()) {
-            upd.rawInput = tc.rawInput;
-        }
-        if (!tc.rawOutput.isEmpty()) {
-            upd.rawOutput = tc.rawOutput;
-        }
-        card->apply(upd);
     }
 }
 
@@ -2075,9 +2242,16 @@ void AcpSessionView::onTurnEnded(int groupId)
             }
         }
     }
-    foldCompletedTurns(true); // the turn is over: fold it like every other
-    refreshResponseActions(true);
-    scrollToBottomDeferred();
+    if (m_liveRow && m_liveRowReopened) {
+        // A wake-up turn: its end is a guess that the next tool step often
+        // undoes, so fold only if it stays over (m_wakeFoldTimer).
+        m_wakeTurnEndedMs = QDateTime::currentMSecsSinceEpoch();
+        m_wakeFoldTimer->start();
+    } else {
+        foldCompletedTurns(true); // the turn is over: fold it like every other
+        refreshResponseActions(true);
+        scrollToBottomDeferred();
+    }
     if (m_currentGroupCards.size() > 3) {
         for (auto *card : m_currentGroupCards) {
             if (card && !card->shouldPreserveExpanded()) card->setCollapsed(true);
