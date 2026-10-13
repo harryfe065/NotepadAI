@@ -698,7 +698,6 @@ target_sources(test_send_with_goal_dialog PRIVATE
 add_test(NAME SendWithGoalDialog COMMAND test_send_with_goal_dialog)
 
 
-# Sources AcpMessageWidget.cpp now depends on (preprocessor + math renderer).
 # What AcpSessionView links beyond the ACP core: the prompt queue and the
 # prompt improver with its LLM client.
 set(ACP_SESSION_VIEW_DEPS
@@ -719,6 +718,7 @@ set(ACP_SESSION_VIEW_DEPS
     ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
 )
 
+# Sources AcpMessageWidget.cpp now depends on (preprocessor + math renderer).
 set(MARKDOWN_RENDER_SOURCES
     ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.cpp
     ${CMAKE_SOURCE_DIR}/src/markdown/MarkdownPreprocessor.h

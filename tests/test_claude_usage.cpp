@@ -13,6 +13,7 @@
 #include <QPointer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimeZone>
 
 #include "ai/ClaudeUsage.h"
 #include "ai/ClaudeUsageAccounts.h"
@@ -365,8 +366,17 @@ void TestClaudeUsage::retry_after_http_date()
     const qint64 nov6 = 784'111'777'000;   // Sun, 06 Nov 1994 08:49:37 GMT
     QCOMPARE(parseHttpDate("Sun Nov  6 08:49:37 1994", nov6), std::optional<qint64>(nov6));
     QCOMPARE(parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT", nov6), std::optional<qint64>(nov6));
-    // A two-digit year is the one within 50 years ahead of now.
     QCOMPARE(parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT", at), std::optional<qint64>(nov6));
+    // A two-digit year is the latest one not more than 50 years ahead of now
+    // (2015 here): 65 is 2065, 66 is 1966.
+    const auto yearOf = [&](const char *date) {
+        const std::optional<qint64> ms = parseHttpDate(date, at);
+        return ms ? QDateTime::fromMSecsSinceEpoch(*ms, QTimeZone::utc()).date().year() : -1;
+    };
+    QCOMPARE(yearOf("Monday, 01-Jan-65 00:00:00 GMT"), 2065);
+    QCOMPARE(yearOf("Monday, 01-Jan-66 00:00:00 GMT"), 1966);
+    // The century is settled before the date: 2000 was a leap year, 1900 not.
+    QCOMPARE(yearOf("Tuesday, 29-Feb-00 12:00:00 GMT"), 2000);
     QVERIFY(!parseHttpDate("Wed, 21 Oct 2015 07:28:00 PST", at));
     QVERIFY(!parseHttpDate("Wed, 21 Oct 2015 25:28:00 GMT", at));
 }

@@ -49,6 +49,17 @@
 
 namespace {
 
+// The card's outer column holds an optional Goal badge, then the header row:
+// its first child layout.
+QLayout *headerRow(const QVBoxLayout *outer)
+{
+    for (int i = 0; outer && i < outer->count(); ++i) {
+        if (QLayout *row = outer->itemAt(i)->layout())
+            return row;
+    }
+    return nullptr;
+}
+
 // Diff-row palette. Greens/reds match the accent colors already in use by
 // AcpUsageIndicator. Backgrounds are semi-transparent so the contrast holds in
 // both light and dark Qt palettes without hard-coding a chrome surface.
@@ -1373,14 +1384,10 @@ void AcpToolCallCard::refreshHeader()
     const int minTitleH = shown.contains(QLatin1Char('\n')) ? fm.size(0, shown).height() : 0;
     if (m_titleLabel->minimumHeight() != minTitleH) {
         m_titleLabel->setMinimumHeight(minTitleH);
-        // The header row (the first child layout) caches its size hint, which
-        // refitBodyHeight reads: drop it only when the title height changed.
-        for (int i = 0; m_outer && i < m_outer->count(); ++i) {
-            if (QLayout *row = m_outer->itemAt(i)->layout()) {
-                row->invalidate();
-                break;
-            }
-        }
+        // The header row caches its size hint, which refitBodyHeight reads:
+        // drop it only when the title height changed (or the font, below).
+        if (QLayout *row = headerRow(m_outer))
+            row->invalidate();
     }
     refitBodyHeight();
 }
@@ -1698,6 +1705,9 @@ void AcpToolCallCard::setChatFont(const QFont &font)
     if (m_durationLabel) m_durationLabel->setFont(font);
     if (m_body) m_body->document()->setDefaultFont(font);
 
+    // New metrics change the header row's height: drop its cached hint.
+    if (QLayout *row = headerRow(m_outer))
+        row->invalidate();
     refreshHeader(); // re-elide title under the new font metrics
     m_bodyDirty = true;
     if (m_collapsed) {

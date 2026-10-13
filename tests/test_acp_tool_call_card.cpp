@@ -28,6 +28,7 @@ private slots:
     void diff_card_auto_expands_at_terminal_status();
     void running_diff_card_stays_collapsed();
     void collapsed_multiline_title_autosizes_to_two_lines();
+    void chatFont_change_refits_collapsed_header();
     void expanded_diff_taller_than_collapsed_while_hidden();
     void omp_pending_status_uses_running_glyph();
     void omp_in_progress_diff_stays_collapsed();
@@ -231,6 +232,24 @@ void TestAcpToolCallCard::running_diff_card_stays_collapsed()
     QTextBrowser *body = bodyFor(card);
     QVERIFY(body);
     QTRY_VERIFY(body->toPlainText().contains(QStringLiteral("a.cpp")));
+}
+
+// A bigger chat font must grow a collapsed one-line card at once (no resize
+// follows a font change), not keep the header row's old cached height.
+void TestAcpToolCallCard::chatFont_change_refits_collapsed_header()
+{
+    AcpProtocol::AcpToolCall call = baseCall();
+    call.title = QStringLiteral("python3 script.py");
+    AcpToolCallCard card(call);
+    card.resize(480, 40);
+    QVERIFY(card.isCollapsed());
+    const int before = card.height();
+
+    QFont big = card.font();
+    big.setPixelSize(48);
+    card.setChatFont(big);
+    QVERIFY2(card.height() > before,
+             qPrintable(QStringLiteral("%1 -> %2").arg(before).arg(card.height())));
 }
 
 void TestAcpToolCallCard::collapsed_multiline_title_autosizes_to_two_lines()
