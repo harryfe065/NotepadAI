@@ -516,3 +516,124 @@ std::size_t ScrollbackStore::memoryBytes() const
          + m_styleSlots.capacity() * sizeof(uint32_t)
          + m_clusters.capacity() * sizeof(Cluster);
 }
+
+namespace {
+
+// The chunk holding history line `index`, and the line's index in it. Every
+// chunk but the newest holds kScrollbackChunkLines lines, the oldest counting
+// the evicted lines it still skips.
+template <typename Chunks>
+const ScrollbackStore &chunkFor(const Chunks &chunks, int frontSkip, int index, int &inChunk)
+{
+    const int line = index + frontSkip;
+    inChunk = line % kScrollbackChunkLines;
+    return *chunks[static_cast<std::size_t>(line / kScrollbackChunkLines)];
+}
+
+} // namespace
+
+bool ScrollbackSnapshot::lineAt(int index, int cols, VTermScreenCell *out) const
+{
+    if (index < 0 || index >= m_count) return false;
+    int inChunk = 0;
+    return chunkFor(m_chunks, m_frontSkip, index, inChunk).lineAt(inChunk, cols, out);
+}
+
+ScrollbackStore &ScrollbackBuffer::writable(std::shared_ptr<ScrollbackStore> &chunk)
+{
+    if (chunk.use_count() > 1) {
+        chunk = std::make_shared<ScrollbackStore>(*chunk);
+    } else {
+        // The last snapshot holding it was released on another thread: its
+        // reads happen-before our writes (pairs with the release in the
+        // reference count decrement).
+        std::atomic_thread_fence(std::memory_order_acquire);
+    }
+    return *chunk;
+}
+
+void ScrollbackBuffer::evictOldest()
+{
+    --m_count;
+    if (++m_frontSkip < m_chunks.front()->size()) return;
+    m_chunks.pop_front();
+    m_frontSkip = 0;
+}
+
+int ScrollbackBuffer::setMaxLines(int maxLines)
+{
+    m_maxLines = maxLines > 0 ? maxLines : 0;
+    int evicted = 0;
+    for (; m_count > m_maxLines; ++evicted) {
+        evictOldest();
+    }
+    return evicted;
+}
+
+void ScrollbackBuffer::clear()
+{
+    m_chunks.clear();
+    m_frontSkip = 0;
+    m_count = 0;
+}
+
+int ScrollbackBuffer::pushLine(int cols, const VTermScreenCell *cells, bool wrapsNext)
+{
+    if (m_maxLines <= 0 || cols <= 0 || cells == nullptr) {
+        return 0;
+    }
+    if (m_chunks.empty() || m_chunks.back()->size() == kScrollbackChunkLines) {
+        m_chunks.push_back(std::make_shared<ScrollbackStore>(kScrollbackChunkLines));
+    }
+    writable(m_chunks.back()).pushLine(cols, cells, wrapsNext);
+    if (++m_count <= m_maxLines) return 0;
+    evictOldest();
+    return 1;
+}
+
+bool ScrollbackBuffer::popLine(int cols, VTermScreenCell *out)
+{
+    if (m_count == 0 || cols <= 0 || out == nullptr) {
+        return false;
+    }
+    ScrollbackStore &newest = writable(m_chunks.back());
+    newest.popLine(cols, out);
+    if (--m_count == 0) {
+        clear();   // the oldest chunk may still hold evicted lines
+    } else if (newest.isEmpty()) {
+        m_chunks.pop_back();
+    }
+    return true;
+}
+
+bool ScrollbackBuffer::lineAt(int index, int cols, VTermScreenCell *out) const
+{
+    if (index < 0 || index >= m_count) return false;
+    int inChunk = 0;
+    return chunkFor(m_chunks, m_frontSkip, index, inChunk).lineAt(inChunk, cols, out);
+}
+
+bool ScrollbackBuffer::lineWraps(int index) const
+{
+    if (index < 0 || index >= m_count) return false;
+    int inChunk = 0;
+    return chunkFor(m_chunks, m_frontSkip, index, inChunk).lineWraps(inChunk);
+}
+
+std::size_t ScrollbackBuffer::memoryBytes() const
+{
+    std::size_t bytes = 0;
+    for (const auto &chunk : m_chunks) {
+        bytes += chunk->memoryBytes();
+    }
+    return bytes;
+}
+
+ScrollbackSnapshot ScrollbackBuffer::snapshot() const
+{
+    ScrollbackSnapshot snapshot;
+    snapshot.m_chunks.assign(m_chunks.begin(), m_chunks.end());
+    snapshot.m_frontSkip = m_frontSkip;
+    snapshot.m_count = m_count;
+    return snapshot;
+}

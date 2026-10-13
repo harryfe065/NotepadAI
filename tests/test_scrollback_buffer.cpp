@@ -70,6 +70,10 @@ private slots:
     void blankLineFlood_staysConstantMemory();
     void memory_isCompactForTypicalOutput();
     void clear_releasesMemory();
+
+    void chunks_roundTripAcrossBoundaries();
+    void chunks_evictionAcrossChunks();
+    void snapshot_unaffectedByLaterChanges();
 };
 
 
@@ -489,6 +493,92 @@ void TestScrollbackBuffer::clear_releasesMemory()
     QVERIFY(sb.memoryBytes() > 0);
     sb.clear();
     QCOMPARE(sb.memoryBytes(), static_cast<std::size_t>(0));
+}
+
+// Lines are kept in chunks of kScrollbackChunkLines: indexing, wraps and pops
+// must not notice the boundaries.
+void TestScrollbackBuffer::chunks_roundTripAcrossBoundaries()
+{
+    ScrollbackBuffer sb(5000);
+    const int cols = 4;
+    const int n = kScrollbackChunkLines * 3 + 17;
+    for (int i = 0; i < n; ++i) {
+        sb.pushLine(cols, makeLine(cols, 10u * static_cast<uint32_t>(i)).constData(), i % 3 == 0);
+    }
+    QCOMPARE(sb.size(), n);
+    QVector<VTermScreenCell> out(cols);
+    for (int i = 0; i < n; ++i) {
+        QVERIFY(sb.lineAt(i, cols, out.data()));
+        QCOMPARE(out[0].chars[0], 10u * static_cast<uint32_t>(i));
+        QCOMPARE(sb.lineWraps(i), i % 3 == 0);
+    }
+    // Pop back past two boundaries, newest first, then push again.
+    const int popped = kScrollbackChunkLines * 2;
+    for (int i = n - 1; i >= n - popped; --i) {
+        QVERIFY(sb.popLine(cols, out.data()));
+        QCOMPARE(out[0].chars[0], 10u * static_cast<uint32_t>(i));
+    }
+    QCOMPARE(sb.size(), n - popped);
+    sb.pushLine(cols, makeLine(cols, 7).constData());
+    QVERIFY(sb.lineAt(n - popped, cols, out.data()));
+    QCOMPARE(out[0].chars[0], 7u);
+    QVERIFY(sb.lineAt(n - popped - 1, cols, out.data()));
+    QCOMPARE(out[0].chars[0], 10u * static_cast<uint32_t>(n - popped - 1));
+}
+
+void TestScrollbackBuffer::chunks_evictionAcrossChunks()
+{
+    ScrollbackBuffer sb(kScrollbackChunkLines + 100);
+    const int cols = 4;
+    int evicted = 0;
+    for (int i = 0; i < 4000; ++i) {
+        evicted += sb.pushLine(cols, makeLine(cols, 10u * static_cast<uint32_t>(i)).constData());
+    }
+    QCOMPARE(sb.size(), kScrollbackChunkLines + 100);
+    QCOMPARE(evicted, 4000 - sb.size());
+    QVector<VTermScreenCell> out(cols);
+    QVERIFY(sb.lineAt(0, cols, out.data()));
+    QCOMPARE(out[0].chars[0], 10u * static_cast<uint32_t>(4000 - sb.size()));
+    QCOMPARE(sb.setMaxLines(10), kScrollbackChunkLines + 90);
+    QVERIFY(sb.lineAt(0, cols, out.data()));
+    QCOMPARE(out[0].chars[0], 10u * 3990u);
+    // Draining past the evicted lines the oldest chunk still holds.
+    for (int i = 3999; i >= 3990; --i) {
+        QVERIFY(sb.popLine(cols, out.data()));
+        QCOMPARE(out[0].chars[0], 10u * static_cast<uint32_t>(i));
+    }
+    QVERIFY(sb.isEmpty());
+    QVERIFY(!sb.popLine(cols, out.data()));
+    QCOMPARE(sb.memoryBytes(), static_cast<std::size_t>(0));
+}
+
+// A snapshot (what find-in-terminal's worker reads) keeps its lines whatever
+// the terminal does afterwards.
+void TestScrollbackBuffer::snapshot_unaffectedByLaterChanges()
+{
+    ScrollbackBuffer sb(1000);
+    const int cols = 4;
+    for (int i = 0; i < 1500; ++i) {
+        sb.pushLine(cols, makeLine(cols, 10u * static_cast<uint32_t>(i)).constData());
+    }
+    const ScrollbackSnapshot snap = sb.snapshot();
+    for (int i = 0; i < 300; ++i) {
+        sb.pushLine(cols, makeLine(cols, 3u).constData());
+    }
+    QVector<VTermScreenCell> out(cols);
+    for (int i = 0; i < 50; ++i) {
+        sb.popLine(cols, out.data());
+    }
+    sb.setMaxLines(200);
+    QVERIFY(sb.lineAt(199, cols, out.data()));
+    QCOMPARE(out[0].chars[0], 3u);
+    sb.clear();
+    QCOMPARE(snap.size(), 1000);
+    for (int i = 0; i < 1000; ++i) {
+        QVERIFY(snap.lineAt(i, cols, out.data()));
+        QCOMPARE(out[0].chars[0], 10u * static_cast<uint32_t>(500 + i));
+    }
+    QVERIFY(!snap.lineAt(1000, cols, out.data()));
 }
 
 QTEST_APPLESS_MAIN(TestScrollbackBuffer)

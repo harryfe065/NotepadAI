@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -40,7 +41,7 @@ constexpr uint32_t kTerminalWideSpacer = 0xFFFFFFFFu;
 // bg) and multi-codepoint clusters are interned in side tables that are
 // compacted when they outgrow the live history.
 //
-// This is the storage; terminals hold it through ScrollbackBuffer below.
+// Terminals hold it through ScrollbackBuffer below, as chunks of history.
 class ScrollbackStore
 {
 public:
@@ -139,46 +140,58 @@ private:
     std::size_t m_clusterCompactAt = 1u << 12;
 };
 
-// The history a terminal owns: ScrollbackStore behind a copy-on-write handle.
-// snapshot() is O(1) and gives a store that never changes, so a worker
-// thread (find-in-terminal) can read it while output keeps arriving; the
-// first change made while a snapshot is alive copies the store once.
+// History lines are kept in chunks of this many (every chunk but the newest
+// is full), each one a ScrollbackStore shared copy-on-write.
+constexpr int kScrollbackChunkLines = 512;
+
+// An unchanging view of a ScrollbackBuffer, safe to read on another thread.
+class ScrollbackSnapshot
+{
+public:
+    int size() const { return m_count; }
+    bool lineAt(int index, int cols, VTermScreenCell *out) const;
+
+private:
+    friend class ScrollbackBuffer;
+    std::vector<std::shared_ptr<const ScrollbackStore>> m_chunks;
+    int m_frontSkip = 0;
+    int m_count = 0;
+};
+
+// The history a terminal owns. Lines live in chunks of kScrollbackChunkLines
+// shared copy-on-write, so snapshot() costs one pointer per chunk and the
+// first change made while a snapshot is alive copies only the chunk it
+// touches (at most kScrollbackChunkLines lines), never the whole history.
+// Evicted lines are skipped in the oldest chunk until all of it is evicted:
+// at most one chunk of lines beyond maxLines() is kept.
 class ScrollbackBuffer
 {
 public:
-    explicit ScrollbackBuffer(int maxLines = 10000) : m_store(std::make_shared<ScrollbackStore>(maxLines)) {}
+    explicit ScrollbackBuffer(int maxLines = 10000) : m_maxLines(maxLines > 0 ? maxLines : 0) {}
 
-    int maxLines() const { return m_store->maxLines(); }
-    int setMaxLines(int maxLines) { return store().setMaxLines(maxLines); }
-    int size() const { return m_store->size(); }
-    bool isEmpty() const { return m_store->isEmpty(); }
-    void clear() { store().clear(); }
-    int pushLine(int cols, const VTermScreenCell *cells, bool wrapsNext = false)
-    {
-        return store().pushLine(cols, cells, wrapsNext);
-    }
-    bool popLine(int cols, VTermScreenCell *out) { return store().popLine(cols, out); }
-    bool lineAt(int index, int cols, VTermScreenCell *out) const { return m_store->lineAt(index, cols, out); }
-    bool lineWraps(int index) const { return m_store->lineWraps(index); }
-    std::size_t memoryBytes() const { return m_store->memoryBytes(); }
+    int maxLines() const { return m_maxLines; }
+    // Returns the number of lines evicted by the resize (0 if none).
+    int setMaxLines(int maxLines);
+    int size() const { return m_count; }
+    bool isEmpty() const { return m_count == 0; }
+    void clear();
+    // Returns the number of lines evicted by this call (0 or 1).
+    int pushLine(int cols, const VTermScreenCell *cells, bool wrapsNext = false);
+    bool popLine(int cols, VTermScreenCell *out);
+    bool lineAt(int index, int cols, VTermScreenCell *out) const;
+    bool lineWraps(int index) const;
+    std::size_t memoryBytes() const;
 
-    std::shared_ptr<const ScrollbackStore> snapshot() const { return m_store; }
+    ScrollbackSnapshot snapshot() const;
 
 private:
-    ScrollbackStore &store()
-    {
-        if (m_store.use_count() > 1) {
-            m_store = std::make_shared<ScrollbackStore>(*m_store);
-        } else {
-            // The last snapshot was released on another thread: its reads
-            // happen-before our writes (pairs with the release in the
-            // reference count decrement).
-            std::atomic_thread_fence(std::memory_order_acquire);
-        }
-        return *m_store;
-    }
+    ScrollbackStore &writable(std::shared_ptr<ScrollbackStore> &chunk);
+    void evictOldest();
 
-    std::shared_ptr<ScrollbackStore> m_store;
+    std::deque<std::shared_ptr<ScrollbackStore>> m_chunks;
+    int m_frontSkip = 0;   // evicted lines still held by the oldest chunk
+    int m_count = 0;
+    int m_maxLines;
 };
 
 #endif

@@ -33,11 +33,12 @@
 
 // One find-in-terminal search, apart from the widget: its matches and how far
 // the scan has got. History is scanned on a worker thread over a snapshot of
-// the scrollback (O(1), copy-on-write), so even 100k lines cost the UI thread
-// nothing; output that arrives later is searched incrementally on the caller's
-// thread (only lines new since the last pass, plus the screen). A user regex
-// that backtracks catastrophically ends the search (TooSlow). Live rows are
-// read through Source, so tests drive it without a terminal.
+// the scrollback (one pointer per chunk; output arriving meanwhile copies at
+// most the chunk it lands in), so the UI thread never scans 100k lines; output
+// that arrives later is searched incrementally on the caller's thread (only
+// lines new since the last pass, plus the screen). A user regex that
+// backtracks catastrophically ends the search (TooSlow). Live rows are read
+// through Source, so tests drive it without a terminal.
 class TerminalSearchSession
 {
 public:
@@ -72,7 +73,7 @@ public:
 
     // The history scan, as a job for a worker thread.
     struct HistoryJob {
-        std::shared_ptr<const ScrollbackStore> history;   // never changes
+        ScrollbackSnapshot history;   // never changes
         qint64 firstLine = 0;   // line id of history index 0
         qint64 from = 0;        // first line id to search
         int columns = 0;
@@ -104,6 +105,8 @@ public:
     // Lines before `firstLine` were evicted from history.
     void linesDropped(qint64 firstLine);
     // History shrank to `historyEnd` (lines popped back onto the screen).
+    // Lines popped while a history job runs are searched again once it
+    // finishes: the job saw their old text.
     void historyShrunk(qint64 historyEnd);
     // Moves the current match by `delta` (wrapping); returns it, or -1.
     int step(int delta);
@@ -144,6 +147,7 @@ private:
     std::vector<int> m_colOf;
     quint64 m_generation = 0;
     bool m_jobRunning = false;
+    qint64 m_jobShrunkTo = 0;   // lowest history end seen while the job ran
     std::shared_ptr<std::atomic<bool>> m_cancel;
 };
 

@@ -57,6 +57,11 @@ public:
         m_dropped += m_history.pushLine(m_cols, cells.data());
     }
     void setLive(int r, const QString &text) { m_live[static_cast<std::size_t>(r)] = row(text, m_cols); }
+    void pop()
+    {
+        std::vector<VTermScreenCell> cells(static_cast<std::size_t>(m_cols));
+        m_history.popLine(m_cols, cells.data());
+    }
 
     const ScrollbackBuffer &history() const { return m_history; }
     qint64 firstLine() const override { return m_dropped; }
@@ -117,6 +122,7 @@ private slots:
     void largeBacklogGoesBackToScanning();
     void evictionDropsMatchesAndKeepsCurrent();
     void historyShrinkRescansPoppedLines();
+    void lineRepushedDuringTheJobIsRescanned();
     void stepWrapsAndActivateLast();
     void catastrophicRegexGivesUp();
     void highlightsMarkTheCurrentMatch();
@@ -262,6 +268,29 @@ void TestTerminalSearchSession::historyShrinkRescansPoppedLines()
     s.historyShrunk(2);
     QCOMPARE(s.searchNewOutput(t), State::Ready);
     QCOMPARE(s.matches().size(), std::size_t(3));
+}
+
+// Lines popped back onto the screen while the worker runs and pushed again
+// with other text: the job's matches there are stale, the new text is found.
+void TestTerminalSearchSession::lineRepushedDuringTheJobIsRescanned()
+{
+    FakeTerminal t(100, 12, 1);
+    for (int i = 0; i < 5; ++i) t.push(QStringLiteral("old"));
+    TerminalSearchSession s;
+    s.start(query(QStringLiteral("old|brand-new"), true), t.firstLine());
+    const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    QVERIFY(job.has_value());
+    t.pop();
+    t.pop();
+    s.historyShrunk(t.historyEnd());
+    t.push(QStringLiteral("brand-new"));
+    t.push(QStringLiteral("brand-new"));
+    QCOMPARE(s.finishHistoryJob(TerminalSearchSession::runHistoryJob(*job), t), State::Ready);
+    QCOMPARE(s.matches().size(), std::size_t(5));
+    for (int i = 0; i < 5; ++i) {
+        QCOMPARE(s.matches()[static_cast<std::size_t>(i)].line, qint64(i));
+        QCOMPARE(s.matches()[static_cast<std::size_t>(i)].width, i < 3 ? 3 : 9);
+    }
 }
 
 void TestTerminalSearchSession::stepWrapsAndActivateLast()

@@ -76,7 +76,7 @@ namespace {
 constexpr int kResizeSettleMs = 24;
 // A missing file seen on hover is re-checked after this long (it may be built).
 constexpr qint64 kMissingPathRecheckMs = 3000;
-// Search slices on the UI thread stay under this budget per event-loop pass.
+// Cursor blink half-period.
 constexpr int kCursorBlinkMs = 500;
 // Wheel: three lines per notch, as on every platform default.
 constexpr int kWheelLines = 3;
@@ -1324,7 +1324,8 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
 // - a raster engine on a 32-bit opaque-compatible image,
 // - a transform that is just the device pixel ratio, at a whole device pixel
 //   (at 150% a widget can sit at x.5, where Qt and the tiles would round
-//   differently),
+//   differently), and a size that is whole device pixels too (an odd width
+//   at 150% ends mid-pixel: the last column is half a neighbour's),
 // - one full-width paint rectangle (full repaints, contiguous dirty rows):
 //   rows are written across the whole width, and nothing outside the paint
 //   region (a child like the find bar) may be touched.
@@ -1346,6 +1347,10 @@ bool TerminalWidget::directPaintTarget(QPainter &p, const QRegion &region, const
     const int ox = qRound(t.dx());
     const int oy = qRound(t.dy());
     if (std::abs(t.dx() - ox) > 1e-3 || std::abs(t.dy() - oy) > 1e-3) return false;
+    if (std::abs(viewport()->width() * m_dpr - deviceSize.width()) > 1e-3
+        || std::abs(viewport()->height() * m_dpr - deviceSize.height()) > 1e-3) {
+        return false;
+    }
     if (region.rectCount() != 1) return false;
     const QRect r = region.boundingRect();
     if (r.left() > 0 || r.right() < viewport()->width() - 1) return false;
