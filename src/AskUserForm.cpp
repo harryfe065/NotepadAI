@@ -104,7 +104,7 @@ bool normaliseRecommended(Question &q, const QJsonValue &raw, QString *error)
     case QuestionType::Multi: {
         QJsonArray picked;
         const QJsonArray items = raw.isArray() ? raw.toArray() : QJsonArray{raw};
-        for (const QJsonValue &item : items) {
+        for (const auto &item : items) {
             const QString v = scalarToString(item);
             if (optionIndex(q, v) < 0)
                 return fail(error, where + QStringLiteral("recommended \"%1\" is not one of the option values").arg(v));
@@ -231,7 +231,7 @@ bool parseQuestion(const QJsonValue &value, int index, Question *out, QString *e
         if (opts.size() > kMaxOptions)
             return fail(error, QStringLiteral("question \"%1\": at most %2 options").arg(q.id).arg(kMaxOptions));
         QSet<QString> seen;
-        for (const QJsonValue &ov : opts) {
+        for (const auto &ov : opts) {
             Option opt;
             if (ov.isObject()) {
                 const QJsonObject oo = ov.toObject();
@@ -562,7 +562,7 @@ QString choiceText(const Question &q, const QString &value)
 
 QString confirmText(const Question &q, bool yes)
 {
-    const QString plain = yes ? QStringLiteral("yes") : QStringLiteral("no");
+    QString plain = yes ? QStringLiteral("yes") : QStringLiteral("no");
     const QString label = yes ? q.yesLabel : q.noLabel;
     if (label.isEmpty() || label.compare(plain, Qt::CaseInsensitive) == 0)
         return plain;
@@ -624,7 +624,8 @@ QString answerText(const Question &q, const Answer &a)
     case QuestionType::Multi: {
         QStringList parts;
         if (q.type == QuestionType::Multi) {
-            for (const QJsonValue &item : a.value.toArray())
+            const QJsonArray picked = a.value.toArray();
+            for (const auto &item : picked)
                 parts.append(choiceText(q, item.toString()));
         } else if (!isEmptyValue(a.value)) {
             parts.append(choiceText(q, a.value.toString()));
@@ -651,7 +652,8 @@ QString answerText(const Question &q, const Answer &a)
 QStringList sortedStrings(const QJsonValue &v)
 {
     QStringList items;
-    for (const QJsonValue &item : v.toArray())
+    const QJsonArray values = v.toArray();
+    for (const auto &item : values)
         items.append(item.toString());
     items.sort();
     return items;
@@ -677,7 +679,8 @@ QJsonValue fitToQuestion(const Question &q, const QJsonValue &v)
         return optionIndex(q, v.toString()) >= 0 ? v : QJsonValue();
     case QuestionType::Multi: {
         QJsonArray kept;
-        for (const QJsonValue &item : v.toArray()) {
+        const QJsonArray values = v.toArray();
+        for (const auto &item : values) {
             if (optionIndex(q, item.toString()) >= 0)
                 kept.append(item);
         }
@@ -904,7 +907,7 @@ QVector<Option> enumOptions(const QJsonObject &schema)
     QJsonArray titled = schema.value(QStringLiteral("oneOf")).toArray();
     if (titled.isEmpty())
         titled = schema.value(QStringLiteral("anyOf")).toArray();
-    for (const QJsonValue &v : titled) {
+    for (const auto &v : std::as_const(titled)) {
         const QJsonObject o = v.toObject();
         Option opt;
         opt.value = scalarToString(o.value(QStringLiteral("const")));
@@ -989,7 +992,8 @@ Spec fromElicitation(const QString &message, const QJsonObject &requestedSchema)
     const QJsonObject props = requestedSchema.value(QStringLiteral("properties")).toObject();
     QSet<QString> required;
     QStringList order;
-    for (const QJsonValue &v : requestedSchema.value(QStringLiteral("required")).toArray()) {
+    const QJsonArray requiredKeys = requestedSchema.value(QStringLiteral("required")).toArray();
+    for (const auto &v : requiredKeys) {
         const QString key = v.toString();
         if (props.contains(key) && !required.contains(key)) {
             required.insert(key);

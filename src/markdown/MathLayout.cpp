@@ -692,7 +692,7 @@ private:
         std::vector<double> rowAsc(size_t(rows), 0.7 * em), rowDesc(size_t(rows), 0.3 * em);
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {
-                const Box &b = cells[size_t(r * cols + c)];
+                const Box &b = cells[size_t(r) * size_t(cols) + size_t(c)];
                 colW[size_t(c)] = std::max(colW[size_t(c)], b.w);
                 rowAsc[size_t(r)] = std::max(rowAsc[size_t(r)], b.asc);
                 rowDesc[size_t(r)] = std::max(rowDesc[size_t(r)], b.desc);
@@ -730,7 +730,7 @@ private:
         for (int r = 0; r < rows; ++r) {
             const double baselineUp = yUp - rowBase[size_t(r)];
             for (int c = 0; c < cols; ++c) {
-                const Box &b = cells[size_t(r * cols + c)];
+                const Box &b = cells[size_t(r) * size_t(cols) + size_t(c)];
                 double dx = colX[size_t(c)];
                 if (alignedLike) {
                     if (c % 2 == 0) {
@@ -738,7 +738,7 @@ private:
                     } else {
                         // "a &= b": the relation after the alignment point is
                         // spaced as if it had a left operand
-                        const Node &cell = n.kids[size_t(r * cols + c)];
+                        const Node &cell = n.kids[size_t(r) * size_t(cols) + size_t(c)];
                         if (!cell.kids.empty()) {
                             const AtomClass first = effectiveClass(cell.kids.front());
                             if (first == AtomClass::Rel) dx += 5.0 / 18.0 * em;

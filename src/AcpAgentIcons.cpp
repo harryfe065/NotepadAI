@@ -125,7 +125,7 @@ QIcon acpAgentIcon(const AcpAgentDefinition &def, const QPalette &palette)
 {
     const QString icon = def.icon.trimmed();
     if (!icon.isEmpty() && !isAcpAgentBrandKey(icon)) {
-        const QIcon custom = customFileIcon(icon);
+        QIcon custom = customFileIcon(icon);
         if (!custom.isNull()) {
             return custom;
         }

@@ -1563,7 +1563,7 @@ void AcpConnection::respondToElicitation(const QString &requestId, const QString
     const auto it = m_pendingElicitations.find(requestId);
     if (it == m_pendingElicitations.end())
         return;
-    const QJsonValue id = it.value();
+    QJsonValue id = std::move(it.value());
     m_pendingElicitations.erase(it);
     QJsonObject result{{QStringLiteral("action"), action}};
     if (action == QLatin1String("accept"))
@@ -1577,7 +1577,7 @@ void AcpConnection::handleCancelRequest(const QJsonObject &params)
     const auto it = m_pendingElicitations.find(key);
     if (it == m_pendingElicitations.end())
         return;
-    const QJsonValue id = it.value();
+    QJsonValue id = std::move(it.value());
     m_pendingElicitations.erase(it);
     sendErrorResponse(id, kJsonRpcRequestCancelled, QStringLiteral("Request cancelled"));
     emit elicitationClosed(key);

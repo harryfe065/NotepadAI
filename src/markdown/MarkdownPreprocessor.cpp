@@ -464,7 +464,7 @@ int tryHtml(QStringView s, int i, Ctx &c, QString &out)
     }
 
     // Inline pairs.
-    enum class Pair { None, Bold, Italic, Strike, Code, Link, Sub, Sup };
+    enum class Pair : std::uint8_t { None, Bold, Italic, Strike, Code, Link, Sub, Sup };
     Pair pair = Pair::None;
     if (name == QLatin1String("b") || name == QLatin1String("strong")) pair = Pair::Bold;
     else if (name == QLatin1String("i") || name == QLatin1String("em")) pair = Pair::Italic;

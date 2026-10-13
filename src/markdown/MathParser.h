@@ -21,6 +21,7 @@
 
 #include <QString>
 
+#include <cstdint>
 #include <vector>
 
 // Parser for the TeX math subset used in chat messages (see the
@@ -35,15 +36,15 @@ constexpr int kMaxDepth = 32;
 constexpr int kMaxSourceChars = 2048;
 
 // TeX atom classes (drive inter-atom spacing in layout).
-enum class AtomClass { Ord, Op, Bin, Rel, Open, Close, Punct };
+enum class AtomClass : std::uint8_t { Ord, Op, Bin, Rel, Open, Close, Punct };
 
-enum class FontStyle { Italic, Roman, Bold };
+enum class FontStyle : std::uint8_t { Italic, Roman, Bold };
 
-enum class LimitsMode { Default, Limits, NoLimits };
+enum class LimitsMode : std::uint8_t { Default, Limits, NoLimits };
 
 struct Node
 {
-    enum class Kind {
+    enum class Kind : std::uint8_t {
         Row,       // kids = items in order
         Atom,      // text = glyph(s); cls/style
         LargeOp,   // text = glyph or function name; named = name set in roman

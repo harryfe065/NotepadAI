@@ -228,7 +228,8 @@ QString recommendedText(const Question &q)
         return rec.isString() ? labelOf(rec.toString()) : QString();
     case QuestionType::Multi: {
         QStringList labels;
-        for (const QJsonValue &v : rec.toArray())
+        const QJsonArray picked = rec.toArray();
+        for (const auto &v : picked)
             labels.append(labelOf(v.toString()));
         return labels.join(QStringLiteral(", "));
     }

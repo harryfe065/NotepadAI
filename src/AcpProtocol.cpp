@@ -631,7 +631,7 @@ QString subagentInstructions(const QJsonObject &rawInput)
     }
     QString md = rawInput.value(QLatin1String("context")).toString().trimmed();
     const QJsonArray tasks = rawInput.value(QLatin1String("tasks")).toArray();
-    for (const QJsonValue &v : tasks) {
+    for (const auto &v : tasks) {
         const QJsonObject task = v.toObject();
         const QString text = task.value(QLatin1String("task")).toString().trimmed();
         const QString name = task.value(QLatin1String("name")).toString().trimmed();
@@ -667,7 +667,7 @@ QJsonObject subagentInputForHistory(const QJsonObject &rawInput)
     if (!context.isEmpty()) out.insert(QStringLiteral("context"), context);
     QJsonArray tasks;
     const QJsonArray source = rawInput.value(QLatin1String("tasks")).toArray();
-    for (const QJsonValue &v : source) {
+    for (const auto &v : source) {
         const QJsonObject task = v.toObject();
         const QString text = task.value(QLatin1String("task")).toString().left(qMax(0, budget));
         budget -= static_cast<int>(text.size());

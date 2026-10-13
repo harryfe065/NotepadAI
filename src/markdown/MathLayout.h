@@ -42,7 +42,7 @@
 // one painter pass to draw.
 namespace Math {
 
-enum class PrimKind { Text, Rule, Path };
+enum class PrimKind : std::uint8_t { Text, Rule, Path };
 
 struct Prim
 {
