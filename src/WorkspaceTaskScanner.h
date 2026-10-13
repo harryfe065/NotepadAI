@@ -28,45 +28,17 @@ struct WorkspaceTask
     QString name;
     QString command; // full command line, e.g. "npm run dev"
     bool hasRequiredParams = false; // just recipes with a param lacking a default
-    // just recipes hidden from `just --list`: `_name` or a `[private]`
-    // attribute. The empty panel skips them; the gutter still marks them.
-    bool isPrivate = false;
     int line = -1; // 0-based line in the source file (gutter markers), -1 if unknown
-
-    bool operator==(const WorkspaceTask &) const = default;
 };
 
-// All tasks from one source file, in declaration order.
-struct WorkspaceTaskGroup
-{
-    QString source; // display label: "Justfile" | "Makefile" | "package.json" | "deno.json"
-    QList<WorkspaceTask> tasks;
-
-    bool operator==(const WorkspaceTaskGroup &) const = default;
-};
-
-// Parsers for the four task-file kinds plus the workspace-root scan the
-// terminal empty panel uses. Pure: file contents (or a directory) in, tasks
-// out — no UI, no editor, no PTY. TaskRunnerGutter shares these parsers, so
-// the gutter and the panel always agree on names/commands/required-params.
-// (Package-manager detection differs by scope on purpose: the gutter walks
-// up from the open file with a cache; the scanner only sniffs the root.)
+// Parsers for the four task-file kinds behind TaskRunnerGutter's run icons.
+// Pure: file contents in, tasks out — no UI, no editor, no file I/O.
 class WorkspaceTaskScanner
 {
 public:
-    // Root-level discovery only (no recursion): the first existing Justfile
-    // variant, the first existing Makefile variant, package.json, deno.json.
-    // Groups come back in that order and only when they hold at least one task.
-    static QList<WorkspaceTaskGroup> scanRoot(const QString &workspaceRoot);
-
     static QList<WorkspaceTask> parsePackageJson(const QByteArray &text,
                                                  const QString &packageManager);
     static QList<WorkspaceTask> parseJustfile(const QByteArray &text);
     static QList<WorkspaceTask> parseMakefile(const QByteArray &text);
     static QList<WorkspaceTask> parseDenoJson(const QByteArray &text);
-
-    // Lockfile sniff in `dir` itself (no upward walk — the scanner only ever
-    // asks about a workspace root): yarn.lock → yarn, pnpm-lock.yaml → pnpm,
-    // bun.lockb / bun.lock → bun, otherwise npm.
-    static QString detectPackageManager(const QString &dir);
 };

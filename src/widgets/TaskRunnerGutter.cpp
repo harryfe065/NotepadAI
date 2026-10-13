@@ -157,11 +157,10 @@ bool TaskRunnerGutter::isTaskFile(const QString &filename)
     return false;
 }
 
-// The parsers live in WorkspaceTaskScanner (shared with the terminal empty
-// panel's root scan); these wrappers only adapt the shared result to the
-// gutter's TaskEntry (dropping entries with no line to mark) and, for
-// package.json, supply the package manager detected for the editor file's
-// folder.
+// The parsers live in WorkspaceTaskScanner (pure, unit-tested); these
+// wrappers only adapt the result to the gutter's TaskEntry (dropping entries
+// with no line to mark) and, for package.json, supply the package manager
+// detected for the editor file's folder.
 
 QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parsePackageJson(const QByteArray &text)
 {

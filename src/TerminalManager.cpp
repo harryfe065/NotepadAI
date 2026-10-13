@@ -29,7 +29,6 @@
 #include "TerminalDock.h"
 #include "TerminalTaskRegistry.h"
 #include "TerminalEmptyPanelPolicy.h"
-#include "WorkspaceTaskScanner.h"
 #include "widgets/TerminalEmptyPanel.h"
 #include "remote/SshProfile.h"
 #include "TerminalWidget.h"
@@ -58,11 +57,9 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
-#include <QFutureWatcher>
 #include <QIcon>
 #include <QMenu>
 #include <QMessageBox>
-#include <QtConcurrent/QtConcurrentRun>
 #include <QScopedPointer>
 #include <QStandardPaths>
 #include <QCoreApplication>
@@ -1167,8 +1164,6 @@ void TerminalManager::closeTerminalsForWorkspace(const QString &workspaceRoot,
     // it, so re-opening the workspace shows the panel again.
     const QString emptyKey = TerminalEmptyPanelPolicy::workspaceKey(workspaceRoot);
     m_emptySuppressed.remove(emptyKey);
-    m_discoveredTasks.remove(emptyKey);
-    ++m_taskScanGeneration; // an in-flight scan must not re-cache it
     m_emptyPanelDirty = true;
 
     QStringList cwds;
@@ -1273,22 +1268,6 @@ void TerminalManager::ensureEmptyPanel()
         if (!cwd.isEmpty())
             openTask(cwd, task);
     });
-    connect(m_emptyPanel, &TerminalEmptyPanel::discoveredTaskRequested, this,
-            [this](const WorkspaceTask &task) {
-        const QString cwd = TerminalCwdResolver::resolveWorkspace(m_filterActiveRoot);
-        if (cwd.isEmpty())
-            return;
-        if (task.hasRequiredParams) {
-            // Like the task gutter: the command typed but not entered, so the
-            // user supplies the arguments.
-            openTerminalWithInput(nullptr, cwd, task.command + QLatin1Char(' '));
-            return;
-        }
-        TerminalTask t;
-        t.name = task.name;
-        t.command = task.command;
-        openTask(cwd, t);
-    });
     connect(m_emptyPanel, &TerminalEmptyPanel::editTasksRequested, this,
             &TerminalManager::editTasksRequested);
 
@@ -1348,11 +1327,8 @@ void TerminalManager::updateEmptyPanel()
     if (!m_emptyPanel || !m_emptyDock)
         return;
 
-    // Refresh on every (re)show and on workspace switch, so the lists are
-    // fresh after edits elsewhere. Discovered tasks are stale-while-
-    // revalidate: the last scan of this workspace shows at once and a
-    // worker rescans the root files (file I/O never runs on the UI thread —
-    // a workspace on a dead network share would freeze the window).
+    // Refresh on every (re)show and on workspace switch, so the configured
+    // tasks are fresh after edits elsewhere.
     if (m_emptyDock->isClosed())
         m_emptyPanelDirty = true;
     if (m_emptyPanelDirty || m_emptyPanelKey != key) {
@@ -1360,37 +1336,13 @@ void TerminalManager::updateEmptyPanel()
         const remote::SshUri ssh = remote::parseSshUri(m_filterActiveRoot);
         m_emptyPanel->setContent(
             remoteWs && ssh.valid ? ssh.remotePath : m_filterActiveRoot, remoteWs,
-            remoteWs ? QList<TerminalTask>() : tasksForWorkspace(m_filterActiveRoot),
-            remoteWs ? QList<WorkspaceTaskGroup>() : m_discoveredTasks.value(key));
+            remoteWs ? QList<TerminalTask>() : tasksForWorkspace(m_filterActiveRoot));
         m_emptyPanelKey = key;
         m_emptyPanelDirty = false;
-        if (!remoteWs)
-            startTaskScan(key, m_filterActiveRoot);
     }
 
     if (m_emptyDock->isClosed()) {
         m_emptyDock->toggleView(true);
         m_emptyDock->raise();
     }
-}
-
-void TerminalManager::startTaskScan(const QString &key, const QString &workspaceRoot)
-{
-    const quint64 generation = ++m_taskScanGeneration;
-    auto *watcher = new QFutureWatcher<QList<WorkspaceTaskGroup>>(this);
-    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, key, generation]() {
-        watcher->deleteLater();
-        // A newer scan, or the workspace closing, supersedes this one.
-        if (generation != m_taskScanGeneration || m_shuttingDown)
-            return;
-        QList<WorkspaceTaskGroup> groups = watcher->result();
-        const auto cached = m_discoveredTasks.constFind(key);
-        if (cached != m_discoveredTasks.cend() && *cached == groups)
-            return;
-        m_discoveredTasks.insert(key, groups);
-        if (m_emptyPanel && m_emptyPanelKey == key)
-            m_emptyPanel->setDiscoveredGroups(std::move(groups));
-    });
-    watcher->setFuture(QtConcurrent::run(
-        [workspaceRoot]() { return WorkspaceTaskScanner::scanRoot(workspaceRoot); }));
 }

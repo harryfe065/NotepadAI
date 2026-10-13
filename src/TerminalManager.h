@@ -33,7 +33,6 @@
 
 #include "TerminalTaskRegistry.h"
 #include "TerminalProcessStats.h"
-#include "WorkspaceTaskScanner.h"
 
 
 class NotepadNextApplication;
@@ -109,7 +108,7 @@ public slots:
     void applyWorkspaceFilter(const QString &activeWorkspaceRoot, const QStringList &openWorkspaceRoots);
     void closeTerminalsForWorkspace(const QString &workspaceRoot, const QStringList &openWorkspaceRoots);
 
-    // Re-scans the empty panel's task lists (configured + discovered) for the
+    // Re-reads the empty panel's configured tasks for the
     // active workspace. Called after Edit Tasks saves.
     void refreshEmptyPanel();
 
@@ -152,9 +151,6 @@ private:
     void updateEmptyPanel();
     void hideEmptyPanel();
     void applyEmptyPanelColors();
-    // Rescans `workspaceRoot`'s task files on a worker; the result lands in
-    // m_discoveredTasks[key] and, when it changed, in the panel.
-    void startTaskScan(const QString &key, const QString &workspaceRoot);
     void refreshProcessStats();
     bool syncStatsPoll();
 
@@ -171,10 +167,6 @@ private:
     QSet<QString> m_emptySuppressed;
     QString m_emptyPanelKey;
     bool m_emptyPanelDirty = true;
-    // Last discovered tasks per workspaceKey, for open workspaces only
-    // (dropped in closeTerminalsForWorkspace; never persisted).
-    QHash<QString, QList<WorkspaceTaskGroup>> m_discoveredTasks;
-    quint64 m_taskScanGeneration = 0;
     QTimer *m_statsTimer = nullptr;
     QVector<TerminalProcessStats::ProcessSample> m_processSnapshot;
     QVector<TerminalProcessStats::ProcessorTick> m_processorNow;

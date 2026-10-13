@@ -117,7 +117,7 @@ target_sources(test_terminal_cwd_resolver PRIVATE
 )
 add_test(NAME TerminalCwdResolver COMMAND test_terminal_cwd_resolver)
 
-# --- WorkspaceTaskScanner: root task-file discovery for the terminal empty panel ---
+# --- WorkspaceTaskScanner: task-file parsers behind the task runner gutter ---
 qt_add_executable(test_workspace_task_scanner test_workspace_task_scanner.cpp)
 target_include_directories(test_workspace_task_scanner PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_workspace_task_scanner PRIVATE Qt6::Core Qt6::Test)
@@ -138,7 +138,7 @@ target_sources(test_terminal_empty_panel_policy PRIVATE
 )
 add_test(NAME TerminalEmptyPanelPolicy COMMAND test_terminal_empty_panel_policy)
 
-# --- TerminalEmptyPanel: widget rebuild, row geometry, private-recipe filter ---
+# --- TerminalEmptyPanel: widget rebuild and row geometry ---
 qt_add_executable(test_terminal_empty_panel test_terminal_empty_panel.cpp)
 target_include_directories(test_terminal_empty_panel PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -150,7 +150,6 @@ target_sources(test_terminal_empty_panel PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalEmptyPanel.h
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.h
-    ${CMAKE_SOURCE_DIR}/src/WorkspaceTaskScanner.h
 )
 add_test(NAME TerminalEmptyPanel COMMAND test_terminal_empty_panel)
 set_tests_properties(TerminalEmptyPanel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

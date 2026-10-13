@@ -31,8 +31,6 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
-#include <algorithm>
-
 namespace {
 
 QString argb(const QColor &c)
@@ -134,22 +132,12 @@ void TerminalEmptyPanel::setSchemeColors(const QColor &background, const QColor 
     rebuild();
 }
 
-void TerminalEmptyPanel::setDiscoveredGroups(QList<WorkspaceTaskGroup> groups)
-{
-    if (groups == m_discoveredGroups)
-        return;
-    m_discoveredGroups = std::move(groups);
-    rebuild();
-}
-
 void TerminalEmptyPanel::setContent(const QString &workspaceDisplayPath, bool remote,
-                                    const QList<TerminalTask> &configuredTasks,
-                                    const QList<WorkspaceTaskGroup> &discoveredGroups)
+                                    const QList<TerminalTask> &configuredTasks)
 {
     m_workspaceDisplayPath = workspaceDisplayPath;
     m_remote = remote;
     m_configuredTasks = configuredTasks;
-    m_discoveredGroups = discoveredGroups;
     rebuild();
 }
 
@@ -172,8 +160,7 @@ void TerminalEmptyPanel::clearContent()
     clearLayout(m_contentLayout, clearLayout);
 }
 
-QWidget *TerminalEmptyPanel::makeTaskRow(const QString &name, const QString &command,
-                                         const QString &source)
+QWidget *TerminalEmptyPanel::makeTaskRow(const QString &name, const QString &command)
 {
     auto *row = new QPushButton(m_content);
     row->setCursor(Qt::PointingHandCursor);
@@ -209,10 +196,6 @@ QWidget *TerminalEmptyPanel::makeTaskRow(const QString &name, const QString &com
     }
     layout->addLayout(texts);
     layout->addStretch(1);
-
-    auto *sourceLabel = mutedLabel(source, row);
-    sourceLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-    layout->addWidget(sourceLabel);
 
     // A QPushButton's size hint comes from its (empty) text, not from a
     // layout installed on it — without this the row is one line tall and
@@ -283,57 +266,32 @@ void TerminalEmptyPanel::rebuild()
     col->addLayout(newRow);
 
     if (!m_remote) {
-        // Configured tasks first (Q32), each discovered file group after.
-        auto addGroupHeader = [&](const QString &text, bool withEdit) {
-            auto *header = new QHBoxLayout;
-            header->setSpacing(4);
-            auto *label = new QLabel(text, column);
-            QFont f = label->font();
-            f.setBold(true);
-            label->setFont(f);
-            header->addWidget(label);
-            header->addStretch(1);
-            if (withEdit) {
-                auto *edit = new QToolButton(column);
-                edit->setText(tr("Configure tasks…"));
-                edit->setAutoRaise(true);
-                edit->setObjectName(QStringLiteral("nnConfigureTasks"));
-                edit->setCursor(Qt::PointingHandCursor);
-                connect(edit, &QToolButton::clicked, this, &TerminalEmptyPanel::editTasksRequested);
-                header->addWidget(edit);
-            }
-            col->addLayout(header);
-        };
-
         col->addSpacing(4);
-        addGroupHeader(tr("Configured tasks"), true);
+        auto *header = new QHBoxLayout;
+        header->setSpacing(4);
+        auto *label = new QLabel(tr("Configured tasks"), column);
+        QFont f = label->font();
+        f.setBold(true);
+        label->setFont(f);
+        header->addWidget(label);
+        header->addStretch(1);
+        auto *edit = new QToolButton(column);
+        edit->setText(tr("Configure tasks…"));
+        edit->setAutoRaise(true);
+        edit->setObjectName(QStringLiteral("nnConfigureTasks"));
+        edit->setCursor(Qt::PointingHandCursor);
+        connect(edit, &QToolButton::clicked, this, &TerminalEmptyPanel::editTasksRequested);
+        header->addWidget(edit);
+        col->addLayout(header);
+
         if (m_configuredTasks.isEmpty()) {
             auto *none = mutedLabel(tr("No tasks configured for this workspace."), column);
             col->addWidget(none);
         } else {
             for (const TerminalTask &task : m_configuredTasks) {
-                QWidget *row = makeTaskRow(task.name, task.command, tr("Configured"));
+                QWidget *row = makeTaskRow(task.name, task.command);
                 connect(static_cast<QPushButton *>(row), &QPushButton::clicked, this,
                         [this, task] { emit configuredTaskRequested(task); });
-                col->addWidget(row);
-            }
-        }
-
-        for (const WorkspaceTaskGroup &group : m_discoveredGroups) {
-            // Private just recipes (`_name`, `[private]`) are helpers, hidden
-            // like `just --list` hides them; a group of only those is skipped.
-            const bool anyPublic = std::any_of(group.tasks.cbegin(), group.tasks.cend(),
-                                               [](const WorkspaceTask &t) { return !t.isPrivate; });
-            if (!anyPublic)
-                continue;
-            col->addSpacing(4);
-            addGroupHeader(group.source, false);
-            for (const WorkspaceTask &task : group.tasks) {
-                if (task.isPrivate)
-                    continue;
-                QWidget *row = makeTaskRow(task.name, task.command, group.source);
-                connect(static_cast<QPushButton *>(row), &QPushButton::clicked, this,
-                        [this, task] { emit discoveredTaskRequested(task); });
                 col->addWidget(row);
             }
         }

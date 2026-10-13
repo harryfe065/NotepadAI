@@ -18,9 +18,6 @@
 
 #include "WorkspaceTaskScanner.h"
 
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -155,51 +152,6 @@ QList<WorkspaceTask> parseJsonTaskBlock(const QByteArray &text, const char *bloc
     return entries;
 }
 
-// True when the `[...]` attribute lines right above the recipe header that
-// starts at `lineStart` include `private` (`[private]`, `[private, no-cd]`,
-// stacked lines). Comment lines among them are skipped; anything else ends
-// the run.
-bool hasPrivateAttribute(const QString &s, qsizetype lineStart)
-{
-    qsizetype end = lineStart;
-    while (end > 0) {
-        const qsizetype nl = end - 1; // the '\n' ending the previous line
-        const qsizetype begin = nl > 0 ? s.lastIndexOf(QLatin1Char('\n'), nl - 1) + 1 : 0;
-        const QStringView line = QStringView(s).mid(begin, nl - begin).trimmed();
-        end = begin;
-        if (line.startsWith(u'#'))
-            continue;
-        if (!line.startsWith(u'[') || !line.endsWith(u']'))
-            return false;
-        for (const QStringView attr : line.mid(1, line.size() - 2).split(u','))
-            if (attr.trimmed() == u"private")
-                return true;
-    }
-    return false;
-}
-
-QByteArray readFile(const QDir &dir, const QString &name)
-{
-    QFile f(dir.filePath(name));
-    if (!f.open(QIODevice::ReadOnly))
-        return {};
-    return f.readAll();
-}
-
-// First existing of `names` wins; an existing-but-taskless file still wins
-// (a Justfile next to a justfile is one project, not two).
-QByteArray readFirstExisting(const QDir &dir, const QStringList &names, bool *found)
-{
-    for (const QString &name : names) {
-        if (QFileInfo::exists(dir.filePath(name))) {
-            *found = true;
-            return readFile(dir, name);
-        }
-    }
-    *found = false;
-    return {};
-}
-
 } // namespace
 
 QList<WorkspaceTask> WorkspaceTaskScanner::parsePackageJson(const QByteArray &text,
@@ -240,8 +192,6 @@ QList<WorkspaceTask> WorkspaceTaskScanner::parseJustfile(const QByteArray &text)
         task.name = m.captured(1);
         task.command = QStringLiteral("just %1").arg(task.name);
         task.line = lines.lineAt(m.capturedStart(0));
-        task.isPrivate = task.name.startsWith(QLatin1Char('_'))
-                         || hasPrivateAttribute(content, m.capturedStart(0));
 
         const QString params = m.captured(2).trimmed();
         if (!params.isEmpty()) {
@@ -278,62 +228,4 @@ QList<WorkspaceTask> WorkspaceTaskScanner::parseMakefile(const QByteArray &text)
         entries.append(task);
     }
     return entries;
-}
-
-QString WorkspaceTaskScanner::detectPackageManager(const QString &dir)
-{
-    if (dir.isEmpty())
-        return QStringLiteral("npm");
-    const QDir d(dir);
-    if (QFileInfo::exists(d.filePath(QStringLiteral("yarn.lock"))))
-        return QStringLiteral("yarn");
-    if (QFileInfo::exists(d.filePath(QStringLiteral("pnpm-lock.yaml"))))
-        return QStringLiteral("pnpm");
-    if (QFileInfo::exists(d.filePath(QStringLiteral("bun.lockb")))
-        || QFileInfo::exists(d.filePath(QStringLiteral("bun.lock"))))
-        return QStringLiteral("bun");
-    return QStringLiteral("npm");
-}
-
-QList<WorkspaceTaskGroup> WorkspaceTaskScanner::scanRoot(const QString &workspaceRoot)
-{
-    QList<WorkspaceTaskGroup> groups;
-    if (workspaceRoot.isEmpty())
-        return groups;
-    const QDir dir(workspaceRoot);
-    if (!dir.exists())
-        return groups;
-
-    bool found = false;
-
-    const QByteArray just = readFirstExisting(
-        dir, {QStringLiteral("justfile"), QStringLiteral("Justfile"), QStringLiteral(".justfile")},
-        &found);
-    if (found) {
-        if (auto tasks = parseJustfile(just); !tasks.isEmpty())
-            groups.append({QStringLiteral("Justfile"), tasks});
-    }
-
-    const QByteArray make = readFirstExisting(
-        dir, {QStringLiteral("Makefile"), QStringLiteral("makefile"), QStringLiteral("GNUmakefile")},
-        &found);
-    if (found) {
-        if (auto tasks = parseMakefile(make); !tasks.isEmpty())
-            groups.append({QStringLiteral("Makefile"), tasks});
-    }
-
-    if (QFileInfo::exists(dir.filePath(QStringLiteral("package.json")))) {
-        const QByteArray text = readFile(dir, QStringLiteral("package.json"));
-        if (auto tasks = parsePackageJson(text, detectPackageManager(workspaceRoot));
-            !tasks.isEmpty())
-            groups.append({QStringLiteral("package.json"), tasks});
-    }
-
-    if (QFileInfo::exists(dir.filePath(QStringLiteral("deno.json")))) {
-        const QByteArray text = readFile(dir, QStringLiteral("deno.json"));
-        if (auto tasks = parseDenoJson(text); !tasks.isEmpty())
-            groups.append({QStringLiteral("deno.json"), tasks});
-    }
-
-    return groups;
 }
