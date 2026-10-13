@@ -5650,8 +5650,9 @@ void MainWindow::openAiAgentAt(const QString &agentId, const QString &cwd, remot
 
 bool MainWindow::revealInWorkspace(const QString &path)
 {
-    // resolveShowInWorkspaceDock's flag means "has a saved path"; a directory has one.
-    FolderAsWorkspaceDock *dock = resolveShowInWorkspaceDock(path, /*hasSavedPath=*/!path.isEmpty());
+    // The flag really means "has a saved path" (editors pass isFile()); a
+    // directory has one.
+    FolderAsWorkspaceDock *dock = resolveShowInWorkspaceDock(path, /*isFile=*/!path.isEmpty());
     if (!dock)
         return false;
     dock->setVisible(true);

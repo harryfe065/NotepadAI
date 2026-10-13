@@ -24,6 +24,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdint>
+
 #include "TerminalProcessStats.h"
 
 class TerminalWidget;
@@ -38,7 +40,7 @@ class TerminalDock : public QWidget
     Q_OBJECT
 
 public:
-    enum class TaskState { None, Running, Succeeded, Failed };
+    enum class TaskState : uint8_t { None, Running, Succeeded, Failed };
 
     TerminalDock(const QString &shell, const QString &cwd, QWidget *parent = nullptr);
     TerminalDock(const QString &shell, const QString &cwd, const QString &taskCommand, const QString &taskName, const QStringList &env, QWidget *parent = nullptr);

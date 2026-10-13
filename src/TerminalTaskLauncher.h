@@ -22,6 +22,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdint>
+
 // Private OSC a wrapped task prints with its exit code: ESC ] 6973 ; <code> BEL.
 constexpr int kTerminalTaskExitOsc = 6973;
 
@@ -38,7 +40,7 @@ struct TerminalTaskLaunch
     bool reportsExit = false;
 };
 
-enum class TerminalShellKind { PowerShell, Cmd, Posix, Fish, Other };
+enum class TerminalShellKind : uint8_t { PowerShell, Cmd, Posix, Fish, Other };
 
 TerminalShellKind terminalShellKind(const QString &shellPath);
 

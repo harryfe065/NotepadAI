@@ -43,7 +43,7 @@ inline QString terminalTabTitle(const QString &cwd)
 // itself (`D:\`, `/`).
 inline QString terminalCwdLabel(const QString &cwd)
 {
-    const QString native = terminalTabTitle(cwd);
+    QString native = terminalTabTitle(cwd);   // not const: returned by move
     if (cwd.trimmed().isEmpty())
         return native;
     const QString name = QFileInfo(QDir::cleanPath(cwd)).fileName();

@@ -1512,11 +1512,12 @@ void TerminalWidget::paintDecorations(QPainter &p, qreal y)
             const qreal mid = std::min(m_underlineY + amp, m_cellH - amp - m_lineWidth / 2);
             const qreal half = m_cellW / 2;
             QPainterPath path(QPointF(x, y + mid));
-            bool up = true;
-            for (qreal cx = x; cx < x + w - 0.01; cx += half) {
-                path.quadTo(QPointF(cx + half / 2, y + mid + (up ? -amp : amp) * 2),
+            // One wave crest or trough per half cell, counted in integers.
+            const int halves = static_cast<int>(std::ceil((w - 0.01) / half));
+            for (int i = 0; i < halves; ++i) {
+                const qreal cx = x + i * half;
+                path.quadTo(QPointF(cx + half / 2, y + mid + ((i % 2 == 0) ? -amp : amp) * 2),
                             QPointF(cx + half, y + mid));
-                up = !up;
             }
             p.save();
             p.setRenderHint(QPainter::Antialiasing, true);

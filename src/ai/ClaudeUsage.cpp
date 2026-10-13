@@ -55,7 +55,7 @@ std::optional<RateWindow> mapWindow(const QJsonValue &raw, int windowMinutes)
 std::optional<RateWindow> mapFableWeekly(const QJsonObject &body)
 {
     const QJsonArray limits = body.value(QLatin1String("limits")).toArray();
-    for (const QJsonValue &v : limits) {
+    for (const auto &v : limits) {
         const QJsonObject limit = v.toObject();
         if (limit.value(QLatin1String("kind")).toString() != QLatin1String("weekly_scoped"))
             continue;
@@ -244,7 +244,7 @@ QString formatResetAt(std::optional<qint64> resetsAtMs, qint64 nowMs, const QLoc
     const QDateTime at = QDateTime::fromMSecsSinceEpoch(*resetsAtMs);
     if (!at.isValid())
         return {};
-    const QString clock = normalizeSpaces(locale.toString(at.time(), QLocale::ShortFormat));
+    QString clock = normalizeSpaces(locale.toString(at.time(), QLocale::ShortFormat));
     if (at.date() == QDateTime::fromMSecsSinceEpoch(nowMs).date())
         return clock;
     return locale.dayName(at.date().dayOfWeek(), QLocale::ShortFormat) + QLatin1Char(' ') + clock;

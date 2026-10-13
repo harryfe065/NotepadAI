@@ -9,6 +9,7 @@
 #include <QStringList>
 #include <QVector>
 
+#include <cstdint>
 #include <optional>
 
 // Claude Code subscription usage (5-hour / weekly / Fable-weekly windows), read
@@ -25,7 +26,7 @@ struct RateWindow {
     bool operator==(const RateWindow &o) const = default;
 };
 
-enum class Status { Ok, Unavailable, Error };
+enum class Status : uint8_t { Ok, Unavailable, Error };
 
 struct Usage {
     Status status = Status::Unavailable;
@@ -35,10 +36,10 @@ struct Usage {
     std::optional<RateWindow> fableWeekly;
 };
 
-enum class Tone { Ok, Warning, Danger };
-enum class PercentMode { Used, Remaining };
+enum class Tone : uint8_t { Ok, Warning, Danger };
+enum class PercentMode : uint8_t { Used, Remaining };
 
-enum class WindowKey { Session, Weekly, FableWeekly };
+enum class WindowKey : uint8_t { Session, Weekly, FableWeekly };
 
 struct NamedWindow {
     WindowKey key = WindowKey::Session;
