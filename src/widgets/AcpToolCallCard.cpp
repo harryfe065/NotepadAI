@@ -1356,8 +1356,14 @@ void AcpToolCallCard::refreshDuration()
 
 void AcpToolCallCard::refreshHeader()
 {
+    // What can change the header row's height besides the title: the status
+    // glyph (emoji may come from a taller fallback font) and the duration.
+    const QString glyph = statusGlyph();
+    bool headerRowChanged = m_statusIcon->text() != glyph;
+    const bool hadDuration = !m_durationLabel->isHidden();
     refreshDuration();
-    m_statusIcon->setText(statusGlyph());
+    headerRowChanged = headerRowChanged || hadDuration == m_durationLabel->isHidden();
+    m_statusIcon->setText(glyph);
     m_statusIcon->setToolTip(m_backgroundRunning ? tr("Running in the background") : QString());
     const QString shown = firstLines(computeEnrichedTitle(), 2);
 
@@ -1384,8 +1390,12 @@ void AcpToolCallCard::refreshHeader()
     const int minTitleH = shown.contains(QLatin1Char('\n')) ? fm.size(0, shown).height() : 0;
     if (m_titleLabel->minimumHeight() != minTitleH) {
         m_titleLabel->setMinimumHeight(minTitleH);
-        // The header row caches its size hint, which refitBodyHeight reads:
-        // drop it only when the title height changed (or the font, below).
+        headerRowChanged = true;
+    }
+    // The header row caches its size hint, which refitBodyHeight reads: drop
+    // it only when something in the row changed size (setChatFont drops it
+    // for a new font).
+    if (headerRowChanged) {
         if (QLayout *row = headerRow(m_outer))
             row->invalidate();
     }

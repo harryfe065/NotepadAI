@@ -377,6 +377,7 @@ void TestClaudeUsage::retry_after_http_date()
     QCOMPARE(yearOf("Monday, 01-Jan-66 00:00:00 GMT"), 1966);
     // The century is settled before the date: 2000 was a leap year, 1900 not.
     QCOMPARE(yearOf("Tuesday, 29-Feb-00 12:00:00 GMT"), 2000);
+    QCOMPARE(yearOf("Monday, 01-Jan-+5 00:00:00 GMT"), -1);
     QVERIFY(!parseHttpDate("Wed, 21 Oct 2015 07:28:00 PST", at));
     QVERIFY(!parseHttpDate("Wed, 21 Oct 2015 25:28:00 GMT", at));
 }

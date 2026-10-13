@@ -327,9 +327,10 @@ std::optional<qint64> parseHttpDate(const QByteArray &value, qint64 nowMs)
     } else if (t.size() == 3 && t.at(2) == gmt) {   // 06-Nov-94 08:49:37 GMT
         // The century first: parsed as 19yy, 29-Feb-00 would not exist.
         const QStringList dmy = t.at(0).split(QLatin1Char('-'));
-        bool ok = false;
-        const int yy = dmy.size() == 3 && dmy.at(2).size() == 2 ? dmy.at(2).toInt(&ok) : -1;
-        if (ok && yy >= 0) {
+        const bool twoDigits = dmy.size() == 3 && dmy.at(2).size() == 2 && dmy.at(2).at(0).isDigit()
+                               && dmy.at(2).at(1).isDigit();
+        if (twoDigits) {
+            const int yy = dmy.at(2).toInt();
             // The year with those digits not more than 50 years ahead of now.
             const int nowYear = QDateTime::fromMSecsSinceEpoch(nowMs, QTimeZone::utc()).date().year();
             const int year = nowYear + 50 - ((nowYear + 50 - yy) % 100);

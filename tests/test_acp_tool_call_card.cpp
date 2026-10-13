@@ -29,6 +29,7 @@ private slots:
     void running_diff_card_stays_collapsed();
     void collapsed_multiline_title_autosizes_to_two_lines();
     void chatFont_change_refits_collapsed_header();
+    void finishing_via_apply_matches_a_finished_card();
     void expanded_diff_taller_than_collapsed_while_hidden();
     void omp_pending_status_uses_running_glyph();
     void omp_in_progress_diff_stays_collapsed();
@@ -250,6 +251,30 @@ void TestAcpToolCallCard::chatFont_change_refits_collapsed_header()
     card.setChatFont(big);
     QVERIFY2(card.height() > before,
              qPrintable(QStringLiteral("%1 -> %2").arg(before).arg(card.height())));
+}
+
+// The final status swaps the glyph and shows the duration: a collapsed card
+// that finishes through apply() must end as tall as one built finished.
+void TestAcpToolCallCard::finishing_via_apply_matches_a_finished_card()
+{
+    AcpProtocol::AcpToolCall running = baseCall();
+    running.status = QStringLiteral("pending");
+    AcpToolCallCard live(running);
+    live.resize(480, 40);
+    QVERIFY(live.isCollapsed());
+
+    AcpProtocol::AcpToolCallUpdate done;
+    done.id = running.id;
+    done.status = QStringLiteral("completed");
+    done.durationMs = 1234;
+    live.apply(done);
+
+    AcpProtocol::AcpToolCall finished = baseCall();
+    finished.status = QStringLiteral("completed");
+    finished.durationMs = 1234;
+    AcpToolCallCard built(finished);
+    built.resize(480, 40);
+    QCOMPARE(live.height(), built.height());
 }
 
 void TestAcpToolCallCard::collapsed_multiline_title_autosizes_to_two_lines()
