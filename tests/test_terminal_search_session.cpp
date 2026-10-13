@@ -63,7 +63,6 @@ public:
         m_history.popLine(m_cols, cells.data());
     }
 
-    const ScrollbackBuffer &history() const { return m_history; }
     qint64 firstLine() const override { return m_dropped; }
     qint64 historyEnd() const override { return m_dropped + m_history.size(); }
     int columns() const override { return m_cols; }
@@ -78,6 +77,7 @@ public:
         std::copy(src.begin(), src.end(), cells);
         return true;
     }
+    ScrollbackSnapshot historySnapshot() const override { return m_history.snapshot(); }
 
 private:
     ScrollbackBuffer m_history;
@@ -99,7 +99,7 @@ State scanAll(TerminalSearchSession &s, const FakeTerminal &t)
 {
     State state = s.state();
     for (int i = 0; i < 100 && state == State::Scanning; ++i) {
-        const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+        const auto job = s.takeHistoryJob(t);
         if (!job) break;
         state = s.finishHistoryJob(TerminalSearchSession::runHistoryJob(*job), t);
     }
@@ -164,9 +164,9 @@ void TestTerminalSearchSession::historyChangingDuringTheJob()
     for (int i = 0; i < 10; ++i) t.push(QStringLiteral("hit"));
     TerminalSearchSession s;
     s.start(query(QStringLiteral("hit")), t.firstLine());
-    const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    const auto job = s.takeHistoryJob(t);
     QVERIFY(job.has_value());
-    QVERIFY(!s.takeHistoryJob(t.history(), t.firstLine(), t.columns()).has_value());   // one at a time
+    QVERIFY(!s.takeHistoryJob(t).has_value());   // one at a time
     // Meanwhile: 4 more lines, which evict lines 0..3.
     for (int i = 0; i < 4; ++i) t.push(QStringLiteral("hit"));
     const TerminalSearchSession::HistoryResult result = TerminalSearchSession::runHistoryJob(*job);
@@ -184,7 +184,7 @@ void TestTerminalSearchSession::replacedSearchIgnoresOldResults()
     for (int i = 0; i < 5; ++i) t.push(QStringLiteral("hit"));
     TerminalSearchSession s;
     s.start(query(QStringLiteral("hit")), t.firstLine());
-    const auto old = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    const auto old = s.takeHistoryJob(t);
     s.start(query(QStringLiteral("zzz")), t.firstLine());
     QVERIFY(old->cancel->load());
     QCOMPARE(s.finishHistoryJob(TerminalSearchSession::runHistoryJob(*old), t), State::Scanning);
@@ -199,7 +199,7 @@ void TestTerminalSearchSession::cancelStopsTheJob()
     for (int i = 0; i < 5000; ++i) t.push(QStringLiteral("hit"));
     TerminalSearchSession s;
     s.start(query(QStringLiteral("hit")), t.firstLine());
-    const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    const auto job = s.takeHistoryJob(t);
     s.stop();
     const TerminalSearchSession::HistoryResult result = TerminalSearchSession::runHistoryJob(*job);
     QVERIFY(result.cancelled);
@@ -278,7 +278,7 @@ void TestTerminalSearchSession::lineRepushedDuringTheJobIsRescanned()
     for (int i = 0; i < 5; ++i) t.push(QStringLiteral("old"));
     TerminalSearchSession s;
     s.start(query(QStringLiteral("old|brand-new"), true), t.firstLine());
-    const auto job = s.takeHistoryJob(t.history(), t.firstLine(), t.columns());
+    const auto job = s.takeHistoryJob(t);
     QVERIFY(job.has_value());
     t.pop();
     t.pop();

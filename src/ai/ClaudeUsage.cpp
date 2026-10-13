@@ -297,7 +297,12 @@ std::optional<qint64> parseRetryAfter(const QByteArray &header, qint64 nowMs)
         return std::min(seconds, kMaxSeconds) * 1000;
     }
 
-    const QDateTime at = QDateTime::fromString(QString::fromLatin1(s), Qt::RFC2822Date);
+    // HTTP dates always end in "GMT" (RFC 9110), which Qt 6.5's RFC 2822
+    // parser rejects: spell it as the offset it means.
+    QString text = QString::fromLatin1(s);
+    if (text.endsWith(QLatin1String(" GMT")))
+        text.replace(text.size() - 3, 3, QStringLiteral("+0000"));
+    const QDateTime at = QDateTime::fromString(text, Qt::RFC2822Date);
     if (!at.isValid())
         return std::nullopt;
     return std::clamp<qint64>(at.toMSecsSinceEpoch() - nowMs, 0, kMaxSeconds * 1000);

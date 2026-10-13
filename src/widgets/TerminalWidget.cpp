@@ -2785,6 +2785,7 @@ public:
         }
         return true;
     }
+    ScrollbackSnapshot historySnapshot() const override { return m_w.m_scrollback.snapshot(); }
 
 private:
     const TerminalWidget &m_w;
@@ -2810,7 +2811,7 @@ void TerminalWidget::runSearch()
 void TerminalWidget::launchHistoryScan()
 {
     if (std::optional<TerminalSearchSession::HistoryJob> job =
-            m_search.takeHistoryJob(m_scrollback, m_linesDropped, m_cols)) {
+            m_search.takeHistoryJob(SearchSource(*this))) {
         m_searchWatcher->setFuture(QtConcurrent::run(&TerminalSearchSession::runHistoryJob, std::move(*job)));
     }
 }

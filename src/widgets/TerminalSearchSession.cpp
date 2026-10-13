@@ -101,14 +101,14 @@ void TerminalSearchSession::giveUp()
 }
 
 std::optional<TerminalSearchSession::HistoryJob>
-TerminalSearchSession::takeHistoryJob(const ScrollbackBuffer &history, qint64 firstLine, int columns)
+TerminalSearchSession::takeHistoryJob(const Source &source)
 {
     if (m_state != State::Scanning || m_jobRunning) return std::nullopt;
     HistoryJob job;
-    job.history = history.snapshot();
-    job.firstLine = firstLine;
-    job.from = std::max(m_scanNext, firstLine);
-    job.columns = columns;
+    job.history = source.historySnapshot();
+    job.firstLine = source.firstLine();
+    job.from = std::max(m_scanNext, job.firstLine);
+    job.columns = source.columns();
     job.re = m_re;
     job.regex = m_options.regex;
     job.skipBlank = m_skipBlank;
@@ -130,9 +130,11 @@ TerminalSearchSession::HistoryResult TerminalSearchSession::runHistoryJob(const 
     std::vector<VTermScreenCell> cells(static_cast<std::size_t>(job.columns));
     QString text;
     std::vector<int> colOf;
+    // A literal row is quick: look every 64 rows. A regex row may not be.
+    const qint64 cancelMask = job.regex ? 0 : 63;
     qint64 scanned = 0;
     for (qint64 id = std::max(job.from, job.firstLine); id < result.end; ++id) {
-        if ((++scanned & 63) == 0 && job.cancel && job.cancel->load(std::memory_order_relaxed)) {
+        if ((scanned++ & cancelMask) == 0 && job.cancel && job.cancel->load(std::memory_order_relaxed)) {
             result.cancelled = true;
             return result;
         }

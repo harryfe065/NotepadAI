@@ -53,6 +53,8 @@ public:
         virtual int liveRows() const = 0;
         virtual bool historyLine(qint64 line, VTermScreenCell *cells) const = 0;
         virtual bool liveRow(int row, VTermScreenCell *cells) const = 0;
+        // History from firstLine() to historyEnd(), unchanging, for a worker.
+        virtual ScrollbackSnapshot historySnapshot() const = 0;
     };
 
     enum class State : uint8_t { Off, Invalid, Scanning, Ready, TooSlow };
@@ -91,8 +93,10 @@ public:
         bool cancelled = false;
     };
     // The next job while Scanning and none is running, else nothing.
-    std::optional<HistoryJob> takeHistoryJob(const ScrollbackBuffer &history, qint64 firstLine, int columns);
-    // Pure and thread-safe: reads only the job's snapshot.
+    std::optional<HistoryJob> takeHistoryJob(const Source &source);
+    // Pure and thread-safe: reads only the job's snapshot. Cancelling is
+    // seen between rows (every row for a regex, so a stuck one holds a
+    // worker, and app exit, for at most one row).
     static HistoryResult runHistoryJob(const HistoryJob &job);
     // Merges a finished job (results of a replaced search are ignored), then
     // searches the output that arrived meanwhile; Scanning again when that
