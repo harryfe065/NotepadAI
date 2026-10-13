@@ -47,6 +47,10 @@ public:
         QString marker;
         // What the agent receives when it differs from `text` (the bubble).
         QString wireText;
+        // Host-built reply (ask_user answers / dismiss / no-human notice): goes
+        // ahead of every user prompt (FIFO among host items), never shown in
+        // the queue strip, never removable by the user.
+        bool host = false;
     };
 
     static SendKind classifySend(bool processing, bool hasContent, bool nativeGoalSlash);
@@ -56,10 +60,17 @@ public:
     bool removeAt(int index);
     std::optional<Item> takeNextIfIdle(bool processing);
     int size() const;
+    // Items the queue strip shows (everything but host items).
+    int visibleCount() const;
+    // Index into items() of the `visibleIndex`-th visible item, -1 if none.
+    int indexOfVisible(int visibleIndex) const;
     const QVector<Item> &items() const { return m_items; }
     bool containsMarker(const QString &marker) const;
 
 private:
+    // Host items always form the queue's prefix.
+    int hostCount() const;
+
     QVector<Item> m_items;
 };
 

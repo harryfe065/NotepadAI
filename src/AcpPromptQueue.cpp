@@ -32,7 +32,29 @@ AcpPromptQueue::SendKind AcpPromptQueue::classifySend(bool processing, bool hasC
 
 void AcpPromptQueue::enqueue(Item item)
 {
-    m_items.push_back(std::move(item));
+    if (item.host)
+        m_items.insert(hostCount(), std::move(item));
+    else
+        m_items.push_back(std::move(item));
+}
+
+int AcpPromptQueue::hostCount() const
+{
+    const auto it = std::find_if(m_items.cbegin(), m_items.cend(), [](const Item &item) { return !item.host; });
+    return static_cast<int>(it - m_items.cbegin());
+}
+
+int AcpPromptQueue::visibleCount() const
+{
+    return m_items.size() - hostCount();
+}
+
+int AcpPromptQueue::indexOfVisible(int visibleIndex) const
+{
+    if (visibleIndex < 0)
+        return -1;
+    const int index = hostCount() + visibleIndex;
+    return index < m_items.size() ? index : -1;
 }
 
 std::optional<AcpPromptQueue::Item> AcpPromptQueue::dequeue()

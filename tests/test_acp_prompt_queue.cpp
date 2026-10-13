@@ -21,6 +21,8 @@ private slots:
     void fifo_dequeue_returns_oldest();
     void removeAt_drops_only_that_item();
     void takeNextIfIdle_flushes_one_only_when_idle();
+    void host_items_jump_ahead_of_user_items_in_order();
+    void visible_indices_skip_host_items();
 };
 
 void TestAcpPromptQueue::classifySend_processingWithContent_enqueues()
@@ -94,6 +96,49 @@ void TestAcpPromptQueue::takeNextIfIdle_flushes_one_only_when_idle()
     QVERIFY(b.has_value());
     QCOMPARE(b->text, QStringLiteral("b"));
     QVERIFY(!q.takeNextIfIdle(false).has_value());
+}
+
+namespace {
+AcpPromptQueue::Item hostItem(const QString &text)
+{
+    AcpPromptQueue::Item item;
+    item.text = text;
+    item.host = true;
+    return item;
+}
+} // namespace
+
+void TestAcpPromptQueue::host_items_jump_ahead_of_user_items_in_order()
+{
+    AcpPromptQueue q;
+    q.enqueue({QStringLiteral("user1"), {}});
+    q.enqueue({QStringLiteral("user2"), {}});
+    q.enqueue(hostItem(QStringLiteral("answers1")));
+    q.enqueue(hostItem(QStringLiteral("answers2")));
+    q.enqueue({QStringLiteral("user3"), {}});
+    QCOMPARE(q.dequeue()->text, QStringLiteral("answers1"));
+    QCOMPARE(q.dequeue()->text, QStringLiteral("answers2"));
+    QCOMPARE(q.dequeue()->text, QStringLiteral("user1"));
+    QCOMPARE(q.dequeue()->text, QStringLiteral("user2"));
+    QCOMPARE(q.dequeue()->text, QStringLiteral("user3"));
+}
+
+void TestAcpPromptQueue::visible_indices_skip_host_items()
+{
+    AcpPromptQueue q;
+    q.enqueue({QStringLiteral("user1"), {}});
+    q.enqueue(hostItem(QStringLiteral("answers")));
+    q.enqueue({QStringLiteral("user2"), {}});
+    QCOMPARE(q.size(), 3);
+    QCOMPARE(q.visibleCount(), 2);
+    QCOMPARE(q.items().at(q.indexOfVisible(0)).text, QStringLiteral("user1"));
+    QCOMPARE(q.items().at(q.indexOfVisible(1)).text, QStringLiteral("user2"));
+    QCOMPARE(q.indexOfVisible(2), -1);
+    QCOMPARE(q.indexOfVisible(-1), -1);
+    // Removing the first visible row never touches the host item.
+    QVERIFY(q.removeAt(q.indexOfVisible(0)));
+    QCOMPARE(q.dequeue()->text, QStringLiteral("answers"));
+    QCOMPARE(q.dequeue()->text, QStringLiteral("user2"));
 }
 
 QTEST_MAIN(TestAcpPromptQueue)

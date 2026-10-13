@@ -574,8 +574,10 @@ void AcpSessionView::buildUi()
     outer->addWidget(m_goalStatusRow);
 
     m_queueStrip = new AcpPromptQueueStrip(this);
-    connect(m_queueStrip, &AcpPromptQueueStrip::removeRequested, this, [this](int index) {
-        if (index < 0 || index >= m_promptQueue.size())
+    connect(m_queueStrip, &AcpPromptQueueStrip::removeRequested, this, [this](int visibleIndex) {
+        // Strip rows are the visible items only: host replies cannot be removed.
+        const int index = m_promptQueue.indexOfVisible(visibleIndex);
+        if (index < 0)
             return;
         const bool deferredGoal = m_promptQueue.items().at(index).fromGoalAgent;
         m_promptQueue.removeAt(index);
@@ -2611,6 +2613,7 @@ void AcpSessionView::sendHostPrompt(const QString &text, const QString &marker, 
     item.marker = marker;
     item.wireText = wireText;
     item.fromGoalAgent = fromGoalAgent;
+    item.host = true;
     m_promptQueue.enqueue(std::move(item));
     refreshQueueStrip();
     emit promptQueueChanged();
@@ -2841,8 +2844,10 @@ void AcpSessionView::refreshQueueStrip()
     if (!m_queueStrip)
         return;
     QStringList previews;
-    previews.reserve(m_promptQueue.size());
+    previews.reserve(m_promptQueue.visibleCount());
     for (const auto &item : m_promptQueue.items()) {
+        if (item.host)
+            continue;
         QString preview = item.text.trimmed();
         const int nl = preview.indexOf(QLatin1Char('\n'));
         if (nl >= 0)
