@@ -53,6 +53,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <utility>
 
 namespace {
 
@@ -76,6 +78,44 @@ constexpr int kThoughtBrowserPadLeft = 4;
 constexpr int kUserBubblePadH = 14;
 constexpr int kUserBubbleGap = 32; // space kept free to the left of a full-width user bubble
 constexpr int kThoughtItalicRightSlack = 4;
+
+// A word that cannot wrap (a path, a URL) must not set the bubble's minimum
+// width. A bubble whose minimum is wider than the transcript gets laid out by
+// QBoxLayout for its minimum width, not the width it has: the height comes out
+// short and the last lines are clipped. The word is clipped instead.
+void allowShrink(QWidget *w)
+{
+    w->setMinimumWidth(1);
+}
+
+// The transcript layout asks a bubble's layout (QWidgetItem::heightForWidth),
+// not the bubble, for its height at the full transcript width; AlignRight then
+// narrows the bubble to its hint. Answer for the width the bubble really gets,
+// or lines that wrap only at that width are clipped.
+class UserBubbleLayout : public QVBoxLayout
+{
+public:
+    UserBubbleLayout(QWidget *parent, std::function<int()> width)
+        : QVBoxLayout(parent)
+        , m_width(std::move(width))
+    {
+    }
+
+    int heightForWidth(int w) const override { return QVBoxLayout::heightForWidth(qMin(w, m_width())); }
+
+    // Runs on every text, font or visibility change of a child.
+    void invalidate() override
+    {
+        contentWidth = -1;
+        QVBoxLayout::invalidate();
+    }
+
+    // AcpMessageWidget::measureUserContent() (text shaping), -1 = stale.
+    mutable int contentWidth = -1;
+
+private:
+    std::function<int()> m_width;
+};
 // Final-report action row: square icon buttons, glyph per ui-dna toolbar chrome.
 constexpr int kResponseActionsH = 22;
 constexpr int kResponseActionIcon = 14;
@@ -135,7 +175,11 @@ AcpMessageWidget::AcpMessageWidget(QString role, QWidget *parent)
                   QString::fromLatin1(kFrameStyleThought) +
                   QString::fromLatin1(kFrameStyleSystem));
 
-    m_layout = new QVBoxLayout(this);
+    if (m_role == QLatin1String("user")) {
+        m_layout = new UserBubbleLayout(this, [this]() { return userBubbleWidth(); });
+    } else {
+        m_layout = new QVBoxLayout(this);
+    }
     if (m_role == QLatin1String("thought")) {
         m_layout->setContentsMargins(4, 4, 4, 4);
     } else if (m_role == QLatin1String("user")) {
@@ -300,6 +344,7 @@ void AcpMessageWidget::setContent(const QVector<AcpProtocol::AcpContentBlock> &c
                 if (!pendingTextLabel) {
                     pendingTextLabel = new QLabel(this);
                     pendingTextLabel->setWordWrap(true);
+                    allowShrink(pendingTextLabel);
                     pendingTextLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
                     // Stamp the chat font now: this QLabel is created after the
                     // view's initial setChatFont() pass, and being inside a
@@ -360,6 +405,7 @@ void AcpMessageWidget::setCollapsedSummary(const QString &summary, const QString
         m_summaryHeader->setCheckable(true);
         m_summaryHeader->setAutoRaise(true);
         m_summaryHeader->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        allowShrink(m_summaryHeader);
         m_summaryHeader->setStyleSheet(QStringLiteral(
             "QToolButton { border: none; padding: 0; margin: 0; text-align: left; }"));
         m_summaryHeader->setCursor(Qt::PointingHandCursor);
@@ -369,6 +415,7 @@ void AcpMessageWidget::setCollapsedSummary(const QString &summary, const QString
         m_summaryOverview = new QLabel(this);
         m_summaryOverview->setTextFormat(Qt::PlainText);
         m_summaryOverview->setWordWrap(true);
+        allowShrink(m_summaryOverview);
         m_summaryOverview->setTextInteractionFlags(Qt::TextSelectableByMouse);
         if (m_chatFontSet)
             m_summaryOverview->setFont(m_chatFont);
@@ -463,8 +510,28 @@ QSize AcpMessageWidget::sizeHint() const
     if (m_role != QLatin1String("user") || !m_layout)
         return QFrame::sizeHint();
 
+    const int w = userBubbleWidth();
+    const int h = m_layout->hasHeightForWidth() ? m_layout->totalHeightForWidth(w)
+                                                : QFrame::sizeHint().height();
+    return QSize(w, h);
+}
+
+int AcpMessageWidget::userBubbleWidth() const
+{
     int marginL = 0, marginT = 0, marginR = 0, marginB = 0;
     m_layout->getContentsMargins(&marginL, &marginT, &marginR, &marginB);
+    const auto *layout = static_cast<const UserBubbleLayout *>(m_layout);
+    if (layout->contentWidth < 0)
+        layout->contentWidth = measureUserContent();
+    // +2 border, +2 so a line that exactly fits is not wrapped by rounding.
+    int w = layout->contentWidth + marginL + marginR + 4;
+    if (const QWidget *host = parentWidget())
+        w = qMin(w, qMax(host->width() - kUserBubbleGap, 120));
+    return w;
+}
+
+int AcpMessageWidget::measureUserContent() const
+{
     int contentW = 0;
     if (m_summaryHeader)
         contentW = m_summaryHeader->sizeHint().width();
@@ -487,13 +554,7 @@ QSize AcpMessageWidget::sizeHint() const
         if (!ui.original.isNull() && !ui.label->isHidden())
             contentW = qMax(contentW, ui.original.width());
     }
-    // +2 border, +2 so a line that exactly fits is not wrapped by rounding.
-    int w = contentW + marginL + marginR + 4;
-    if (const QWidget *host = parentWidget())
-        w = qMin(w, qMax(host->width() - kUserBubbleGap, 120));
-    const int h = m_layout->hasHeightForWidth() ? m_layout->totalHeightForWidth(w)
-                                                : QFrame::sizeHint().height();
-    return QSize(w, h);
+    return contentW;
 }
 
 void AcpMessageWidget::refitBrowserHeight()

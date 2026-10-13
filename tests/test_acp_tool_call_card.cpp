@@ -11,6 +11,8 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QTextBrowser>
+#include <QTextFrame>
+#include <QToolButton>
 #include <QStringList>
 
 
@@ -41,6 +43,14 @@ private slots:
     void numbered_full_file_dump_collapses_to_hunk();
     void omp_hashline_text_not_shown_when_diff_present();
     void goalJudge_setsGoalAgentPropertyAndBadge();
+    void subagent_instructions_sit_above_nested_calls();
+    void nested_calls_are_compact_rows();
+    void long_subagent_instructions_clamp_until_show_more();
+    void subagent_cards_are_marked_apart_from_tools();
+    void omp_task_card_names_its_agents_and_instructions();
+    void omp_task_input_survives_history_slimming();
+    void collapsed_subagent_card_shows_its_last_call();
+    void subagent_rows_share_the_title_column();
 
 
 };
@@ -544,6 +554,310 @@ void TestAcpToolCallCard::goalJudge_setsGoalAgentPropertyAndBadge()
         }
     }
     QVERIFY(found);
+}
+
+namespace {
+
+AcpProtocol::AcpToolCall agentCall(const QString &prompt)
+{
+    AcpProtocol::AcpToolCall tc;
+    tc.id = QStringLiteral("agent-1");
+    tc.title = QStringLiteral("Task");
+    tc.status = QStringLiteral("completed");
+    tc.rawInput = QJsonObject{{QStringLiteral("subagent_type"), QStringLiteral("Explore")},
+                              {QStringLiteral("description"), QStringLiteral("Spec review")},
+                              {QStringLiteral("prompt"), prompt}};
+    tc.content = QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                        {QStringLiteral("text"), QStringLiteral("**Done.**")}}};
+    return tc;
+}
+
+AcpProtocol::AcpToolCall childCall(int i)
+{
+    AcpProtocol::AcpToolCall tc = baseCall();
+    tc.id = QStringLiteral("child-%1").arg(i);
+    tc.status = QStringLiteral("completed");
+    tc.rawInput = QJsonObject{{QStringLiteral("command"), QStringLiteral("ls")}};
+    return tc;
+}
+
+} // namespace
+
+void TestAcpToolCallCard::subagent_instructions_sit_above_nested_calls()
+{
+    AcpToolCallCard card(agentCall(QStringLiteral("Review the **diff**.")));
+    card.setSubagentActivity(2, QString());
+    card.resize(600, 40);
+    card.show();
+    card.setCollapsed(false);
+    card.addChildCard(new AcpToolCallCard(childCall(1)));
+    card.addChildCard(new AcpToolCallCard(childCall(2)));
+    QCoreApplication::processEvents();
+
+    auto *prompt = card.findChild<QWidget *>(QStringLiteral("acpSubagentPrompt"));
+    auto *children = card.findChild<QFrame *>(QStringLiteral("acpSubagentChildren"));
+    QVERIFY(prompt && children);
+    QVERIFY(!prompt->isHidden());
+    auto *promptText = prompt->findChild<QTextBrowser *>();
+    QVERIFY(promptText);
+    // Rendered as markdown: no literal asterisks.
+    QCOMPARE(promptText->toPlainText().trimmed(), QStringLiteral("Review the diff."));
+
+    // The result: the card's own body, below the nested calls.
+    QTextBrowser *result = nullptr;
+    for (QTextBrowser *b : card.findChildren<QTextBrowser *>(Qt::FindDirectChildrenOnly))
+        result = b;
+    QVERIFY(result);
+    QCOMPARE(result->toPlainText().trimmed(), QStringLiteral("Done."));
+
+    QLayout *outer = card.layout();
+    QVERIFY(outer->indexOf(prompt) < outer->indexOf(children));
+    QVERIFY(outer->indexOf(children) < outer->indexOf(result));
+    // The card is tall enough for every row it shows.
+    QVERIFY(card.height() >= prompt->height() + children->sizeHint().height() + result->height());
+
+    card.setCollapsed(true);
+    QVERIFY(prompt->isHidden());
+    QVERIFY(children->isHidden());
+}
+
+void TestAcpToolCallCard::nested_calls_are_compact_rows()
+{
+    AcpToolCallCard standalone(childCall(0));
+    standalone.resize(600, 40);
+    standalone.show();
+    QCoreApplication::processEvents();
+
+    AcpToolCallCard card(agentCall(QString()));
+    card.setSubagentActivity(1, QString());
+    card.resize(600, 40);
+    card.show();
+    card.setCollapsed(false);
+    auto *child = new AcpToolCallCard(childCall(1));
+    card.addChildCard(child);
+    QCoreApplication::processEvents();
+
+    QVERIFY2(child->height() < standalone.height(),
+             qPrintable(QStringLiteral("%1 vs %2").arg(child->height()).arg(standalone.height())));
+    // No instructions: no empty section.
+    QVERIFY(!card.findChild<QWidget *>(QStringLiteral("acpSubagentPrompt")));
+}
+
+void TestAcpToolCallCard::long_subagent_instructions_clamp_until_show_more()
+{
+    QStringList lines;
+    for (int i = 0; i < 40; ++i)
+        lines.append(QStringLiteral("Step %1.").arg(i));
+    AcpToolCallCard card(agentCall(lines.join(QStringLiteral("\n\n"))));
+    card.resize(600, 40);
+    card.show();
+    card.setCollapsed(false);
+    QCoreApplication::processEvents();
+
+    auto *prompt = card.findChild<QWidget *>(QStringLiteral("acpSubagentPrompt"));
+    auto *more = card.findChild<QToolButton *>(QStringLiteral("acpSubagentPromptMore"));
+    QVERIFY(prompt && more);
+    QVERIFY(!more->isHidden());
+    auto *promptText = prompt->findChild<QTextBrowser *>();
+    const int clamped = promptText->height();
+    const int collapsedCard = card.height();
+
+    more->click();
+    QCoreApplication::processEvents();
+    QVERIFY(promptText->height() > clamped * 3);
+    QVERIFY(card.height() > collapsedCard);
+
+    more->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(promptText->height(), clamped);
+}
+
+namespace {
+
+// omp's task tool, as omp sends its arguments in rawInput.
+AcpProtocol::AcpToolCall ompTaskCall()
+{
+    QJsonArray tasks;
+    for (int i = 1; i <= 3; ++i) {
+        tasks.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("EchoAgent%1").arg(i)},
+                                 {QStringLiteral("task"), QStringLiteral("Run echo %1.").arg(i)},
+                                 {QStringLiteral("solutionSpace"), QStringLiteral("one fix")}});
+    }
+    AcpProtocol::AcpToolCall tc;
+    tc.id = QStringLiteral("call_1|fc_1");
+    tc.title = QStringLiteral("Spawning 3 echo subagents");
+    tc.kind = QStringLiteral("other");
+    tc.status = QStringLiteral("completed");
+    tc.rawInput = QJsonObject{{QStringLiteral("context"), QStringLiteral("Shared goal.")},
+                              {QStringLiteral("i"), QStringLiteral("Spawning 3 echo subagents")},
+                              {QStringLiteral("tasks"), tasks}};
+    return tc;
+}
+
+} // namespace
+
+void TestAcpToolCallCard::subagent_cards_are_marked_apart_from_tools()
+{
+    // The bot icon, not a tint, tells a subagent card from a tool.
+    auto marked = [](AcpToolCallCard &card) {
+        auto *icon = card.findChild<QLabel *>(QStringLiteral("acpSubagentIcon"),
+                                              Qt::FindDirectChildrenOnly);
+        return icon && !icon->isHidden() && card.property("subagent").toBool();
+    };
+    AcpToolCallCard tool(childCall(0));
+    QVERIFY(!marked(tool));
+
+    AcpToolCallCard agent(agentCall(QStringLiteral("Look around.")));
+    QVERIFY(marked(agent));
+    AcpToolCallCard omp(ompTaskCall());
+    QVERIFY(marked(omp));
+
+    // Recognised late: the rawInput arrives with an update.
+    AcpProtocol::AcpToolCall bare = agentCall(QString());
+    bare.rawInput = {};
+    AcpToolCallCard late(bare);
+    QVERIFY(!marked(late));
+    AcpProtocol::AcpToolCallUpdate update;
+    update.rawInput = agentCall(QStringLiteral("Look around.")).rawInput;
+    late.apply(update);
+    QVERIFY(marked(late));
+
+    // A nested call inside an Agent card is a plain row, not a subagent.
+    agent.setCollapsed(false);
+    auto *child = new AcpToolCallCard(childCall(1));
+    agent.addChildCard(child);
+    QVERIFY(!marked(*child));
+}
+
+// Collapsed, the card names the subagent's running call, and its last call
+// once it is done.
+void TestAcpToolCallCard::collapsed_subagent_card_shows_its_last_call()
+{
+    AcpProtocol::AcpToolCall tc = agentCall(QStringLiteral("Look around."));
+    tc.status = QStringLiteral("in_progress");
+    AcpToolCallCard card(tc);
+    card.resize(600, 40);
+    card.show();
+    card.setSubagentActivity(1, QStringLiteral("Command: echo 1"));
+    QCoreApplication::processEvents();
+    auto lastCallLine = [&card]() -> QLabel * {
+        for (QLabel *label : card.findChildren<QLabel *>(Qt::FindDirectChildrenOnly)) {
+            if (label->text().startsWith(QStringLiteral("↳")))
+                return label;
+        }
+        return nullptr;
+    };
+    QVERIFY(lastCallLine() && !lastCallLine()->isHidden());
+    const int runningH = card.height();
+
+    AcpProtocol::AcpToolCallUpdate done;
+    done.status = QStringLiteral("completed");
+    card.apply(done);
+    card.setSubagentActivity(1, QStringLiteral("Command: echo 1"));
+    QCoreApplication::processEvents();
+    QVERIFY(lastCallLine() && !lastCallLine()->isHidden());
+    QVERIFY(lastCallLine()->text().contains(QStringLiteral("echo 1")));
+    QCOMPARE(card.height(), runningH);
+
+    card.setCollapsed(false); // the nested rows take over
+    QVERIFY(lastCallLine()->isHidden());
+}
+
+void TestAcpToolCallCard::omp_task_card_names_its_agents_and_instructions()
+{
+    const AcpProtocol::AcpToolCall tc = ompTaskCall();
+    QCOMPARE(AcpToolCallCard::enrichedTitle(tc),
+             QStringLiteral("Agent ×3: Spawning 3 echo subagents"));
+
+    AcpProtocol::AcpToolCall one = tc;
+    QJsonObject input = one.rawInput;
+    input.insert(QStringLiteral("tasks"), QJsonArray{tc.rawInput.value(QStringLiteral("tasks")).toArray().first()});
+    input.insert(QStringLiteral("agent"), QStringLiteral("scout"));
+    one.rawInput = input;
+    one.title.clear();
+    QCOMPARE(AcpToolCallCard::enrichedTitle(one),
+             QStringLiteral("Agent scout: Spawning 3 echo subagents"));
+
+    AcpToolCallCard card(tc);
+    card.resize(600, 40);
+    card.show();
+    card.setCollapsed(false);
+    QCoreApplication::processEvents();
+    auto *prompt = card.findChild<QWidget *>(QStringLiteral("acpSubagentPrompt"));
+    QVERIFY(prompt && !prompt->isHidden());
+    const QString text = prompt->findChild<QTextBrowser *>()->toPlainText();
+    QVERIFY2(text.startsWith(QLatin1String("Shared goal.")), qPrintable(text));
+    QVERIFY(text.contains(QLatin1String("EchoAgent2")));
+    QVERIFY(text.contains(QLatin1String("Run echo 3.")));
+    QVERIFY(!text.contains(QLatin1String("**")));
+}
+
+void TestAcpToolCallCard::omp_task_input_survives_history_slimming()
+{
+    const QJsonObject raw = ompTaskCall().rawInput;
+    const QJsonObject kept = AcpProtocol::subagentInputForHistory(raw);
+    QVERIFY(AcpProtocol::isSubagentToolInput(kept));
+    QCOMPARE(AcpProtocol::subagentInstructions(kept), AcpProtocol::subagentInstructions(raw));
+    QVERIFY(!kept.value(QStringLiteral("tasks")).toArray().first().toObject()
+                 .contains(QStringLiteral("solutionSpace")));
+
+    // WebFetch: a prompt, but no subagent.
+    QVERIFY(!AcpProtocol::isSubagentToolInput(QJsonObject{
+        {QStringLiteral("url"), QStringLiteral("https://example.com")},
+        {QStringLiteral("prompt"), QStringLiteral("summarize")}}));
+    // Bash: a description, but no prompt.
+    QVERIFY(!AcpProtocol::isSubagentToolInput(QJsonObject{
+        {QStringLiteral("command"), QStringLiteral("ls")},
+        {QStringLiteral("description"), QStringLiteral("list")}}));
+}
+
+// Reported: the instructions, the nested calls and the result each started at
+// a different x. Everything below the header starts where the title does.
+void TestAcpToolCallCard::subagent_rows_share_the_title_column()
+{
+    AcpToolCallCard card(agentCall(QStringLiteral("Run echo.")));
+    card.setSubagentActivity(1, QStringLiteral("Command: echo 1"));
+    card.resize(600, 40);
+    card.show();
+    card.setCollapsed(false);
+    auto *child = new AcpToolCallCard(childCall(1));
+    card.addChildCard(child);
+    QCoreApplication::processEvents();
+
+    QLabel *title = nullptr;
+    QLabel *resultCaption = nullptr;
+    for (QLabel *label : card.findChildren<QLabel *>(Qt::FindDirectChildrenOnly)) {
+        if (label->text().startsWith(QStringLiteral("Agent")))
+            title = label;
+        else if (label->text() == QStringLiteral("Result"))
+            resultCaption = label;
+    }
+    QVERIFY(title && resultCaption);
+    const int column = title->x();
+    QVERIFY(column > 0);
+
+    auto *prompt = card.findChild<QWidget *>(QStringLiteral("acpSubagentPrompt"));
+    QTextBrowser *promptText = prompt->findChild<QTextBrowser *>();
+    QCOMPARE(promptText->mapTo(&card, QPoint(0, 0)).x(), column);
+    QCOMPARE(child->mapTo(&card, QPoint(0, 0)).x(), column);
+    // The nested row's own glyph sits at its left edge: no inner margin.
+    QCOMPARE(child->layout()->contentsMargins().left(), 0);
+    QCOMPARE(resultCaption->x() + resultCaption->contentsMargins().left(), column);
+
+    QTextBrowser *result = nullptr;
+    for (QTextBrowser *b : card.findChildren<QTextBrowser *>(Qt::FindDirectChildrenOnly))
+        result = b;
+    QVERIFY(result);
+    const qreal inset = result->document()->rootFrame()->frameFormat().leftMargin();
+    QCOMPARE(result->x() + qRound(inset), column);
+
+    // Collapsed: the last-call line starts there too.
+    card.setCollapsed(true);
+    QCoreApplication::processEvents();
+    for (QLabel *label : card.findChildren<QLabel *>(Qt::FindDirectChildrenOnly)) {
+        if (label->text().startsWith(QStringLiteral("↳")))
+            QCOMPARE(label->x() + label->contentsMargins().left(), column);
+    }
 }
 
 QTEST_MAIN(TestAcpToolCallCard)

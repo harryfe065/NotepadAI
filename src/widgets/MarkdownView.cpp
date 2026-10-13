@@ -44,6 +44,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
+#include <QTextFrame>
 #include <QTextImageFormat>
 #include <QTextList>
 #include <QTextTable>
@@ -143,6 +144,26 @@ void markCodeFamilies(QString &html, const QString &proseFamily)
             continue;
         html.replace(QStringLiteral("font-family:'%1'").arg(family),
                      QStringLiteral("font-family:'%1'").arg(marker));
+    }
+}
+
+// Code BLOCKS (fenced or indented) carry their own marker family. Only the
+// markdown import knows a block from an inline span (BlockCodeLanguage, set on
+// every line of either kind of block); the HTML round trip drops it. Without
+// this, a paragraph or list item holding nothing but an inline span
+// (- `src/a.cpp`) reads as a code block: surface, padding, the lot.
+constexpr const char *kCodeBlockFamilyMarker = "NotepadAICodeBlockFace";
+
+void markCodeBlocks(QTextDocument &doc)
+{
+    QTextCharFormat marker;
+    marker.setFontFamilies({QString::fromLatin1(kCodeBlockFamilyMarker)});
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+        if (b.length() <= 1 || !b.blockFormat().hasProperty(QTextFormat::BlockCodeLanguage))
+            continue;
+        QTextCursor cur(b);
+        cur.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        cur.mergeCharFormat(marker);
     }
 }
 
@@ -439,6 +460,27 @@ QString ensureHardBreaks(const QString &md)
     return out;
 }
 
+// Qt lays a block's top margin out only after another block and never adds the
+// last block's bottom margin, so a document that starts or ends with a code
+// block has no room for that surface's padding: owners fitting their height to
+// the document clipped it. The root frame's margins do count: reserve the
+// padding (and the border) there, never less than the document margin.
+void reserveEdgeCodePadding(QTextDocument *doc)
+{
+    auto isCode = [](const QTextBlock &b) {
+        return b.isValid() && b.blockFormat().background().style() != Qt::NoBrush
+               && !QTextCursor(b).currentTable();
+    };
+    const bool first = isCode(doc->firstBlock());
+    const bool last = isCode(doc->lastBlock());
+    if (!first && !last) return;
+    const qreal reserve = qMax(doc->documentMargin(), qreal(kCodePadV + 1));
+    QTextFrameFormat ff = doc->rootFrame()->frameFormat();
+    if (first) ff.setTopMargin(reserve);
+    if (last) ff.setBottomMargin(reserve);
+    doc->rootFrame()->setFrameFormat(ff);
+}
+
 } // namespace
 
 MarkdownView::MarkdownView(QWidget *parent)
@@ -631,6 +673,7 @@ void MarkdownView::rerender()
                     QTextDocument::MarkdownFeatures(
                         QTextDocument::MarkdownDialectGitHub
                         | QTextDocument::MarkdownNoHTML));
+    markCodeBlocks(tmp);
     QString html = tmp.toHtml();
     markCodeFamilies(html, tmp.defaultFont().family());
     html.replace(QRegularExpression(QStringLiteral("<table([^>]*)>")),
@@ -651,6 +694,7 @@ void MarkdownView::rerender()
     normalizeBlockMarginsImpl(document());
     if (m_documentSpacing)
         applyDocumentSpacing(document(), QFontMetrics(document()->defaultFont()).height() / 2);
+    reserveEdgeCodePadding(document());
     // Map fenced-code regions so the hover copy button can target them.
     scanCodeRegions();
     emit rendered();
@@ -722,7 +766,8 @@ void MarkdownView::styleCodeInDocument()
     //    "monospace" (the exporter writes `<span style="font-family:'monospace'">`
     //    for inline AND fenced code; re-import keeps it). So detect code by a
     //    monospace family on the fragment. This covers inline `<code>` and every
-    //    non-blank fenced line.
+    //    non-blank fenced line. Which of the two it is comes from the block
+    //    marker family markCodeBlocks() sets before the round trip.
     //
     //  - A blank line inside a fence is an EMPTY block (no fragment, so no family
     //    signal). Promote an empty block to code when code flanks it on both
@@ -737,38 +782,38 @@ void MarkdownView::styleCodeInDocument()
         return cf.fontFixedPitch(); // belt-and-suspenders for other Qt paths
     };
 
+    auto fragIsBlockCode = [](const QTextCharFormat &cf) {
+        return cf.fontFamilies().toStringList().contains(QLatin1String(kCodeBlockFamilyMarker));
+    };
+
     // First pass: per-block kind (Prose / Code / Empty) + collect code fragment
-    // ranges for the family rewrite. A block is Code if it has a code fragment
-    // and no prose; Empty if it has no fragments at all (blank fence line).
+    // ranges for the family rewrite. A block is Code if markCodeBlocks() marked
+    // it (a fenced or indented code block); Empty if it has no fragments at all
+    // (blank fence line). Every other code fragment is an inline span, even when
+    // it fills its paragraph or list item on its own.
     enum class Kind : std::uint8_t { Prose, Code, Empty };
     QVector<Kind> kinds;
     QVector<int> positions;
     QVector<QPair<int, int>> codeFragRanges;   // char ranges to re-family
-    QVector<QPair<int, int>> inlineCodeRanges; // code spans inside prose blocks
+    QVector<QPair<int, int>> inlineCodeRanges; // inline spans
     for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
-        bool hasCode = false, hasProse = false, hasAny = false;
-        const int rangesBefore = int(codeFragRanges.size());
+        bool blockCode = false, hasAny = false;
         for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
             const QTextFragment frag = it.fragment();
             if (!frag.isValid()) continue;
             hasAny = true;
-            if (fragIsCode(frag.charFormat())) {
-                hasCode = true;
+            const QTextCharFormat cf = frag.charFormat();
+            if (fragIsBlockCode(cf)) {
+                blockCode = true;
                 codeFragRanges.append({frag.position(), frag.position() + frag.length()});
-            } else if (!frag.text().trimmed().isEmpty()) {
-                hasProse = true;
+            } else if (fragIsCode(cf)) {
+                // An inline span gets a char-level fill. (Qt exports inline code
+                // as a <span>, not <code>, so a CSS `code` rule never matches.)
+                codeFragRanges.append({frag.position(), frag.position() + frag.length()});
+                inlineCodeRanges.append(codeFragRanges.constLast());
             }
         }
-        // Code beside prose is an inline span: it gets a char-level fill. (Qt
-        // exports inline code as a <span>, not <code>, so a CSS `code` rule
-        // never matches; fenced blocks get a block-level fill instead.)
-        if (hasCode && hasProse) {
-            for (int r = rangesBefore; r < int(codeFragRanges.size()); ++r)
-                inlineCodeRanges.append(codeFragRanges.at(r));
-        }
-        kinds.append(hasCode && !hasProse ? Kind::Code
-                     : !hasAny           ? Kind::Empty
-                                         : Kind::Prose);
+        kinds.append(blockCode ? Kind::Code : !hasAny ? Kind::Empty : Kind::Prose);
         positions.append(b.position());
     }
 
@@ -926,7 +971,11 @@ void MarkdownView::paintCodeSurfaces(QPainter &p)
     if (!layout) return;
     const QPalette pal = palette();
     const double scrollY = verticalScrollBar()->value();
-    const double width = viewport()->width();
+    // The surface spans the text column: an owner may inset the document
+    // through the root frame (a tool card's result lines up with its title).
+    const QTextFrameFormat frame = doc->rootFrame()->frameFormat();
+    const double left = frame.leftMargin();
+    const double width = viewport()->width() - left - frame.rightMargin();
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -940,7 +989,7 @@ void MarkdownView::paintCodeSurfaces(QPainter &p)
         // set are exactly the gap + padding, so pad outwards from the text rows.
         const QRectF top = layout->blockBoundingRect(first);
         const QRectF bottom = layout->blockBoundingRect(last);
-        const QRectF rect(0.5, top.top() - kCodePadV - scrollY + 0.5, width - 1.0,
+        const QRectF rect(left + 0.5, top.top() - kCodePadV - scrollY + 0.5, width - 1.0,
                           bottom.bottom() - top.top() + 2.0 * kCodePadV - 1.0);
         p.drawRoundedRect(rect, kCodeRadius, kCodeRadius);
     }

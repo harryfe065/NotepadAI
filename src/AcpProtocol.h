@@ -358,6 +358,18 @@ bool toolCallUpdateIsBackgrounded(const QJsonObject &update);
 // when the id names the update's own tool call.
 QString subagentParentToolCallId(const QJsonObject &update);
 
+// A tool call that runs subagents, from its rawInput: Claude Code's Agent/Task
+// (`subagent_type`, or `description` + `prompt`) or omp's task
+// (`tasks: [{name, task}]`, optional `context`, `agent`, intent `i`).
+bool isSubagentToolInput(const QJsonObject &rawInput);
+// Number of subagents the call starts: omp's task count, else 1.
+int subagentToolCount(const QJsonObject &rawInput);
+// The instructions those subagents get, as markdown (omp: the shared context,
+// then each task under its bold name). Empty when the call carries none.
+QString subagentInstructions(const QJsonObject &rawInput);
+// The rawInput fields history keeps for such a call (instructions capped).
+QJsonObject subagentInputForHistory(const QJsonObject &rawInput);
+
 // Compact wait clock: "4.2s" under a minute, "2m 05s" under an hour, then "1h 02m".
 QString formatWaitDuration(qint64 ms);
 // Compact tool run time: "<1s", "40s", "1m5s", "1h1m5s".

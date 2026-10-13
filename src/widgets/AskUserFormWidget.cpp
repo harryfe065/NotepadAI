@@ -121,9 +121,20 @@ protected:
     void wheelEvent(QWheelEvent *event) override { event->ignore(); }
 };
 
-// One choice as a rounded, clickable row: the indicator button and the
-// description underneath. A click anywhere on the
-// row toggles the button; the row restyles itself from the button's state.
+// Text (agent-written or a status line) must never set the form's minimum
+// width. A form whose minimum is wider than the transcript gets laid out by
+// QBoxLayout for its minimum width, not the width it has: rows come out
+// squashed and the slack collects under the transcript. The control shrinks
+// instead (wrapping labels, clipped buttons).
+void allowShrink(QWidget *w)
+{
+    w->setMinimumWidth(1);
+}
+
+// One choice as a rounded, clickable row: the indicator button, then the label
+// and the description underneath, both wrapped (a button's text cannot wrap).
+// A click anywhere on the row toggles the button; the row restyles itself from
+// the button's state.
 class OptionRow : public QFrame
 {
 public:
@@ -133,24 +144,45 @@ public:
     {
         setObjectName(QStringLiteral("auOption"));
         setCursor(Qt::PointingHandCursor);
-        m_layout = new QVBoxLayout(this);
+        m_layout = new QHBoxLayout(this);
         m_layout->setContentsMargins(10, 7, 10, 7);
-        m_layout->setSpacing(2);
-        m_top = new QHBoxLayout;
-        m_top->setSpacing(8);
-        m_top->addWidget(button);
-        m_layout->addLayout(m_top);
+        m_layout->setSpacing(10);
+        m_layout->addWidget(button);
         QObject::connect(button, &QAbstractButton::toggled, this, [this](bool on) {
             setProperty("checked", on);
             repolish(this);
         });
     }
 
-    void addStretch() { m_top->addStretch(1); }
-    void addTopWidget(QWidget *w, int stretch = 0) { m_top->addWidget(w, stretch); }
-    void addBelow(QWidget *w) { m_layout->addWidget(w); }
+    // The choice text, wrapped next to an indicator-only button.
+    void setLabel(const QString &text)
+    {
+        m_label = new QLabel(text, this);
+        m_label->setTextFormat(Qt::PlainText);
+        m_label->setWordWrap(true);
+        allowShrink(m_label);
+        m_button->setAccessibleName(text);
+        m_column = new QVBoxLayout;
+        m_column->setSpacing(2);
+        m_column->addWidget(m_label);
+        m_layout->addLayout(m_column, 1);
+        m_layout->setAlignment(m_button, Qt::AlignTop);
+        m_label->installEventFilter(this);
+        m_button->installEventFilter(this);
+        fitIndicator();
+    }
+    void addWidget(QWidget *w, int stretch = 0) { m_layout->addWidget(w, stretch); }
+    // Under the label; needs setLabel.
+    void addBelow(QWidget *w) { m_column->addWidget(w); }
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange)
+            fitIndicator();
+        return QFrame::eventFilter(watched, event);
+    }
+
     void mousePressEvent(QMouseEvent *event) override
     {
         if (event->button() == Qt::LeftButton && m_button->isEnabled()) {
@@ -166,9 +198,17 @@ protected:
     }
 
 private:
+    // Centres the indicator on the label's first line (the style centres it in
+    // the button's height), also after setChatFont and the theme.
+    void fitIndicator()
+    {
+        m_button->setFixedHeight(qMax(m_label->fontMetrics().height(), m_button->sizeHint().height()));
+    }
+
     QAbstractButton *m_button;
-    QVBoxLayout *m_layout = nullptr;
-    QHBoxLayout *m_top = nullptr;
+    QHBoxLayout *m_layout = nullptr;
+    QVBoxLayout *m_column = nullptr;
+    QLabel *m_label = nullptr;
 };
 
 // The recommended answer as the user sees it ("Yes", "radio, checkbox", ...).
@@ -384,12 +424,14 @@ void AskUserFormWidget::buildUi()
         title = count <= 1 ? tr("Question for you") : tr("%1 questions for you").arg(count);
     m_titleLabel = new QLabel(title, this);
     m_titleLabel->setWordWrap(true);
+    allowShrink(m_titleLabel);
     QFont bold = m_titleLabel->font();
     bold.setWeight(QFont::DemiBold);
     m_titleLabel->setFont(bold);
     header->addWidget(m_titleLabel, 1);
 
     m_statusLabel = new QLabel(this);
+    allowShrink(m_statusLabel);
     m_statusLabel->setObjectName(QStringLiteral("auStatus"));
     m_statusLabel->hide();
     header->addWidget(m_statusLabel);
@@ -421,6 +463,7 @@ void AskUserFormWidget::buildUi()
     footer->setSpacing(6);
     m_progressLabel = mutedLabel(QString(), Qt::PlainText, m_footer);
     m_progressLabel->setWordWrap(false);
+    allowShrink(m_progressLabel);
     footer->addWidget(m_progressLabel, 1);
     m_dismissButton = new QPushButton(tr("Dismiss"), m_footer);
     m_dismissButton->setObjectName(QStringLiteral("auGhost"));
@@ -465,6 +508,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     }
     auto *title = new QLabel(q.title, row.container);
     title->setWordWrap(true);
+    allowShrink(title);
     title->setTextInteractionFlags(Qt::TextSelectableByMouse);
     QFont bold = title->font();
     bold.setWeight(QFont::DemiBold);
@@ -510,6 +554,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         body->setTextFormat(Qt::MarkdownText);
         body->setText(q.body);
         body->setWordWrap(true);
+        allowShrink(body);
         body->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
         body->setOpenExternalLinks(true);
         layout->addWidget(body);
@@ -528,6 +573,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         rec->setTextFormat(Qt::MarkdownText);
         rec->setText(line);
         rec->setWordWrap(true);
+        allowShrink(rec);
         rec->setTextInteractionFlags(Qt::TextSelectableByMouse);
         QFont italic = rec->font();
         italic.setItalic(true);
@@ -622,19 +668,18 @@ void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
         const AskUserForm::Option &opt = q.options.at(i);
         const bool recommended = multi ? q.recommended.toArray().contains(opt.value)
                                        : q.recommended.toString() == opt.value;
-        QAbstractButton *button = multi
-            ? static_cast<QAbstractButton *>(new QCheckBox(withMark(opt.label, recommended)))
-            : static_cast<QAbstractButton *>(new QRadioButton(withMark(opt.label, recommended)));
+        QAbstractButton *button = multi ? static_cast<QAbstractButton *>(new QCheckBox)
+                                        : static_cast<QAbstractButton *>(new QRadioButton);
         auto *option = new OptionRow(button, row.container);
-        option->addStretch();
+        option->setLabel(withMark(opt.label, recommended));
         if (!opt.description.trimmed().isEmpty()) {
             auto *desc = new QLabel(option);
             desc->setObjectName(QStringLiteral("auMuted"));
             desc->setTextFormat(Qt::MarkdownText);
             desc->setText(opt.description);
             desc->setWordWrap(true);
+            allowShrink(desc);
             // Not selectable: a click on the description selects the option.
-            desc->setContentsMargins(button->style()->pixelMetric(QStyle::PM_IndicatorWidth) + 8, 0, 0, 0);
             option->addBelow(desc);
         }
         if (row.group)
@@ -664,6 +709,7 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
     }
     if (q.allowOther)
         row.combo->addItem(tr("Other…"), otherItemData());
+    allowShrink(row.combo);
     layout->addWidget(row.combo);
     watch(row.combo);
     connect(row.combo, &QComboBox::currentIndexChanged, this, &AskUserFormWidget::updateProgress);
@@ -704,6 +750,7 @@ void AskUserFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
         button->setCheckable(true);
         button->setAutoDefault(false);
         button->setCursor(Qt::PointingHandCursor);
+        allowShrink(button);
         if (marked)
             button->setToolTip(tr("Recommended"));
         row.group->addButton(button, i);
@@ -736,7 +783,7 @@ void AskUserFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
     auto *option = new OptionRow(row.otherButton, row.container);
     row.otherEdit = new QLineEdit(option);
     row.otherEdit->setPlaceholderText(tr("Type your own answer"));
-    option->addTopWidget(row.otherEdit, 1);
+    option->addWidget(row.otherEdit, 1);
     if (row.group)
         row.group->addButton(row.otherButton, kOtherButtonId);
     else

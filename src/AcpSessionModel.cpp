@@ -376,6 +376,13 @@ QJsonObject AcpSessionModel::toHistoryJson() const
             copyField(QLatin1String("information_request"));
             copyField(QLatin1String("skill"));
             copyField(QLatin1String("subagent_type"));
+            // A subagent call's instructions: its card shows them above the
+            // subagent's calls, and they mark the card as a subagent's.
+            if (AcpProtocol::isSubagentToolInput(tc.rawInput)) {
+                const QJsonObject kept = AcpProtocol::subagentInputForHistory(tc.rawInput);
+                for (auto it = kept.constBegin(); it != kept.constEnd(); ++it)
+                    slim.insert(it.key(), it.value());
+            }
             if (tc.rawInput.contains(QLatin1String("command"))) {
                 QString cmd = tc.rawInput.value(QLatin1String("command")).toString();
                 if (cmd.isEmpty() && tc.rawInput.value(QLatin1String("command")).isArray()) {

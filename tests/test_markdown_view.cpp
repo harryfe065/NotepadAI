@@ -14,6 +14,7 @@
 #include <QSignalSpy>
 #include <QTextBlock>
 #include <QTextFragment>
+#include <QTextFrame>
 #include <QTextImageFormat>
 #include <QUrl>
 
@@ -73,6 +74,8 @@ private slots:
     void capKeepsMathAndCodeSurfacesInsideTheColumn();
 
     void codeSurfaceFollowsTheColumn();
+    void edgeCodeBlocksKeepTheirPadding();
+    void codeSurfaceFollowsADocumentInset();
 
     void flatSpacingIsTheDefault();
     void documentSpacingSeparatesParagraphs();
@@ -234,6 +237,64 @@ void TestMarkdownView::codeSurfaceFollowsTheColumn()
     QVERIFY2(px(v.viewport()->width() - 20, row).red() < 245, "surface reaches the column's right edge");
     // ... and nothing is painted left of the column
     QVERIFY(img.pixelColor(origin.x() - 10, origin.y() + row).red() >= 250);
+}
+
+// Reported: a message ending in a code block was cut below its last line. Qt
+// never lays out the last block's bottom margin (nor the first block's top
+// one), so the surface padding must be reserved in the document's own size.
+void TestMarkdownView::edgeCodeBlocksKeepTheirPadding()
+{
+    MarkdownView v;
+    v.document()->setDocumentMargin(0); // as the chat bubbles and tool cards set it
+    showAt(v, 500);
+    v.setMarkdownSource(QStringLiteral("```\nfirst();\n```\n\nmiddle\n\n```\nlast();\n```"));
+    QAbstractTextDocumentLayout *layout = v.document()->documentLayout();
+    const QRectF first = layout->blockBoundingRect(v.document()->firstBlock());
+    QTextBlock lastCode;
+    for (QTextBlock b = v.document()->begin(); b.isValid(); b = b.next())
+        if (b.text().contains(QStringLiteral("last();"))) lastCode = b;
+    QVERIFY(lastCode.isValid());
+    const QRectF last = layout->blockBoundingRect(lastCode);
+    // the padding above the first line and below the last fits in the document
+    QVERIFY2(first.top() >= 6.0, qPrintable(QString::number(first.top())));
+    QVERIFY2(layout->documentSize().height() >= last.bottom() + 6.0,
+             qPrintable(QStringLiteral("%1 vs %2").arg(layout->documentSize().height()).arg(last.bottom())));
+
+    // prose at the edges: no reserve
+    v.setMarkdownSource(QStringLiteral("just prose"));
+    QCOMPARE(layout->blockBoundingRect(v.document()->firstBlock()).top(), 0.0);
+}
+
+// A tool card insets its markdown result through the root frame so it lines up
+// with the card title; the code surface must start at that inset, not at x=0.
+void TestMarkdownView::codeSurfaceFollowsADocumentInset()
+{
+    MarkdownView v;
+    QPalette pal = v.palette();
+    pal.setColor(QPalette::Base, Qt::white);
+    pal.setColor(QPalette::Text, Qt::black);
+    v.setPalette(pal);
+    v.document()->setDocumentMargin(0);
+    showAt(v, 600, 200);
+    v.setMarkdownSource(QStringLiteral("text\n\n```\nlet a = 1;\n```\n\nafter"));
+    QTextFrameFormat ff = v.document()->rootFrame()->frameFormat();
+    ff.setLeftMargin(60);
+    v.document()->rootFrame()->setFrameFormat(ff);
+    QApplication::processEvents();
+
+    QTextBlock code;
+    for (QTextBlock b = v.document()->begin(); b.isValid(); b = b.next())
+        if (b.text().contains(QStringLiteral("let a"))) code = b;
+    QVERIFY(code.isValid());
+    const QRectF a = v.document()->documentLayout()->blockBoundingRect(code);
+    QImage img(v.size(), QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::white);
+    v.render(&img);
+    const QPoint origin = v.viewport()->mapTo(&v, QPoint(0, 0));
+    auto px = [&](int x, int y) { return img.pixelColor(origin.x() + x, origin.y() + y); };
+    const int row = int(a.top()) - 3; // padding row above the code line
+    QVERIFY2(px(30, row).red() >= 250, "nothing painted inside the inset");
+    QVERIFY2(px(80, row).red() < 245, "surface starts at the inset");
 }
 
 QTextBlock blockWithText(MarkdownView &v, const QString &needle)

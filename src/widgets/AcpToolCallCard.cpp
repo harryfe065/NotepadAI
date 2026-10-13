@@ -19,6 +19,7 @@
 #include "AcpToolCallCard.h"
 
 #include "AskUserForm.h"
+#include "MarkdownView.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QEvent>
@@ -29,6 +30,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QIcon>
+#include <QPainter>
+#include <QPixmap>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -37,6 +41,7 @@
 #include <QStringView>
 #include <QStyle>
 #include <QTextBlock>
+#include <QTextFrame>
 #include <QVector>
 
 #include <QTextBrowser>
@@ -79,6 +84,10 @@ constexpr int kMaxDiffSourceChars = 512 * 1024;
 constexpr int kKeepContext = 3;
 constexpr int kMaxRawOutputChars = 60000;
 constexpr int kBodyRenderDebounceMs = 80;
+// Instructions longer than this many lines (plus one) show only that many
+// until "Show more": the subagent's calls stay within reach.
+constexpr int kPromptPreviewLines = 6;
+constexpr int kSectionGapPx = 4; // air above "Instructions" / "Result"
 
 enum class DiffKind : std::uint8_t { Context, Add, Remove };
 struct DiffLine
@@ -671,6 +680,53 @@ bool looksLikeOmpHashlinePayload(const QString &text)
 }
 
 
+// Muted section label inside an expanded Agent card ("Instructions", "Result").
+QLabel *makeSectionCaption(const QString &text, QWidget *parent)
+{
+    auto *label = new QLabel(text, parent);
+    label->setTextFormat(Qt::PlainText);
+    label->setStyleSheet(QStringLiteral("QLabel { color: palette(placeholder-text); }"));
+    label->setContentsMargins(0, kSectionGapPx, 0, 0);
+    return label;
+}
+
+// Every status glyph the header can show gets the same slot, so titles (and the
+// rows a subagent card lines up under them) keep one column whatever the state.
+int statusSlotWidth(const QFont &font)
+{
+    static QHash<QString, int> cache;
+    const QString key = font.key();
+    auto it = cache.constFind(key);
+    if (it != cache.constEnd()) return *it;
+    const QFontMetrics fm(font);
+    int w = 0;
+    for (const char16_t *glyph : {u"✓", u"✗", u"⚙", u"⏳", u"📡"})
+        w = qMax(w, fm.horizontalAdvance(QString::fromUtf16(glyph)));
+    return *cache.insert(key, w);
+}
+
+// Indent a markdown body's text without a wrapper widget: QTextEdit has no
+// public viewport inset, and the root frame's format is rebuilt by every
+// setHtml, so owners re-apply this after each render (MarkdownView::rendered).
+void setDocumentIndent(QTextDocument *doc, int left)
+{
+    QTextFrameFormat ff = doc->rootFrame()->frameFormat();
+    if (qFuzzyCompare(ff.leftMargin() + 1.0, left + 1.0)) return;
+    ff.setLeftMargin(left);
+    doc->rootFrame()->setFrameFormat(ff);
+}
+
+// Content-sized markdown, as in the chat bubbles: no scrollbars, no frame, no
+// document margin, transparent over the card.
+void configureMarkdownBody(MarkdownView *view)
+{
+    view->setStyleSheet(QStringLiteral("QTextBrowser { background: transparent; border: none; }"));
+    view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    view->setFrameShape(QFrame::NoFrame);
+    view->document()->setDocumentMargin(0);
+}
+
 QString firstLine(QString text)
 {
     text = text.trimmed();
@@ -912,7 +968,6 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     if (AcpProtocol::isAdvisorToolName(initial.name)) {
         setProperty("advisor", true);
     }
-
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(6, 4, 6, 4);
     outer->setSpacing(2);
@@ -933,6 +988,15 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
     m_expandBtn->setAutoRaise(true);
 
     header->addWidget(m_statusIcon);
+    // A call that runs subagents is not an ordinary tool: a bot icon before its
+    // title says so (refreshSubagentMark).
+    m_agentIcon = new QLabel(this);
+    m_agentIcon->setObjectName(QStringLiteral("acpSubagentIcon"));
+    m_agentIcon->setToolTip(tr("Runs subagents"));
+    m_agentIcon->hide();
+    header->addWidget(m_agentIcon);
+    m_statusIcon->setAlignment(Qt::AlignCenter);
+    m_statusIcon->setFixedWidth(statusSlotWidth(m_statusIcon->font()));
     m_durationLabel = new QLabel(this);
     m_durationLabel->setEnabled(false); // dimmed, like secondary text
     m_durationLabel->hide();
@@ -952,6 +1016,7 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
         setCollapsed(!checked);
     });
 
+    refreshSubagentMark();
     refreshHeader();
     // Cards land collapsed by default — the title alone is enough to scan a
     // turn. Body rendering is intentionally lazy: tool output can be huge, and
@@ -966,17 +1031,36 @@ AcpToolCallCard::AcpToolCallCard(const AcpProtocol::AcpToolCall &initial, QWidge
 void AcpToolCallCard::ensureBody()
 {
     if (m_body) return;
-    m_body = new QTextBrowser(this);
-    m_body->setStyleSheet(QStringLiteral("QTextBrowser { background: transparent; border: none; }"));
-    m_body->setOpenExternalLinks(true);
-    // Cards size to content. Internal scroll on a card produces a nested
-    // scrollbar inside the transcript's own scroll area — bad UX. The expand
-    // button collapses verbose output instead.
-    m_body->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_body->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_body->setFrameShape(QFrame::NoFrame);
-    m_body->document()->setDocumentMargin(0);
-    if (m_chatFontSet) m_body->document()->setDefaultFont(m_chatFont);
+    if (isSubagentCard()) {
+        // The subagent's report is markdown, like the chat it would have been.
+        m_resultCaption = makeSectionCaption(tr("Result"), this);
+        if (m_chatFontSet) m_resultCaption->setFont(m_chatFont);
+        m_resultCaption->setContentsMargins(m_contentIndent, kSectionGapPx, 0, 0);
+        m_resultCaption->hide();
+        m_outer->addWidget(m_resultCaption);
+        m_markdownBody = new MarkdownView(this);
+        configureMarkdownBody(m_markdownBody);
+        if (m_chatFontSet) m_markdownBody->setChatFont(m_chatFont, false);
+        // A <details> click or a theme change re-renders inside the view.
+        connect(m_markdownBody, &MarkdownView::rendered, this, [this]() {
+            setDocumentIndent(m_markdownBody->document(), m_contentIndent);
+            refitBodyHeight();
+            scheduleRefit();
+        });
+        m_body = m_markdownBody;
+    } else {
+        m_body = new QTextBrowser(this);
+        m_body->setStyleSheet(QStringLiteral("QTextBrowser { background: transparent; border: none; }"));
+        m_body->setOpenExternalLinks(true);
+        // Cards size to content. Internal scroll on a card produces a nested
+        // scrollbar inside the transcript's own scroll area — bad UX. The expand
+        // button collapses verbose output instead.
+        m_body->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_body->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_body->setFrameShape(QFrame::NoFrame);
+        m_body->document()->setDocumentMargin(0);
+        if (m_chatFontSet) m_body->document()->setDefaultFont(m_chatFont);
+    }
     m_outer->addWidget(m_body);
 
     m_renderTimer = new QTimer(this);
@@ -1065,6 +1149,10 @@ void AcpToolCallCard::apply(const AcpProtocol::AcpToolCallUpdate &update)
         if (m_nowLabel)
             refreshSubagentRows(); // the now line goes once the subagent ends
     }
+    if (update.rawInput.has_value()) {
+        refreshSubagentMark();
+        refreshPrompt();
+    }
     if (bodyChanged) {
         m_bodyDirty = true;
     }
@@ -1139,6 +1227,27 @@ QString AcpToolCallCard::enrichedTitle(const AcpProtocol::AcpToolCall &tc)
         if (count == 0)
             return tr("Asking you");
         return count == 1 ? tr("Asked you a question") : tr("Asked you %1 questions").arg(count);
+    }
+
+    // omp's task: one call starts every subagent it lists.
+    if (tc.rawInput.value(QLatin1String("tasks")).isArray()
+        && AcpProtocol::isSubagentToolInput(tc.rawInput)) {
+        QString label = tr("Agent");
+        const QString type = tc.rawInput.value(QLatin1String("agent")).toString();
+        if (!type.isEmpty() && type != QLatin1String("task"))
+            label += QLatin1Char(' ') + type;
+        const int count = AcpProtocol::subagentToolCount(tc.rawInput);
+        if (count > 1)
+            label += QStringLiteral(" ×%1").arg(count);
+        QString what = tc.title;
+        if (what.isEmpty() || what.compare(QLatin1String("task"), Qt::CaseInsensitive) == 0)
+            what = tc.rawInput.value(QLatin1String("i")).toString();
+        if (what.isEmpty()) {
+            what = tc.rawInput.value(QLatin1String("tasks")).toArray().first().toObject()
+                       .value(QLatin1String("name")).toString();
+        }
+        what = firstLine(what);
+        return what.isEmpty() ? label : QStringLiteral("%1: %2").arg(label, what);
     }
 
     if (tc.title == QLatin1String("TaskOutput")) {
@@ -1385,6 +1494,7 @@ void AcpToolCallCard::setSubagentActivity(int toolCount, const QString &nowLine)
 {
     if (toolCount != m_subagentToolCount) {
         m_subagentToolCount = toolCount;
+        refreshSubagentMark();
         refreshDuration();
     }
     if (nowLine != m_subagentNowLine) {
@@ -1392,8 +1502,8 @@ void AcpToolCallCard::setSubagentActivity(int toolCount, const QString &nowLine)
         if (!m_nowLabel) {
             m_nowLabel = new QLabel(this);
             m_nowLabel->setFont(m_titleLabel->font());
-            m_nowLabel->setStyleSheet(QStringLiteral(
-                "QLabel { color: palette(placeholder-text); padding-left: 14px; }"));
+            m_nowLabel->setStyleSheet(QStringLiteral("QLabel { color: palette(placeholder-text); }"));
+            m_nowLabel->setContentsMargins(m_contentIndent, 0, 0, 0);
             m_nowLabel->setTextFormat(Qt::PlainText);
             // Elided to the card's width; its full text must not widen the card.
             m_nowLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
@@ -1419,24 +1529,178 @@ void AcpToolCallCard::refreshNowLine()
     // From the card's width: a label that was hidden has a stale one.
     int marginL = 0, marginT = 0, marginR = 0, marginB = 0;
     m_outer->getContentsMargins(&marginL, &marginT, &marginR, &marginB);
-    const int w = width() - marginL - marginR - 14; // the padding-left above
+    const int w = contentsRect().width() - marginL - marginR - m_contentIndent;
     const QString line = QStringLiteral("↳ ") + firstLine(m_subagentNowLine);
     m_nowLabel->setText(w > 0 ? m_nowLabel->fontMetrics().elidedText(line, Qt::ElideRight, w)
                               : line);
 }
 
-// The "now" line only while the subagent runs and its calls are folded away;
-// the nested cards only while the card is open.
+// The "now" line (the running call, else the last one) while the subagent's
+// calls are folded away; the nested cards only while the card is open.
 void AcpToolCallCard::refreshSubagentRows()
 {
-    if (m_nowLabel) {
-        // A backgrounded subagent's call is `completed` at hand-off.
-        const bool running = !isTerminalStatus() || m_backgroundRunning;
-        m_nowLabel->setHidden(!m_collapsed || !running || m_subagentNowLine.isEmpty());
-    }
+    if (m_nowLabel)
+        m_nowLabel->setHidden(!m_collapsed || m_subagentNowLine.isEmpty());
+    if (m_promptBox)
+        m_promptBox->setHidden(m_collapsed || m_promptView->markdownSource().isEmpty());
     if (m_childHost)
         m_childHost->setHidden(m_collapsed || m_childCards.isEmpty());
+    if (m_resultCaption)
+        m_resultCaption->setHidden(m_collapsed || !m_hasResultText);
     refitBodyHeight();
+}
+
+// Rows below the header: the now line, then the instructions, the nested
+// calls, and the result.
+int AcpToolCallCard::rowAfterHeader() const
+{
+    return headerRowIndex() + (m_nowLabel ? 2 : 1);
+}
+
+bool AcpToolCallCard::isSubagentCard() const
+{
+    return m_subagentToolCount > 0 || AcpProtocol::isSubagentToolInput(m_rawInput);
+}
+
+// Rows inside an Agent card are a list, not a stack of cards: tight vertical
+// metrics and a chevron no taller than the text.
+void AcpToolCallCard::setNested(bool nested)
+{
+    if (m_nested == nested) return;
+    m_nested = nested;
+    applyNestedMetrics();
+}
+
+void AcpToolCallCard::refreshSubagentMark()
+{
+    const bool on = isSubagentCard();
+    if (on) {
+        // Text-high, tinted with the palette (the SVG's currentColor renders
+        // black). Rendered once per size, colour and DPR across all cards.
+        const int px = qMax(12, m_titleLabel->fontMetrics().height() - 2);
+        const qreal dpr = devicePixelRatioF();
+        const QColor color = palette().color(QPalette::ButtonText);
+        static QHash<QString, QPixmap> cache;
+        const QString key = QStringLiteral("%1/%2/%3").arg(px).arg(dpr).arg(color.rgba());
+        auto it = cache.constFind(key);
+        if (it == cache.constEnd()) {
+            QPixmap pm = QIcon(QStringLiteral(":/icons/bot.svg")).pixmap(QSize(px, px), dpr);
+            if (!pm.isNull()) {
+                QPainter p(&pm);
+                p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                p.fillRect(pm.rect(), color);
+            }
+            it = cache.insert(key, pm);
+        }
+        if (m_agentIcon->pixmap().cacheKey() != it->cacheKey())
+            m_agentIcon->setPixmap(*it);
+        m_agentIcon->setFixedWidth(px);
+    }
+    if (m_agentIcon->isHidden() == on)
+        m_agentIcon->setHidden(!on);
+    setProperty("subagent", on);
+    applyContentIndent();
+}
+
+// A subagent card's rows below the header (the "now" line, the instructions,
+// the nested calls, the result) start where its title text starts: one left
+// edge instead of one per row kind.
+void AcpToolCallCard::applyContentIndent()
+{
+    const int spacing = m_headerLayout->spacing();
+    int indent = 0;
+    if (!m_agentIcon->isHidden())
+        indent = m_statusIcon->width() + spacing + m_agentIcon->width() + spacing;
+    if (indent == m_contentIndent) return;
+    m_contentIndent = indent;
+    if (m_nowLabel) {
+        m_nowLabel->setContentsMargins(indent, 0, 0, 0);
+        refreshNowLine();
+    }
+    if (m_promptBox)
+        m_promptBox->layout()->setContentsMargins(indent, 0, 0, 0);
+    if (m_childHost)
+        m_childHost->layout()->setContentsMargins(indent, 0, 0, 0);
+    if (m_resultCaption)
+        m_resultCaption->setContentsMargins(indent, kSectionGapPx, 0, 0);
+    if (m_markdownBody)
+        setDocumentIndent(m_markdownBody->document(), indent);
+    scheduleRefit();
+}
+
+void AcpToolCallCard::changeEvent(QEvent *event)
+{
+    QFrame::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange && m_agentIcon && !m_agentIcon->isHidden())
+        refreshSubagentMark(); // re-tint for the new theme
+}
+
+void AcpToolCallCard::applyNestedMetrics()
+{
+    if (!m_nested) return;
+    m_outer->setContentsMargins(0, 2, 2, 2); // the parent's host indents the row
+    const int h = m_titleLabel->fontMetrics().height();
+    m_expandBtn->setFixedSize(h + 4, h);
+    if (QLayout *row = headerRow(m_outer))
+        row->invalidate();
+    refitBodyHeight();
+}
+
+// The instructions are rendered on expand only; a collapsed card holds none.
+void AcpToolCallCard::refreshPrompt()
+{
+    if (m_collapsed) return;
+    const QString prompt = AcpProtocol::subagentInstructions(m_rawInput);
+    if (prompt.isEmpty() && !m_promptBox) return;
+    if (!m_promptBox) {
+        m_promptBox = new QWidget(this);
+        m_promptBox->setObjectName(QStringLiteral("acpSubagentPrompt"));
+        auto *layout = new QVBoxLayout(m_promptBox);
+        layout->setContentsMargins(m_contentIndent, 0, 0, 0);
+        layout->setSpacing(2);
+        QLabel *caption = makeSectionCaption(tr("Instructions"), m_promptBox);
+        if (m_chatFontSet) caption->setFont(m_chatFont);
+        layout->addWidget(caption);
+        m_promptView = new MarkdownView(m_promptBox);
+        configureMarkdownBody(m_promptView);
+        if (m_chatFontSet) m_promptView->setChatFont(m_chatFont, false);
+        connect(m_promptView, &MarkdownView::rendered, this, [this]() { refitBodyHeight(); });
+        layout->addWidget(m_promptView);
+        m_promptMoreBtn = new QToolButton(m_promptBox);
+        m_promptMoreBtn->setObjectName(QStringLiteral("acpSubagentPromptMore"));
+        m_promptMoreBtn->setAutoRaise(true);
+        m_promptMoreBtn->setCursor(Qt::PointingHandCursor);
+        m_promptMoreBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { border: none; padding: 0; color: palette(link); }"));
+        m_promptMoreBtn->setText(tr("Show more"));
+        if (m_chatFontSet) m_promptMoreBtn->setFont(m_chatFont);
+        m_promptMoreBtn->hide();
+        connect(m_promptMoreBtn, &QToolButton::clicked, this, [this]() {
+            m_promptExpanded = !m_promptExpanded;
+            m_promptMoreBtn->setText(m_promptExpanded ? tr("Show less") : tr("Show more"));
+            refitBodyHeight();
+        });
+        layout->addWidget(m_promptMoreBtn, 0, Qt::AlignLeft);
+        m_outer->insertWidget(rowAfterHeader(), m_promptBox);
+    }
+    if (prompt != m_promptView->markdownSource())
+        m_promptView->setMarkdownSource(prompt); // refits through rendered()
+    refreshSubagentRows();
+}
+
+// Fits the instructions to `width`, clamped to kPromptPreviewLines unless the
+// user asked for all of them; returns the box's height.
+int AcpToolCallCard::fitPromptBox(int width)
+{
+    QTextDocument *doc = m_promptView->document();
+    const int docH = qMax(0, static_cast<int>(std::ceil(layoutDocumentHeight(doc, width))));
+    const int lineH = QFontMetrics(doc->defaultFont()).lineSpacing();
+    const int clampH = lineH * kPromptPreviewLines;
+    const bool overflow = docH > clampH + lineH;
+    m_promptMoreBtn->setHidden(!overflow);
+    m_promptView->setFixedHeight(overflow && !m_promptExpanded ? clampH : docH);
+    m_promptBox->layout()->invalidate();
+    return m_promptBox->sizeHint().height();
 }
 
 void AcpToolCallCard::addChildCard(AcpToolCallCard *child)
@@ -1445,21 +1709,17 @@ void AcpToolCallCard::addChildCard(AcpToolCallCard *child)
     if (!m_childHost) {
         m_childHost = new QFrame(this);
         m_childHost->setObjectName(QStringLiteral("acpSubagentChildren"));
-        // A guide line down the left edge ties the nested calls to this card.
-        m_childHost->setStyleSheet(QStringLiteral(
-            "QFrame#acpSubagentChildren { border: none; "
-            "border-left: 1px solid palette(mid); }"));
         auto *layout = new QVBoxLayout(m_childHost);
-        layout->setContentsMargins(8, 0, 0, 0);
-        layout->setSpacing(4);
-        // Below the header and the now line, above the body (the result).
-        const int at = headerRowIndex() + (m_nowLabel ? 2 : 1);
-        m_outer->insertWidget(at, m_childHost);
+        layout->setContentsMargins(m_contentIndent, 0, 0, 0);
+        layout->setSpacing(0);
+        // Below the instructions, above the result.
+        m_outer->insertWidget(rowAfterHeader() + (m_promptBox ? 1 : 0), m_childHost);
         // A nested card pins its own height on expand/collapse; its new size
         // reaches this card only through the host's layout request.
         m_childHost->installEventFilter(this);
     }
     child->setParent(m_childHost);
+    child->setNested(true);
     m_childHost->layout()->addWidget(child);
     m_childCards.insert(child->id(), child);
     // One coalesced refit per batch: measuring the host per card is O(n^2).
@@ -1692,6 +1952,14 @@ void AcpToolCallCard::rerenderBody()
         const QJsonDocument doc(m_content);
         text = QString::fromUtf8(doc.toJson(QJsonDocument::Indented));
     }
+    if (m_markdownBody) {
+        const bool hadResult = m_hasResultText;
+        m_hasResultText = !text.trimmed().isEmpty();
+        if (m_resultCaption && hadResult != m_hasResultText)
+            m_resultCaption->setHidden(m_collapsed || !m_hasResultText);
+        m_markdownBody->setMarkdownSource(text); // refits through rendered()
+        return;
+    }
     m_body->document()->setPlainText(text);
     refitBodyHeight();
     scheduleRefit();
@@ -1718,23 +1986,29 @@ void AcpToolCallCard::refitBodyHeight()
     }
     int cardH = marginT + marginB + headerH;
     const int rowGap = m_outer ? m_outer->spacing() : 0;
-    // Subagent rows; isHidden() is the logical flag, set before any show.
+    // Subagent rows; isHidden() is the logical flag, set before any show. The
+    // instructions, nested calls and result caption are hidden while collapsed.
     if (m_nowLabel && !m_nowLabel->isHidden())
         cardH += rowGap + m_nowLabel->sizeHint().height();
-    if (m_childHost && !m_childHost->isHidden())
-        cardH += rowGap + m_childHost->sizeHint().height();
     if (m_collapsed || !m_body) {
         setFixedHeight(cardH);
         return;
     }
 
-    const int w = width() - marginL - marginR;
+    // contentsRect: a Goal / advisor card has a stylesheet border.
+    const int w = contentsRect().width() - marginL - marginR;
     if (w <= 0) {
         // Width not settled (never-shown stack page). Keep whatever height we
         // already have — pinning to header-only here clips an expanded body
         // that streamed on a hidden tab.
         return;
     }
+    if (m_promptBox && !m_promptBox->isHidden())
+        cardH += rowGap + fitPromptBox(w - m_contentIndent);
+    if (m_childHost && !m_childHost->isHidden())
+        cardH += rowGap + m_childHost->sizeHint().height();
+    if (m_resultCaption && !m_resultCaption->isHidden())
+        cardH += rowGap + m_resultCaption->sizeHint().height();
     QTextDocument *doc = m_body->document();
     // Force a full layout pass for the current width before measuring —
     // QTextDocument under-reports height for freshly-set multi-line HTML
@@ -1822,7 +2096,10 @@ void AcpToolCallCard::setCollapsed(bool collapsed)
     // grows back when re-expanded). The body may have been laid out at a
     // stale width while hidden, so follow up with a deferred refit once the
     // expanded geometry settles — otherwise the diff clips on first expand.
-    if (!collapsed) flushBodyRender();
+    if (!collapsed) {
+        refreshPrompt();
+        flushBodyRender();
+    }
     refreshSubagentRows(); // refits
     if (!collapsed) scheduleRefit();
     if (!collapsed && m_subagentToolCount > m_childCards.size())
@@ -1839,14 +2116,30 @@ void AcpToolCallCard::setChatFont(const QFont &font)
     // - body QTextBrowser: document defaultFont drives plain-text mode and the
     //   font-family-less fallback <pre>; HTML mode re-renders below threading
     //   the font's family/size into the inline CSS (see fontCssDecl).
-    if (m_statusIcon) m_statusIcon->setFont(font);
+    if (m_statusIcon) {
+        m_statusIcon->setFont(font);
+        m_statusIcon->setFixedWidth(statusSlotWidth(font));
+    }
     if (m_titleLabel) m_titleLabel->setFont(font);
     if (m_durationLabel) m_durationLabel->setFont(font);
     if (m_nowLabel) m_nowLabel->setFont(font);
-    if (m_body) m_body->document()->setDefaultFont(font);
+    if (m_resultCaption) m_resultCaption->setFont(font);
+    if (m_markdownBody) {
+        m_markdownBody->setChatFont(font, false); // re-rendered below
+    } else if (m_body) {
+        m_body->document()->setDefaultFont(font);
+    }
+    if (m_promptBox) {
+        for (QWidget *w : m_promptBox->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+            if (w != m_promptView) w->setFont(font);
+        }
+        m_promptView->setChatFont(font); // re-renders and refits
+    }
     for (AcpToolCallCard *child : std::as_const(m_childCards))
         child->setChatFont(font);
     refreshNowLine();
+    applyNestedMetrics(); // the chevron follows the text height
+    refreshSubagentMark(); // and so does the bot icon
 
     // New metrics change the header row's height: drop its cached hint.
     if (QLayout *row = headerRow(m_outer))

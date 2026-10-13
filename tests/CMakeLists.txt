@@ -1179,6 +1179,7 @@ target_sources(test_acp_tool_call_card PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
     ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpToolCallCard.h
+    ${MARKDOWN_RENDER_SOURCES}
 )
 add_test(NAME AcpToolCallCard COMMAND test_acp_tool_call_card)
 
@@ -2501,6 +2502,23 @@ target_sources(test_acp_message_widget_markdown PRIVATE
 )
 add_test(NAME AcpMessageWidgetMarkdown COMMAND test_acp_message_widget_markdown)
 
+# --- AcpMessageWidget user bubble: right-aligned layout in a narrow transcript ---
+qt_add_executable(test_acp_user_bubble_layout test_acp_user_bubble_layout.cpp)
+target_include_directories(test_acp_user_bubble_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_acp_user_bubble_layout PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_acp_user_bubble_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpMessageWidget.h
+    ${MARKDOWN_RENDER_SOURCES}
+)
+add_test(NAME AcpUserBubbleLayout COMMAND test_acp_user_bubble_layout)
+set_tests_properties(AcpUserBubbleLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # --- MarkdownView: the shared markdown renderer (chat + file preview), width cap ---
 qt_add_executable(test_markdown_view test_markdown_view.cpp)
 target_include_directories(test_markdown_view PRIVATE
@@ -2526,6 +2544,22 @@ target_sources(test_ask_user_form PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
 )
 add_test(NAME AskUserForm COMMAND test_ask_user_form)
+
+# --- AskUserFormWidget: layout in a narrow transcript (long agent text) ---
+qt_add_executable(test_ask_user_form_widget test_ask_user_form_widget.cpp)
+target_include_directories(test_ask_user_form_widget PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_ask_user_form_widget PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_ask_user_form_widget PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
+)
+add_test(NAME AskUserFormWidget COMMAND test_ask_user_form_widget)
+set_tests_properties(AskUserFormWidget PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # --- AskUserMcp: notepadai MCP server (C++ and the remote Node script) ---
 qt_add_executable(test_ask_user_mcp test_ask_user_mcp.cpp)

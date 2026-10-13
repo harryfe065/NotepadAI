@@ -27,6 +27,7 @@
 
 #include "AcpProtocol.h"
 
+class MarkdownView;
 class QHBoxLayout;
 class QLabel;
 class QTextBrowser;
@@ -74,7 +75,7 @@ public:
     // the subagent runs, a muted "now" line (nowLine: its current call's
     // title). The nested cards are built only once the card is opened.
     void setSubagentActivity(int toolCount, const QString &nowLine);
-    // Takes ownership; appended in arrival order under the header.
+    // Takes ownership; appended in arrival order under the instructions.
     void addChildCard(AcpToolCallCard *child);
     AcpToolCallCard *childCard(const QString &id) const { return m_childCards.value(id, nullptr); }
     int childCardCount() const { return static_cast<int>(m_childCards.size()); }
@@ -91,6 +92,7 @@ protected:
     // expanded diff/output body that streamed in the background keeps its
     // height instead of staying pinned to the header.
     void showEvent(QShowEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
 private:
     void ensureBody();
@@ -109,6 +111,14 @@ private:
     int headerRowIndex() const;
     void refreshNowLine();
     void refreshSubagentRows();
+    int rowAfterHeader() const;
+    bool isSubagentCard() const;
+    void setNested(bool nested);
+    void applyNestedMetrics();
+    void refreshSubagentMark();
+    void applyContentIndent();
+    void refreshPrompt();
+    int fitPromptBox(int width);
 
     QString m_id;
     QString m_title;
@@ -137,6 +147,8 @@ private:
     QTimer *m_renderTimer = nullptr;     // coalesces expensive QTextDocument body renders; built with m_body
 
     QLabel *m_statusIcon = nullptr;
+    QLabel *m_agentIcon = nullptr;       // bot icon: shown on cards that run subagents
+    int m_contentIndent = 0;             // subagent card: rows below the header start at the title
     QLabel *m_titleLabel = nullptr;
     QLabel *m_durationLabel = nullptr;
     QToolButton *m_expandBtn = nullptr;
@@ -150,6 +162,16 @@ private:
     QLabel *m_nowLabel = nullptr;         // built with the first activity
     QFrame *m_childHost = nullptr;        // built with the first nested card
     QHash<QString, AcpToolCallCard *> m_childCards; // owned via m_childHost
+    bool m_nested = false;                // a row inside an Agent card: compact metrics
+    // The instructions the subagent was given, above its calls; built on the
+    // first expand of a card that has them.
+    QWidget *m_promptBox = nullptr;
+    MarkdownView *m_promptView = nullptr;
+    QToolButton *m_promptMoreBtn = nullptr;
+    bool m_promptExpanded = false;        // long instructions show in full
+    QLabel *m_resultCaption = nullptr;    // "Result" above the body; subagent cards only
+    MarkdownView *m_markdownBody = nullptr; // m_body when it renders the report as markdown
+    bool m_hasResultText = false;
 };
 
 #endif // ACP_TOOL_CALL_CARD_H

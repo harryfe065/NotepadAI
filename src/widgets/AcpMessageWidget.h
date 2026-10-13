@@ -118,6 +118,12 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    // The width sizeHint() reports for a user bubble: its widest line, capped
+    // to the transcript.
+    int userBubbleWidth() const;
+    // Widest unwrapped line / image of a user bubble (text shaping: cached by
+    // its layout until a child changes).
+    int measureUserContent() const;
     void rerender();
     void refitBrowserHeight();
     void scheduleRefit();
@@ -148,7 +154,7 @@ private:
     QLabel *m_summaryOverview = nullptr;    // one line per answer while collapsed
     QString m_summary;
     QLabel *m_goalBadge = nullptr;         // Goal badge on result rows
-    QVBoxLayout *m_layout = nullptr;
+    QVBoxLayout *m_layout = nullptr; // user role: UserBubbleLayout
 
     // Final-report action row (assistant role), built on first enable.
     QWidget *m_responseActions = nullptr;

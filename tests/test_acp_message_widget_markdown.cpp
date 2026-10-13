@@ -95,6 +95,7 @@ private slots:
     void codeBlocksGetSurfaceFill();
     void adjacentFencesAreSeparateRegions();
     void inlineCodeGetsSurfaceFill();
+    void inlineOnlyItemsStayInline();
     void codeBlockFontIsFixedPitchEvenWhenChatFontIsNot();
     void codeSurfaceIsPaintedPaddedAndRounded();
     void blockMarginsAreZeroedLikeBefore();
@@ -246,6 +247,34 @@ void TestAcpMessageWidgetMarkdown::inlineCodeGetsSurfaceFill()
         }
     }
     QVERIFY(found);
+}
+
+// Reported: a list of file paths (- `src/a.cpp`) rendered as an indented code
+// block, because each item held nothing but an inline span.
+void TestAcpMessageWidgetMarkdown::inlineOnlyItemsStayInline()
+{
+    AcpMessageWidget w(QStringLiteral("assistant"));
+    QFont chat(QStringLiteral("Segoe UI"));
+    chat.setPixelSize(14);
+    w.setChatFont(chat);
+    w.setText(QStringLiteral("**Files:**\n- `src/a.cpp`\n- `src/b.cpp`\n\n`alone.h`\n\n"
+                             "```\nreal_block();\n```\n\n    indented_block();\n"));
+    QTextDocument *doc = browserOf(w)->document();
+    int inlineItems = 0, blocks = 0;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+        const bool surface = b.blockFormat().background().style() != Qt::NoBrush;
+        if (b.text().contains(QStringLiteral(".cpp")) || b.text() == QStringLiteral("alone.h")) {
+            QVERIFY2(!surface, qPrintable(b.text()));
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                QVERIFY(it.fragment().charFormat().background().style() != Qt::NoBrush);
+            ++inlineItems;
+        } else if (b.text().contains(QStringLiteral("_block()"))) {
+            QVERIFY2(surface, qPrintable(b.text()));
+            ++blocks;
+        }
+    }
+    QCOMPARE(inlineItems, 3);
+    QCOMPARE(blocks, 2);
 }
 
 void TestAcpMessageWidgetMarkdown::codeBlocksGetSurfaceFill()

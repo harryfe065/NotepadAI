@@ -580,6 +580,92 @@ QString subagentParentToolCallId(const QJsonObject &update)
     return parent;
 }
 
+namespace {
+
+constexpr int kMaxHistoryInstructionChars = 32000;
+
+bool isOmpTaskInput(const QJsonObject &rawInput)
+{
+    const QJsonValue tasks = rawInput.value(QLatin1String("tasks"));
+    if (!tasks.isArray()) return false;
+    const QJsonArray arr = tasks.toArray();
+    return !arr.isEmpty() && arr.first().toObject().value(QLatin1String("task")).isString();
+}
+
+} // namespace
+
+bool isSubagentToolInput(const QJsonObject &rawInput)
+{
+    if (rawInput.contains(QLatin1String("subagent_type")))
+        return true;
+    if (rawInput.contains(QLatin1String("description"))
+        && !rawInput.value(QLatin1String("prompt")).toString().isEmpty())
+        return true; // WebFetch's prompt comes with a url, not a description
+    return isOmpTaskInput(rawInput);
+}
+
+int subagentToolCount(const QJsonObject &rawInput)
+{
+    return isOmpTaskInput(rawInput)
+        ? static_cast<int>(rawInput.value(QLatin1String("tasks")).toArray().size())
+        : 1;
+}
+
+QString subagentInstructions(const QJsonObject &rawInput)
+{
+    if (!isOmpTaskInput(rawInput)) {
+        if (!isSubagentToolInput(rawInput)) return {};
+        return rawInput.value(QLatin1String("prompt")).toString().trimmed();
+    }
+    QString md = rawInput.value(QLatin1String("context")).toString().trimmed();
+    const QJsonArray tasks = rawInput.value(QLatin1String("tasks")).toArray();
+    for (const QJsonValue &v : tasks) {
+        const QJsonObject task = v.toObject();
+        const QString text = task.value(QLatin1String("task")).toString().trimmed();
+        const QString name = task.value(QLatin1String("name")).toString().trimmed();
+        if (text.isEmpty() && name.isEmpty()) continue;
+        if (!md.isEmpty()) md += QLatin1String("\n\n");
+        if (!name.isEmpty())
+            md += QLatin1String("**") + name + QLatin1String("**\n\n");
+        md += text;
+    }
+    return md;
+}
+
+QJsonObject subagentInputForHistory(const QJsonObject &rawInput)
+{
+    auto capped = [](QString text) {
+        if (text.size() > kMaxHistoryInstructionChars) text.truncate(kMaxHistoryInstructionChars);
+        return text;
+    };
+    QJsonObject out;
+    if (!isOmpTaskInput(rawInput)) {
+        const QString prompt = rawInput.value(QLatin1String("prompt")).toString();
+        if (!prompt.isEmpty()) out.insert(QStringLiteral("prompt"), capped(prompt));
+        return out;
+    }
+    for (const QLatin1String key : {QLatin1String("i"), QLatin1String("agent")}) {
+        const QString value = rawInput.value(key).toString();
+        if (!value.isEmpty()) out.insert(key, value.left(200));
+    }
+    // One budget across the context and every task.
+    int budget = kMaxHistoryInstructionChars;
+    const QString context = rawInput.value(QLatin1String("context")).toString().left(budget);
+    budget -= static_cast<int>(context.size());
+    if (!context.isEmpty()) out.insert(QStringLiteral("context"), context);
+    QJsonArray tasks;
+    const QJsonArray source = rawInput.value(QLatin1String("tasks")).toArray();
+    for (const QJsonValue &v : source) {
+        const QJsonObject task = v.toObject();
+        const QString text = task.value(QLatin1String("task")).toString().left(qMax(0, budget));
+        budget -= static_cast<int>(text.size());
+        tasks.append(QJsonObject{{QStringLiteral("name"), task.value(QLatin1String("name")).toString()},
+                                 {QStringLiteral("task"), text}});
+    }
+    out.insert(QStringLiteral("tasks"), tasks);
+    return out;
+}
+
 QString formatWaitDuration(qint64 ms)
 {
     if (ms < 0) {
