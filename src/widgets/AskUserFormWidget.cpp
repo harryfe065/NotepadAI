@@ -10,6 +10,7 @@
 
 #include "AskUserFormWidget.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
@@ -33,9 +34,12 @@
 #include <QStyledItemDelegate>
 #include <QWheelEvent>
 #include <QStyle>
+#include <QTextDocument>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 
 using AskUserForm::Answer;
@@ -45,6 +49,7 @@ using AskUserForm::QuestionType;
 namespace {
 
 constexpr int kTextareaLines = 4;
+constexpr int kNoteMaxLines = 6; // the form note scrolls past this
 constexpr qreal kClarifyOpacity = 0.45; // controls of a flagged question: not sent
 constexpr int kOtherButtonId = 1 << 20; // past any option index; never a Qt auto id
 
@@ -456,6 +461,19 @@ void AskUserFormWidget::buildUi()
     m_rows.resize(m_spec.questions.size());
     for (int i = 0; i < m_spec.questions.size(); ++i)
         bodyLayout->addWidget(buildQuestion(i));
+    // Anything the user remembers that no question asked. Elicitation answers
+    // are a fixed schema with no place for it.
+    if (m_spec.source == AskUserForm::Source::AskUser) {
+        m_formNoteEdit = new QPlainTextEdit(m_body);
+        m_formNoteEdit->setPlaceholderText(tr("Anything else the agent should know? (optional)"));
+        m_formNoteEdit->setTabChangesFocus(true);
+        m_formNoteEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        bodyLayout->addWidget(m_formNoteEdit);
+        watch(m_formNoteEdit);
+        connect(m_formNoteEdit->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
+                this, &AskUserFormWidget::fitNote);
+        fitNote();
+    }
     root->addWidget(m_body);
 
     m_footer = new QWidget(this);
@@ -839,6 +857,30 @@ void AskUserFormWidget::setClarify(int index, bool on)
     updateProgress();
 }
 
+void AskUserFormWidget::fitNote()
+{
+    if (!m_formNoteEdit)
+        return;
+    // A plain-text document layout measures its height in lines.
+    const int lines = static_cast<int>(std::ceil(m_formNoteEdit->document()->size().height()));
+    // No scroll bar while the box fits its text: one would narrow it, rewrap
+    // the text and resize the box again.
+    m_formNoteEdit->setVerticalScrollBarPolicy(lines > kNoteMaxLines ? Qt::ScrollBarAsNeeded
+                                                                 : Qt::ScrollBarAlwaysOff);
+    fitLines(m_formNoteEdit, std::clamp(lines, 1, kNoteMaxLines));
+}
+
+QString AskUserFormWidget::note() const
+{
+    return m_formNoteEdit ? m_formNoteEdit->toPlainText().trimmed() : QString();
+}
+
+void AskUserFormWidget::setNote(const QString &note)
+{
+    if (m_formNoteEdit)
+        m_formNoteEdit->setPlainText(note);
+}
+
 void AskUserFormWidget::updateProgress()
 {
     if (m_building || !m_progressLabel)
@@ -1030,6 +1072,9 @@ void AskUserFormWidget::trySubmit()
 
 bool AskUserFormWidget::eventFilter(QObject *watched, QEvent *event)
 {
+    // The style sheet's frame width applies after the first fit (at polish).
+    if (watched == m_formNoteEdit && (event->type() == QEvent::Polish || event->type() == QEvent::StyleChange))
+        fitNote();
     if (event->type() != QEvent::KeyPress || !isPending())
         return QFrame::eventFilter(watched, event);
     auto *ke = static_cast<QKeyEvent *>(event);
@@ -1093,6 +1138,9 @@ void AskUserFormWidget::setState(State state, const QString &detail)
     setProperty("pending", pending);
     repolish(this);
     m_body->setEnabled(pending);
+    // A settled form keeps its note on show, and no empty box.
+    if (m_formNoteEdit)
+        m_formNoteEdit->setVisible(pending || !note().isEmpty());
     // Settled forms collapse to their status line; the chevron shows them.
     m_toggle->setVisible(!pending);
     m_toggle->setChecked(pending);
@@ -1119,6 +1167,7 @@ void AskUserFormWidget::setChatFont(const QFont &font)
         if (row.textEdit)
             fitLines(row.textEdit, kTextareaLines);
     }
+    fitNote();
 }
 
 QWidget *AskUserFormWidget::inputOf(int index) const

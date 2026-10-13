@@ -58,6 +58,10 @@ public:
     // `detail` overrides the default status text (e.g. the cancel reason).
     void setState(State state, const QString &detail = {});
     QVector<AskUserForm::Answer> answers() const;
+    // The form-level note below the questions (trimmed; always empty for
+    // elicitation, whose answers are a fixed schema).
+    QString note() const;
+    void setNote(const QString &note);
 
     void setChatFont(const QFont &font);
     void focusFirstQuestion();
@@ -103,6 +107,8 @@ private:
     void watch(QWidget *w);
     void updateProposalEditor(int index);
     void setClarify(int index, bool on);
+    // Grows the note box with its text, one line up to kNoteMaxLines.
+    void fitNote();
     void updateProgress();
     void setExpanded(bool expanded);
     void applyTheme();
@@ -120,6 +126,7 @@ private:
     QLabel *m_statusLabel = nullptr;
     QToolButton *m_toggle = nullptr;
     QWidget *m_body = nullptr;
+    QPlainTextEdit *m_formNoteEdit = nullptr; // ask_user only
     QWidget *m_footer = nullptr;
     QLabel *m_progressLabel = nullptr;
     QPushButton *m_submitButton = nullptr;

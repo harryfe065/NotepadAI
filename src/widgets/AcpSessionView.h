@@ -483,6 +483,8 @@ private:
     QSet<QString> m_askUserShown;
     // Answers of a form that was superseded or sent for clarification.
     QVector<AskUserForm::Answer> m_carryAnswers;
+    // Form note of a superseded form (never sent). A sent note is not carried.
+    QString m_carryNote;
     bool m_scheduledUnattended = false;
 
     bool m_updatingSelectors = false;

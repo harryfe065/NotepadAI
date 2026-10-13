@@ -47,6 +47,7 @@ private slots:
     void recognisesOmpDeviceWrite();
     void infersRecommendedFromRecommendation();
     void overviewListsEachAnswer();
+    void formNoteFollowsTheAnswers();
 };
 
 void TestAskUserForm::parsesGrillRound()
@@ -516,6 +517,66 @@ void TestAskUserForm::overviewListsEachAnswer()
     const QStringList cut = answerOverview(formatAnswers(spec, {answer("Q5", QString(60, QLatin1Char('x')))}), 20);
     QCOMPARE(cut.at(4), QStringLiteral("Q5 Describe it → ") + QString(19, QLatin1Char('x')) + QStringLiteral("…"));
     QVERIFY(answerOverview(dismissPrompt(QString())).isEmpty());
+}
+
+// The form-level note the user adds at the end: after the answers, before the
+// clarify instruction, continuation lines indented.
+void TestAskUserForm::formNoteFollowsTheAnswers()
+{
+    const Spec spec = grillSpec();
+    QVector<Answer> answers{
+        answer("Q1", QStringLiteral("b2")),
+        answer("Q2", QJsonArray{QStringLiteral("radio"), QStringLiteral("checkbox")}),
+        answer("Q3", QStringLiteral("accept")),
+        answer("Q4", false),
+        answer("Q5", QStringLiteral("free text")),
+        answer("Q6", 30.0),
+    };
+    answers[2].clarify = true;
+    const QString note = QStringLiteral("  also: keep the old API\nuntil v3  \n");
+    const QString text = formatAnswers(spec, answers, note);
+    const QString expected = QStringLiteral(
+        "[ask_user answers]\n"
+        "Form: Round 2\n"
+        "Q1 \"Architecture\": b2 (No-op tool) (recommended)\n"
+        "Q2 \"Controls\": radio, checkbox (recommended)\n"
+        "Q3 \"Module layout\": needs clarification\n"
+        "Q4 \"Scan inside?\": no (Skip) (recommended)\n"
+        "Q5 \"Describe it\": \"free text\"\n"
+        "Q6 \"Days\": 30 (recommended)\n"
+        "Note from the user: also: keep the old API\n"
+        "  until v3\n"
+        "To clarify: Q3. Explain them in the user's language, then call ask_user again with only these "
+        "questions, keeping their ids. The other answers are final.\n");
+    QCOMPARE(text, expected);
+
+    // A blank note changes nothing.
+    QCOMPARE(formatAnswers(spec, answers, QStringLiteral(" \n ")), formatAnswers(spec, answers));
+
+    // The note is not a question, in the live summary and the restored one.
+    const QString summary = answerSummary(spec, answers, note);
+    QCOMPARE(summary, QStringLiteral("Answered 5 of 6 questions · 0 changed · 1 to clarify · note"));
+    QCOMPARE(summaryFromAnswersText(text), summary);
+    QCOMPARE(answerSummary(spec, answers, QStringLiteral(" ")),
+             QStringLiteral("Answered 5 of 6 questions · 0 changed · 1 to clarify"));
+
+    // The overview ends with the note on one line, cut like the answers.
+    const QStringList overview = answerOverview(text, 29);
+    QCOMPARE(overview.size(), 7);
+    QCOMPARE(overview.at(2), QStringLiteral("Q3 Module layout → needs clarification"));
+    QCOMPARE(overview.last(), QStringLiteral("Note → also: keep the old API until…"));
+
+    // A note that looks like an answer line is still the note.
+    const QString tricky = formatAnswers(spec, answers, QStringLiteral("Q9 \"Fake\": yes"));
+    QCOMPARE(summaryFromAnswersText(tricky), summary);
+    QCOMPARE(answerOverview(tricky).last(), QStringLiteral("Note → Q9 \"Fake\": yes"));
+
+    // Dismiss carries the note the same way.
+    const QString dismissed = dismissPrompt(note);
+    QCOMPARE(dismissed, QStringLiteral("[ask_user answers]\nThe user dismissed the form without answering.\n"
+                                       "Note from the user: also: keep the old API\n  until v3"));
+    QCOMPARE(summaryFromAnswersText(dismissed), QStringLiteral("Dismissed the form · note"));
+    QCOMPARE(answerOverview(dismissed), QStringList{QStringLiteral("Note → also: keep the old API until v3")});
 }
 
 QTEST_GUILESS_MAIN(TestAskUserForm)

@@ -698,7 +698,7 @@ QJsonValue fitToQuestion(const Question &q, const QJsonValue &v)
     return {};
 }
 
-QString summaryText(int answered, int total, int changed, int clarify)
+QString summaryText(int answered, int total, int changed, int clarify, bool hasNote)
 {
     const QString head = answered == total
         ? QStringLiteral("Answered %1 question%2").arg(total).arg(total == 1 ? QString() : QStringLiteral("s"))
@@ -706,10 +706,23 @@ QString summaryText(int answered, int total, int changed, int clarify)
     QString out = head + QStringLiteral(" · %1 changed").arg(changed);
     if (clarify > 0)
         out += QStringLiteral(" · %1 to clarify").arg(clarify);
+    if (hasNote)
+        out += QStringLiteral(" · note");
     return out;
 }
 
 constexpr QLatin1String kNeedsClarification("needs clarification");
+// Never a question line: those start `<id> "`.
+constexpr QLatin1String kUserNoteLead("Note from the user: ");
+
+// The form note as a prompt line; continuation lines are indented so the
+// summary and overview parsers never read them as questions.
+QString userNoteLine(const QString &note)
+{
+    QString text = note.trimmed();
+    text.replace(QLatin1Char('\n'), QStringLiteral("\n  "));
+    return kUserNoteLead + text;
+}
 
 } // namespace
 
@@ -767,7 +780,7 @@ QVector<Answer> carryOver(const Spec &next, const QVector<Answer> &previous)
     return out;
 }
 
-QString formatAnswers(const Spec &spec, const QVector<Answer> &answers)
+QString formatAnswers(const Spec &spec, const QVector<Answer> &answers, const QString &note)
 {
     QString out = QLatin1String(kAnswersHeader) + QLatin1Char('\n');
     if (!spec.title.isEmpty())
@@ -801,6 +814,8 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers)
             out += QStringLiteral("  note: ") + indented + QLatin1Char('\n');
         }
     }
+    if (!note.trimmed().isEmpty())
+        out += userNoteLine(note) + QLatin1Char('\n');
     // No `": ` in this line: the summary and overview parsers skip it.
     if (!unclear.isEmpty()) {
         out += QStringLiteral("To clarify: %1. Explain them in the user's language, then call ask_user again "
@@ -810,7 +825,7 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers)
     return out;
 }
 
-QString answerSummary(const Spec &spec, const QVector<Answer> &answers)
+QString answerSummary(const Spec &spec, const QVector<Answer> &answers, const QString &note)
 {
     int answered = 0;
     int changed = 0;
@@ -827,7 +842,8 @@ QString answerSummary(const Spec &spec, const QVector<Answer> &answers)
         if (isChanged(q, *a))
             ++changed;
     }
-    return summaryText(answered, static_cast<int>(spec.questions.size()), changed, clarify);
+    return summaryText(answered, static_cast<int>(spec.questions.size()), changed, clarify,
+                       !note.trimmed().isEmpty());
 }
 
 QString summaryFromAnswersText(const QString &text)
@@ -841,16 +857,23 @@ QString summaryFromAnswersText(const QString &text)
             return QStringLiteral("Asked to clarify ") + text.mid(from + kLead.size(), to - from - kLead.size());
         return QStringLiteral("Asked to clarify a question");
     }
-    if (text.contains(QLatin1String(kDismissedLine)))
-        return QStringLiteral("Dismissed the form");
+    if (text.contains(QLatin1String(kDismissedLine))) {
+        const bool hasNote = text.contains(QString(QLatin1Char('\n')) + kUserNoteLead);
+        return hasNote ? QStringLiteral("Dismissed the form · note") : QStringLiteral("Dismissed the form");
+    }
     int total = 0;
     int answered = 0;
     int changed = 0;
     int clarify = 0;
+    bool hasNote = false;
     static const QString kClarifyEnd = QStringLiteral("\": ") + kNeedsClarification;
     const QStringList lines = text.split(QLatin1Char('\n'));
     for (int i = 1; i < lines.size(); ++i) { // line 0 is the header
         const QString &line = lines.at(i);
+        if (line.startsWith(kUserNoteLead)) {
+            hasNote = true;
+            continue;
+        }
         if (line.isEmpty() || line.at(0).isSpace() || line.startsWith(QLatin1String("Form: "))
             || !line.contains(QLatin1String("\": "))) {
             continue;
@@ -866,7 +889,7 @@ QString summaryFromAnswersText(const QString &text)
         if (line.contains(QStringLiteral(" — changed (recommended: ")))
             ++changed;
     }
-    return summaryText(answered, total, changed, clarify);
+    return summaryText(answered, total, changed, clarify, hasNote);
 }
 
 namespace {
@@ -1116,9 +1139,25 @@ QStringList answerOverview(const QString &text, int maxAnswerChars)
         return out;
     static const QLatin1String kRecommended(" (recommended)");
     static const QString kChanged = QStringLiteral(" — changed (recommended: ");
+    auto cut = [maxAnswerChars](QString s) {
+        if (maxAnswerChars > 1 && s.size() > maxAnswerChars)
+            s = s.left(maxAnswerChars - 1) + QStringLiteral("…");
+        return s;
+    };
     const QStringList lines = text.split(QLatin1Char('\n'));
     for (int i = 1; i < lines.size(); ++i) {
         const QString &line = lines.at(i);
+        if (line.startsWith(kUserNoteLead)) {
+            // The form note on one line: its indented continuation joins it.
+            QString note = line.mid(kUserNoteLead.size());
+            while (i + 1 < lines.size() && lines.at(i + 1).startsWith(QLatin1String("  "))) {
+                const QString more = lines.at(++i).trimmed();
+                if (!more.isEmpty())
+                    note += QLatin1Char(' ') + more;
+            }
+            out.append(QStringLiteral("Note → ") + cut(note));
+            continue;
+        }
         if (line.isEmpty() || line.at(0).isSpace() || line.startsWith(QLatin1String("Form: ")))
             continue;
         const qsizetype space = line.indexOf(QLatin1Char(' '));
@@ -1150,8 +1189,7 @@ QStringList answerOverview(const QString &text, int maxAnswerChars)
                 item = displayItem(item);
             shown = items.join(QStringLiteral(", "));
         }
-        if (maxAnswerChars > 1 && shown.size() > maxAnswerChars)
-            shown = shown.left(maxAnswerChars - 1) + QStringLiteral("…");
+        shown = cut(shown);
         out.append(QStringLiteral("%1 %2 → %3").arg(id, title, shown)
                    + (changed ? QStringLiteral(" · changed") : QString()));
     }
@@ -1162,7 +1200,7 @@ QString dismissPrompt(const QString &note)
 {
     QString out = QLatin1String(kAnswersHeader) + QLatin1Char('\n') + QLatin1String(kDismissedLine);
     if (!note.trimmed().isEmpty())
-        out += QStringLiteral("\nNote from the user: ") + note.trimmed();
+        out += QLatin1Char('\n') + userNoteLine(note);
     return out;
 }
 

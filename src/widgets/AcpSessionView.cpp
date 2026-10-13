@@ -1086,6 +1086,7 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_askUserCandidates.clear();
     m_askUserShown.clear();
     m_carryAnswers.clear();
+    m_carryNote.clear();
 
     clearBanner();
     if (m_usageIndicator) {
@@ -2482,6 +2483,7 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
 {
     if (m_pendingForm) {
         m_carryAnswers = m_pendingForm->answers();
+        m_carryNote = m_pendingForm->note();
         settlePendingForm(AskUserFormWidget::State::Superseded, {}, QStringLiteral("decline"));
     }
     // Revised ask_user rounds keep what the user already chose (same ids).
@@ -2489,6 +2491,7 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
         ? AskUserForm::carryOver(spec, m_carryAnswers)
         : AskUserForm::defaultAnswers(spec);
     m_carryAnswers.clear();
+    const QString carriedNote = std::exchange(m_carryNote, QString());
 
     auto *form = new AskUserFormWidget(spec, initial, m_transcriptHost);
     form->setChatFont(chatFont());
@@ -2508,6 +2511,7 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
         return;
     }
 
+    form->setNote(carriedNote);
     m_pendingForm = form;
     m_pendingFormSource = source;
     m_pendingFormKey = key;
@@ -2569,10 +2573,11 @@ void AcpSessionView::onFormSubmitted(const QVector<AskUserForm::Answer> &answers
     const AskUserForm::Spec spec = m_pendingForm->spec();
     const FormSource source = m_pendingFormSource;
     const QString key = m_pendingFormKey;
+    const QString note = m_pendingForm->note();
     const bool clarify = std::any_of(answers.cbegin(), answers.cend(),
                                      [](const AskUserForm::Answer &a) { return a.clarify; });
     settlePendingForm(clarify ? AskUserFormWidget::State::ClarifyRequested : AskUserFormWidget::State::Answered,
-                      AskUserForm::answerSummary(spec, answers));
+                      AskUserForm::answerSummary(spec, answers, note));
     if (source == FormSource::Elicitation) {
         if (m_connection) {
             m_connection->respondToElicitation(key, QStringLiteral("accept"),
@@ -2582,7 +2587,8 @@ void AcpSessionView::onFormSubmitted(const QVector<AskUserForm::Answer> &answers
         // The agent re-asks the flagged questions: keep what the user chose.
         if (clarify)
             m_carryAnswers = answers;
-        sendHostPrompt(AskUserForm::formatAnswers(spec, answers), QLatin1String(AskUserForm::kMarkerAnswers));
+        sendHostPrompt(AskUserForm::formatAnswers(spec, answers, note),
+                       QLatin1String(AskUserForm::kMarkerAnswers));
     }
     if (m_input)
         m_input->setFocus();
@@ -2594,12 +2600,13 @@ void AcpSessionView::onFormDismissed()
         return;
     const FormSource source = m_pendingFormSource;
     const QString key = m_pendingFormKey;
+    const QString note = m_pendingForm->note();
     settlePendingForm(AskUserFormWidget::State::Dismissed);
     if (source == FormSource::Elicitation) {
         if (m_connection)
             m_connection->respondToElicitation(key, QStringLiteral("decline"));
     } else {
-        sendHostPrompt(AskUserForm::dismissPrompt({}), QLatin1String(AskUserForm::kMarkerAnswers));
+        sendHostPrompt(AskUserForm::dismissPrompt(note), QLatin1String(AskUserForm::kMarkerAnswers));
     }
 }
 

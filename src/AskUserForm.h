@@ -148,15 +148,20 @@ bool hasAnswer(const Question &q, const Answer &a);
 // The answer differs from a defined recommendation.
 bool isChanged(const Question &q, const Answer &a);
 
-// The prompt sent to the agent after Submit.
-QString formatAnswers(const Spec &spec, const QVector<Answer> &answers);
+// The prompt sent to the agent after Submit. `note`: the form-level note the
+// user adds below the questions, sent as "Note from the user: …" after the
+// answers (omitted when blank).
+QString formatAnswers(const Spec &spec, const QVector<Answer> &answers, const QString &note = {});
 // One line for the collapsed bubble: "Answered 10 questions · 3 changed",
-// plus " · 2 to clarify" when the user flagged questions.
-QString answerSummary(const Spec &spec, const QVector<Answer> &answers);
+// plus " · 2 to clarify" when the user flagged questions and " · note" when
+// the form note is not blank.
+QString answerSummary(const Spec &spec, const QVector<Answer> &answers, const QString &note = {});
 // Same summary, recomputed from the prompt text (restored history).
 QString summaryFromAnswersText(const QString &text);
 // One line per question from the prompt text: "Q1 Title → answer[ · changed]",
-// answers cut to `maxAnswerChars`. Empty for dismiss and legacy clarify prompts.
+// then "Note → text" for the form note; answers and the note cut to
+// `maxAnswerChars`. Legacy clarify prompts have none; a dismiss prompt has
+// only its note line, if any.
 QStringList answerOverview(const QString &text, int maxAnswerChars = 90);
 
 QString dismissPrompt(const QString &note);
