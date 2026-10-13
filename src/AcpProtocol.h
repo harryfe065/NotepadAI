@@ -352,6 +352,12 @@ bool asyncTaskStateIsLive(const QString &state);
 // `_meta.jetbrains.air.asyncTasks.backgrounded == true` on a tool_call_update.
 bool toolCallUpdateIsBackgrounded(const QJsonObject &update);
 
+// `_meta.claudeCode.toolResponse` of an Agent/Task call whose subagent was
+// launched in the background (`isAsync: true` / `status: "async_launched"`).
+// claude-agent-acp reports such a call `completed` at once and publishes no
+// async task for the subagent, so this marker is the only launch signal.
+bool toolCallUpdateIsAsyncSubagentLaunch(const QJsonObject &update);
+
 // The Agent/Task tool call whose subagent sent this session/update, from its
 // `_meta`: `parentToolCallId`, then `claudeCode.parentToolUseId`
 // (claude-agent-acp), then `parentToolUseId`. Empty for the main agent, and

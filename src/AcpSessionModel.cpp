@@ -680,6 +680,45 @@ void AcpSessionModel::attachSubagentChild(const QString &parentToolCallId, const
         ids.append(childId);
 }
 
+bool AcpSessionModel::isBackgroundRunning(const QString &toolCallId) const
+{
+    return m_backgroundToolCallIds.contains(toolCallId) || m_liveAsyncSubagents.contains(toolCallId);
+}
+
+bool AcpSessionModel::isAsyncSubagentLaunch(const AcpToolCall &tc) const
+{
+    return tc.backgrounded
+        && (AcpProtocol::isSubagentToolInput(tc.rawInput) || m_subagentChildren.contains(tc.id));
+}
+
+// A subagent's running call proves its async Agent call is still at work, also
+// past the turn end that settled it (a wake-up turn can run it on).
+void AcpSessionModel::noteSubagentActivity(const QString &parentToolCallId)
+{
+    if (!m_isProcessing || m_liveAsyncSubagents.contains(parentToolCallId))
+        return;
+    auto it = m_toolCalls.find(parentToolCallId);
+    if (it == m_toolCalls.end() || !isAsyncSubagentLaunch(it.value()))
+        return;
+    m_liveAsyncSubagents.insert(parentToolCallId);
+    it.value().backgroundRunning = true;
+    emit toolCallAddedOrUpdated(parentToolCallId);
+}
+
+void AcpSessionModel::settleAsyncSubagents()
+{
+    if (m_liveAsyncSubagents.isEmpty())
+        return;
+    const QSet<QString> settled = std::exchange(m_liveAsyncSubagents, {});
+    for (const QString &id : settled) {
+        auto it = m_toolCalls.find(id);
+        if (it == m_toolCalls.end())
+            continue;
+        it.value().backgroundRunning = isBackgroundRunning(id);
+        emit toolCallAddedOrUpdated(id);
+    }
+}
+
 void AcpSessionModel::onToolCallReceived(const AcpToolCall &tc)
 {
     // A re-sent tool_call without the meta keeps the attribution it had.
@@ -713,6 +752,8 @@ void AcpSessionModel::onToolCallReceived(const AcpToolCall &tc)
 
     if (subagentChild) {
         attachSubagentChild(copy.parentToolCallId, copy.id);
+        if (!AcpProtocol::toolCallStatusIsTerminal(copy.status))
+            noteSubagentActivity(copy.parentToolCallId);
     } else if (!known) {
         AcpTimelineEntry entry;
         entry.kind = AcpTimelineEntry::Kind::ToolCall;
@@ -834,10 +875,17 @@ void AcpSessionModel::onToolCallUpdated(const AcpToolCallUpdate &update)
         }
         if (update.backgrounded.has_value()) {
             it.value().backgrounded = *update.backgrounded;
-            it.value().backgroundRunning = m_backgroundToolCallIds.contains(update.id);
+            // An async Agent call: `completed` on launch, its subagent works on.
+            if (m_isProcessing && isAsyncSubagentLaunch(it.value()))
+                m_liveAsyncSubagents.insert(update.id);
+            it.value().backgroundRunning = isBackgroundRunning(update.id);
         }
     }
     emit toolCallAddedOrUpdated(update.id);
+    if (const auto cur = m_toolCalls.constFind(update.id);
+        !cur->parentToolCallId.isEmpty() && !AcpProtocol::toolCallStatusIsTerminal(cur->status)) {
+        noteSubagentActivity(cur->parentToolCallId);
+    }
     schedulePersistIfNeeded();
 }
 
@@ -952,7 +1000,7 @@ void AcpSessionModel::onAsyncTasksChanged(int liveCount, const QStringList &live
         auto it = m_toolCalls.find(id);
         if (it == m_toolCalls.end())
             continue; // task spawned before its tool call arrived; applied on update
-        it.value().backgroundRunning = next.contains(id);
+        it.value().backgroundRunning = isBackgroundRunning(id);
         // A running task proves the call was backgrounded even if the marker
         // update was missed (or arrives after the spawn).
         if (it.value().backgroundRunning)
@@ -977,6 +1025,8 @@ void AcpSessionModel::onPromptStarted()
 void AcpSessionModel::onPromptEnded()
 {
     m_isProcessing = false;
+    // Before turnEnded folds the turn: its Agent cards are settled by then.
+    settleAsyncSubagents();
     m_resumableAssistantMessageId = m_streamingAssistantMessageIndex >= 0
         ? m_streamingAssistantMessageId : QString();
     m_resumableAssistantMessageIndex = m_streamingAssistantMessageIndex;

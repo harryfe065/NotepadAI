@@ -225,6 +225,10 @@ private:
     void schedulePersistIfNeeded();
     void flushPendingPersist();
     void attachSubagentChild(const QString &parentToolCallId, const QString &childId);
+    bool isBackgroundRunning(const QString &toolCallId) const;
+    bool isAsyncSubagentLaunch(const AcpProtocol::AcpToolCall &tc) const;
+    void noteSubagentActivity(const QString &parentToolCallId);
+    void settleAsyncSubagents();
     QString resolveHistoryDir() const;
     QString resolveHistoryFilePath() const;
 
@@ -258,6 +262,9 @@ private:
     bool m_isProcessing = false;
     int m_backgroundTaskCount = 0;
     QSet<QString> m_backgroundToolCallIds;
+    // Agent calls launched async whose subagent still runs. Live-only: the
+    // adapter holds the turn open until they settle, so a turn end clears it.
+    QSet<QString> m_liveAsyncSubagents;
     int m_streamingAssistantMessageIndex = -1;
     QString m_streamingAssistantMessageId;
     // Bubble that was streaming when the turn was declared over. The host ends

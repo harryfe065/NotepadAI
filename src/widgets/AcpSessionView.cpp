@@ -21,6 +21,7 @@
 #include "AcpAgentRegistry.h"
 #include "AcpConnection.h"
 #include "AcpConversationCopy.h"
+#include "AcpDiffStat.h"
 #include "AcpImageAttachmentList.h"
 #include "AcpMessageWidget.h"
 #include "AcpPermissionPrompt.h"
@@ -711,9 +712,7 @@ void AcpSessionView::buildUi()
     m_wakeFoldTimer->setInterval(kWakeTurnFoldDelayMs);
     connect(m_wakeFoldTimer, &QTimer::timeout, this, [this]() {
         if (!m_model || m_model->isProcessing() || !m_liveRow) return;
-        foldCompletedTurns(true);
-        refreshResponseActions(true);
-        scrollToBottomDeferred();
+        foldEndedTurn(m_wakeTurnEndedMs);
     });
 
     m_goalElapsedTimer = new QTimer(this);
@@ -1065,8 +1064,10 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_foldedCount = 0;
     m_liveRow.clear(); // already queued for deletion with the rest of the layout
     m_liveTurnBegin = -1;
+    resetLiveDiff();
     m_liveRowReopened = false;
     m_wakeFoldTimer->stop();
+    m_foldHeldByForm = false;
     if (m_advisorBtn) m_advisorBtn->setChecked(false); // new session: advisor state unknown
     if (m_planWidget) {
         m_planWidget->setEntries({});
@@ -1318,6 +1319,7 @@ AcpTurnFoldRow *AcpSessionView::makeFoldRow(const AcpTurnFolding::Turn &turn, Ac
     AcpTurnFoldRow *row = adopt ? adopt : new AcpTurnFoldRow(turn.workedMs, turn.toolCalls, m_transcriptHost);
     row->setChatFont(chatFont());
     row->setExpandable(!turn.folded.isEmpty());
+    row->setDiffStat(turnDiffStat(turn));
     const int begin = turn.begin;
     connect(row, &AcpTurnFoldRow::expandedChanged, this,
             [this, begin](bool nowExpanded) { setTurnExpanded(begin, nowExpanded); });
@@ -1326,6 +1328,91 @@ AcpTurnFoldRow *AcpSessionView::makeFoldRow(const AcpTurnFolding::Turn &turn, Ac
     ft.entries = turn.folded;
     m_foldedTurns.insert(begin, ft);
     return row;
+}
+
+AcpDiffStat::Lines AcpSessionView::turnDiffStat(const AcpTurnFolding::Turn &turn) const
+{
+    const auto &timeline = m_model->timeline();
+    QStringList pending;
+    for (int i : turn.folded) {
+        const AcpTimelineEntry &e = timeline.at(i);
+        if (e.kind == AcpTimelineEntry::Kind::ToolCall)
+            pending.append(e.toolCallId);
+    }
+    return diffStatOf(std::move(pending), nullptr);
+}
+
+AcpDiffStat::Lines AcpSessionView::diffStatOf(QStringList pending, QSet<QString> *counted) const
+{
+    const auto &toolCalls = m_model->toolCalls();
+    // Subagent calls live under their Agent call, not in the timeline. The
+    // visit cap keeps a malformed parent chain from looping.
+    AcpDiffStat::Lines total;
+    qsizetype budget = toolCalls.size();
+    while (!pending.isEmpty() && budget-- > 0) {
+        const QString id = pending.takeLast();
+        const auto tc = toolCalls.constFind(id);
+        if (tc == toolCalls.constEnd())
+            continue;
+        total += AcpDiffStat::forToolCall(*tc);
+        if (counted && tc->status == QLatin1String("completed"))
+            counted->insert(id);
+        pending += m_model->subagentChildren(id);
+    }
+    return total;
+}
+
+// Each call is diffed once, when it first reports completed; the fold at the
+// turn's end recounts the whole turn (makeFoldRow), so a late content change
+// to a counted call shows once the turn folds. Only the running turn
+// completes calls, so there is no membership check.
+void AcpSessionView::noteLiveEdit(const AcpProtocol::AcpToolCall &tc)
+{
+    if (!m_liveRow || tc.status != QLatin1String("completed") || isGoalJudgeToolId(tc.id)
+        || m_liveDiffCounted.contains(tc.id)) {
+        return;
+    }
+    m_liveDiffCounted.insert(tc.id);
+    const AcpDiffStat::Lines lines = AcpDiffStat::forToolCall(tc);
+    if (lines.isEmpty())
+        return;
+    m_liveDiff += lines;
+    m_liveRow->setDiffStat(m_liveDiff);
+}
+
+void AcpSessionView::resetLiveDiff()
+{
+    m_liveDiff = {};
+    m_liveDiffCounted.clear();
+}
+
+// The newest turn is over: fold it like every other, unless an ask-user form
+// waits on the user. Then its row only stops ticking (nothing under it yet, so
+// no chevron; makeFoldRow restores it) and the turn folds once the form
+// settles (releaseFormHeldFold) or the answer's prompt arrives.
+void AcpSessionView::foldEndedTurn(qint64 endedMs)
+{
+    if (m_pendingForm) {
+        m_foldHeldByForm = true;
+        m_wakeFoldTimer->stop();
+        if (m_liveRow) {
+            m_liveRow->setExpandable(false);
+            m_liveRow->finishLive(endedMs);
+        }
+        refreshResponseActions(true);
+        return;
+    }
+    foldCompletedTurns(true);
+    refreshResponseActions(true);
+    scrollToBottomDeferred();
+}
+
+void AcpSessionView::releaseFormHeldFold()
+{
+    if (!m_foldHeldByForm || m_pendingForm) return;
+    m_foldHeldByForm = false;
+    if (m_model && !m_model->isProcessing())
+        foldCompletedTurns(true);
 }
 
 // includeNewest: the newest turn has ended, fold it too.
@@ -1382,7 +1469,9 @@ void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
         live = m_liveRow;
         m_liveRow.clear();
         m_liveTurnBegin = -1;
+        resetLiveDiff(); // makeFoldRow recounts the whole turn
         m_liveRowReopened = false;
+        m_foldHeldByForm = false;
         // A deferred wake-up fold: the turn ended when the wait began.
         const qint64 endedMs = m_wakeFoldTimer->isActive() ? m_wakeTurnEndedMs : 0;
         m_wakeFoldTimer->stop();
@@ -1416,6 +1505,14 @@ void AcpSessionView::ensureLiveTurnRow()
     if (m_liveRow) {
         if (m_liveTurnBegin == begin) {
             m_wakeFoldTimer->stop(); // the wake-up turn went on: keep it live
+            if (m_foldHeldByForm) {
+                // Frozen while a form waited: the turn goes on, so it ticks again.
+                m_foldHeldByForm = false;
+                const AcpTimelineEntry &anchor = timeline.at(begin);
+                const bool prompt = anchor.kind == AcpTimelineEntry::Kind::Message
+                    && anchor.messageIndex >= 0 && anchor.messageIndex < messages.size();
+                m_liveRow->startLive(prompt ? messages.at(anchor.messageIndex).timestamp : 0);
+            }
             return;
         }
         // An older turn's row: fold that turn under it (a reopened row heads
@@ -1435,14 +1532,20 @@ void AcpSessionView::ensureLiveTurnRow()
     // turn continuing a folded one); the live count then grows by one per new
     // card in onToolCallAddedOrUpdated.
     m_liveToolCalls = 0;
+    QStringList liveCalls;
     for (int i = begin; i < timeline.size(); ++i) {
         const AcpTimelineEntry &e = timeline.at(i);
         if (e.kind != AcpTimelineEntry::Kind::ToolCall || isGoalJudgeToolId(e.toolCallId))
             continue;
         const auto tc = m_model->toolCalls().constFind(e.toolCallId);
-        if (tc == m_model->toolCalls().constEnd() || tc->parentToolCallId.isEmpty())
+        if (tc == m_model->toolCalls().constEnd() || tc->parentToolCallId.isEmpty()) {
             ++m_liveToolCalls; // a subagent's call counts inside its Agent card
+            liveCalls.append(e.toolCallId);
+        }
     }
+    // Same for the lines changed so far; noteLiveEdit adds each call that completes later.
+    resetLiveDiff();
+    m_liveDiff = diffStatOf(std::move(liveCalls), &m_liveDiffCounted);
 
     // A wake-up turn (a background task finished; no new prompt) continues the
     // newest turn, which already folded when its prompt returned. Its fold row
@@ -1458,6 +1561,7 @@ void AcpSessionView::ensureLiveTurnRow()
             disconnect(row, &AcpTurnFoldRow::expandedChanged, this, nullptr); // makeFoldRow reconnects
             row->setExpanded(false);
             row->setToolCallCount(m_liveToolCalls);
+            row->setDiffStat(m_liveDiff);
             row->startLive(msg.timestamp);
             m_liveRow = row;
             m_liveTurnBegin = begin;
@@ -1473,6 +1577,7 @@ void AcpSessionView::ensureLiveTurnRow()
 
     auto *row = new AcpTurnFoldRow(-1, m_liveToolCalls, m_transcriptHost);
     row->setChatFont(chatFont());
+    row->setDiffStat(m_liveDiff);
     row->startLive(msg.timestamp);
     m_transcriptLayout->insertWidget(at + 1, row);
     m_liveRow = row;
@@ -1487,7 +1592,9 @@ void AcpSessionView::dropLiveTurnRow()
         removeTranscriptWidget(m_liveRow);
     m_liveRow.clear();
     m_liveTurnBegin = -1;
+    resetLiveDiff();
     m_liveRowReopened = false;
+    m_foldHeldByForm = false;
     m_wakeFoldTimer->stop();
 }
 
@@ -1866,6 +1973,7 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
     if (it == m_model->toolCalls().end()) return;
     const AcpProtocol::AcpToolCall &tc = it.value();
     trackAskUserToolCall(tc);
+    noteLiveEdit(tc);
 
     if (!tc.parentToolCallId.isEmpty()) {
         onSubagentToolCallChanged(tc);
@@ -2248,9 +2356,7 @@ void AcpSessionView::onTurnEnded(int groupId)
         m_wakeTurnEndedMs = QDateTime::currentMSecsSinceEpoch();
         m_wakeFoldTimer->start();
     } else {
-        foldCompletedTurns(true); // the turn is over: fold it like every other
-        refreshResponseActions(true);
-        scrollToBottomDeferred();
+        foldEndedTurn();
     }
     if (m_currentGroupCards.size() > 3) {
         for (auto *card : m_currentGroupCards) {
@@ -2451,6 +2557,7 @@ void AcpSessionView::settlePendingForm(AskUserFormWidget::State state, const QSt
         m_pendingForm->setState(state, detail);
     m_pendingForm.clear();
     m_pendingFormKey.clear();
+    releaseFormHeldFold();
 }
 
 void AcpSessionView::onFormSubmitted(const QVector<AskUserForm::Answer> &answers)
@@ -2841,14 +2948,12 @@ void AcpSessionView::onSendClicked()
         GoalAgent::nativeGoalUsesSidePrompt(text, m_model->agentAdvertisesGoalCommand()));
 
     // The user is here: forms in this session are answered from now on.
-    QString wireText;
     if (kind != AcpPromptQueue::SendKind::Ignore) {
         m_scheduledUnattended = false;
         if (m_pendingForm && kind != AcpPromptQueue::SendKind::SidePrompt) {
-            // A composer reply while a form is open answers it in free form. An
-            // elicitation blocks the turn: decline it and let the text queue.
-            if (m_pendingFormSource == FormSource::ToolCall && !text.isEmpty())
-                wireText = AskUserForm::freeformPrompt(text);
+            // A composer reply while a form is open replaces it and goes out as
+            // typed, so slash commands still expand. An elicitation blocks the
+            // turn: decline it and let the text queue.
             settlePendingForm(AskUserFormWidget::State::AnsweredInChat, {}, QStringLiteral("decline"));
         }
     }
@@ -2860,9 +2965,7 @@ void AcpSessionView::onSendClicked()
         QVector<QPair<QByteArray, QString>> images =
             m_attachmentList ? m_attachmentList->takeAll()
                              : QVector<QPair<QByteArray, QString>>{};
-        AcpPromptQueue::Item item{text, std::move(images)};
-        item.wireText = wireText;
-        m_promptQueue.enqueue(std::move(item));
+        m_promptQueue.enqueue(AcpPromptQueue::Item{text, std::move(images)});
         m_input->clear();
         updateSendButton();
         refreshQueueStrip();
@@ -2884,7 +2987,7 @@ void AcpSessionView::onSendClicked()
                              : QVector<QPair<QByteArray, QString>>{};
         m_input->clear();
         updateSendButton();
-        dispatchPrompt(text, images, false, {}, wireText);
+        dispatchPrompt(text, images, false);
         return;
     }
     default:

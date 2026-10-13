@@ -18,6 +18,7 @@
 
 #include "AcpToolCallCard.h"
 
+#include "AcpDiffStat.h"
 #include "AskUserForm.h"
 #include "MarkdownView.h"
 
@@ -71,8 +72,8 @@ QLayout *headerRow(const QVBoxLayout *outer)
 // both light and dark Qt palettes without hard-coding a chrome surface.
 constexpr const char *kDiffAddBg   = "rgba(76, 175, 80, 0.18)";
 constexpr const char *kDiffDelBg   = "rgba(217, 83, 79, 0.18)";
-constexpr const char *kDiffAddMark = "#4caf50";
-constexpr const char *kDiffDelMark = "#d9534f";
+constexpr const char *kDiffAddMark = AcpDiffStat::kAddedColor;
+constexpr const char *kDiffDelMark = AcpDiffStat::kRemovedColor;
 
 // Cap LCS to bound the O(m*n) cell count. Compact hunks skip this path.
 // 256² ints ≈ 260 KiB, one allocation, only on an expanded completed card

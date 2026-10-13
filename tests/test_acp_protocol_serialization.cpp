@@ -56,6 +56,7 @@ private slots:
     void asyncTaskEvent_ignoresOtherKinds();
     void asyncTaskStateIsLive_runningAndPausedOnly();
     void toolCallUpdateIsBackgrounded_readsAirMarker();
+    void toolCallUpdateIsAsyncSubagentLaunch_readsToolResponse();
     void clientCapabilitiesMeta_declaresAsyncTasks();
     void formatWaitDuration_secondsMinutesHours();
     void formatToolDuration_compactUnits();
@@ -780,6 +781,32 @@ void TestAcpProtocolSerialization::toolCallUpdateIsBackgrounded_readsAirMarker()
                 {QStringLiteral("commandTitle"), QStringLiteral("Sleep")}}}}}});
     QVERIFY(!AcpProtocol::toolCallUpdateIsBackgrounded(other));
     QVERIFY(!AcpProtocol::toolCallUpdateIsBackgrounded(QJsonObject{}));
+}
+
+void TestAcpProtocolSerialization::toolCallUpdateIsAsyncSubagentLaunch_readsToolResponse()
+{
+    auto withResponse = [](const QJsonObject &toolResponse) {
+        QJsonObject update;
+        update.insert(QStringLiteral("_meta"), QJsonObject{
+            {QStringLiteral("claudeCode"), QJsonObject{
+                {QStringLiteral("toolName"), QStringLiteral("Agent")},
+                {QStringLiteral("toolResponse"), toolResponse}}}});
+        return update;
+    };
+    QVERIFY(AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(withResponse(
+        {{QStringLiteral("status"), QStringLiteral("async_launched")},
+         {QStringLiteral("isAsync"), true}})));
+    QVERIFY(AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(withResponse(
+        {{QStringLiteral("status"), QStringLiteral("async_launched")}})));
+    QVERIFY(AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(withResponse(
+        {{QStringLiteral("isAsync"), true}})));
+
+    // A foreground Agent finishing, and calls without the marker.
+    QVERIFY(!AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(withResponse(
+        {{QStringLiteral("status"), QStringLiteral("completed")},
+         {QStringLiteral("isAsync"), false}})));
+    QVERIFY(!AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(withResponse({})));
+    QVERIFY(!AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(QJsonObject{}));
 }
 
 void TestAcpProtocolSerialization::clientCapabilitiesMeta_declaresAsyncTasks()

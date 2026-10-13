@@ -15,6 +15,7 @@ qt_add_executable(NotepadAI
 	AcpScheduledJobs.h
 	AcpProtocol.h
 	AcpSessionModel.h
+	AcpDiffStat.h
 	AcpTranscriptTruncation.h
 	AcpTurnFolding.h
 	markdown/MarkdownPreprocessor.h
@@ -140,6 +141,7 @@ qt_add_executable(NotepadAI
 	AcpScheduledJobs.cpp
 	AcpProtocol.cpp
 	AcpSessionModel.cpp
+	AcpDiffStat.cpp
 	AcpTranscriptTruncation.cpp
 	AcpTurnFolding.cpp
 	markdown/MarkdownPreprocessor.cpp

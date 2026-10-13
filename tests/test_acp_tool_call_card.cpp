@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLayout>
 #include <QTextBrowser>
 #include <QTextFrame>
 #include <QToolButton>

@@ -562,6 +562,18 @@ bool toolCallUpdateIsBackgrounded(const QJsonObject &update)
         .value(QStringLiteral("backgrounded")).toBool(false);
 }
 
+bool toolCallUpdateIsAsyncSubagentLaunch(const QJsonObject &update)
+{
+    const QJsonValue metaValue = update.value(QStringLiteral("_meta"));
+    if (!metaValue.isObject())
+        return false;
+    const QJsonObject response = metaValue.toObject()
+        .value(QStringLiteral("claudeCode")).toObject()
+        .value(QStringLiteral("toolResponse")).toObject();
+    return response.value(QStringLiteral("isAsync")).toBool(false)
+        || response.value(QStringLiteral("status")).toString() == QLatin1String("async_launched");
+}
+
 QString subagentParentToolCallId(const QJsonObject &update)
 {
     const QJsonValue metaValue = update.value(QStringLiteral("_meta"));

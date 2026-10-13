@@ -63,6 +63,7 @@ private slots:
     void usageReplace_zeroUsedSameSizeDuringTurnDoesNotClobberOccupancy();
     void backgroundedMarker_setsToolCallFlag();
     void asyncTasksChanged_flagsLiveToolCallsAndCount();
+    void asyncSubagent_runsInBackgroundUntilTurnEnds();
     void usageReplace_smallerNonZeroDuringTurnReplacesOccupancy();
     void usageReplace_zeroUsedWhileIdleReplacesOccupancy();
     void usageReplace_zeroUsedDifferentSizeDuringTurnReplacesOccupancy();
@@ -989,6 +990,74 @@ void TestAcpSessionModel::asyncTasksChanged_flagsLiveToolCallsAndCount()
     QCOMPARE(model.backgroundTaskCount(), 0);
     QVERIFY(!model.toolCalls().value(QStringLiteral("call-1")).backgroundRunning);
     QCOMPARE(countSpy.count(), 3);
+}
+
+// claude-agent-acp reports an async Agent call `completed` the moment it is
+// launched and publishes no async task for it; the subagent keeps working and
+// the adapter holds the turn open until it settles.
+void TestAcpSessionModel::asyncSubagent_runsInBackgroundUntilTurnEnds()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel model(QStringLiteral("s1"), QStringLiteral("proj"), tmp.path());
+    const QString agentId = QStringLiteral("agent-1");
+    auto running = [&]() { return model.toolCalls().value(agentId).backgroundRunning; };
+
+    model.onPromptStarted();
+    AcpProtocol::AcpToolCall agent;
+    agent.id = agentId;
+    agent.title = QStringLiteral("Agent: Research");
+    agent.status = QStringLiteral("in_progress");
+    agent.rawInput = QJsonObject{{QStringLiteral("description"), QStringLiteral("Research")},
+                                 {QStringLiteral("prompt"), QStringLiteral("Look around.")},
+                                 {QStringLiteral("subagent_type"), QStringLiteral("general-purpose")},
+                                 {QStringLiteral("run_in_background"), true}};
+    model.onToolCallReceived(agent);
+
+    AcpProtocol::AcpToolCallUpdate launched;
+    launched.id = agentId;
+    launched.status = QStringLiteral("completed");
+    launched.backgrounded = true;
+    model.onToolCallUpdated(launched);
+    QVERIFY(running());
+
+    AcpProtocol::AcpToolCall child;
+    child.id = QStringLiteral("child-1");
+    child.title = QStringLiteral("WebSearch");
+    child.status = QStringLiteral("in_progress");
+    child.parentToolCallId = agentId;
+    model.onToolCallReceived(child);
+    QVERIFY(running());
+
+    // The held turn ends once the subagent settled.
+    QSignalSpy cardSpy(&model, &AcpSessionModel::toolCallAddedOrUpdated);
+    model.onPromptEnded();
+    QVERIFY(!running());
+    QVERIFY(cardSpy.contains(QVariantList{agentId}));
+
+    // A wake-up turn: the subagent's own calls prove it is alive again.
+    model.onPromptStarted();
+    AcpProtocol::AcpToolCallUpdate more;
+    more.id = QStringLiteral("child-2");
+    more.status = QStringLiteral("in_progress");
+    more.parentToolCallId = agentId;
+    model.onToolCallUpdated(more);
+    QVERIFY(running());
+    model.onPromptEnded();
+    QVERIFY(!running());
+
+    // A backgrounded Bash call is the async-task feed's business, not this.
+    model.onPromptStarted();
+    AcpProtocol::AcpToolCall bash;
+    bash.id = QStringLiteral("bash-1");
+    bash.title = QStringLiteral("sleep 20");
+    bash.status = QStringLiteral("in_progress");
+    model.onToolCallReceived(bash);
+    AcpProtocol::AcpToolCallUpdate bashBg;
+    bashBg.id = bash.id;
+    bashBg.status = QStringLiteral("completed");
+    bashBg.backgrounded = true;
+    model.onToolCallUpdated(bashBg);
+    QVERIFY(!model.toolCalls().value(bash.id).backgroundRunning);
 }
 
 QTEST_GUILESS_MAIN(TestAcpSessionModel)

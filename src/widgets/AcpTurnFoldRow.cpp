@@ -18,8 +18,12 @@
 
 #include "AcpTurnFoldRow.h"
 
+#include <QColor>
 #include <QDateTime>
 #include <QFont>
+#include <QFontMetrics>
+#include <QStyleOptionButton>
+#include <QStylePainter>
 #include <QTimer>
 
 #include "AcpProtocol.h"
@@ -126,6 +130,17 @@ void AcpTurnFoldRow::setToolCallCount(int count)
         refreshText();
 }
 
+void AcpTurnFoldRow::setDiffStat(const AcpDiffStat::Lines &stat)
+{
+    if (m_diffStat.added == stat.added && m_diffStat.removed == stat.removed)
+        return;
+    m_diffStat = stat;
+    if (m_live)
+        setText(label(qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs)));
+    else
+        refreshText();
+}
+
 QString AcpTurnFoldRow::label(qint64 workedMs) const
 {
     QString text = workedMs >= 0
@@ -134,7 +149,46 @@ QString AcpTurnFoldRow::label(qint64 workedMs) const
     if (m_toolCalls > 0)
         text += QStringLiteral(" · ")
                 + (m_toolCalls == 1 ? tr("1 tool call") : tr("%1 tool calls").arg(m_toolCalls));
+    if (!m_diffStat.isEmpty())
+        text += QStringLiteral(" · ") + AcpDiffStat::label(m_diffStat);
     return text;
+}
+
+// text() stays the whole plain label (size hint, accessibility); only the
+// paint splits it so the counts take the diff colours.
+void AcpTurnFoldRow::paintEvent(QPaintEvent *event)
+{
+    const QString stat = AcpDiffStat::label(m_diffStat);
+    const QString full = text();
+    const qsizetype at = stat.isEmpty() ? -1 : full.lastIndexOf(stat);
+    if (at < 0) {
+        QPushButton::paintEvent(event);
+        return;
+    }
+    QStylePainter p(this);
+    QStyleOptionButton opt;
+    initStyleOption(&opt);
+    opt.text.clear();
+    p.drawControl(QStyle::CE_PushButton, opt); // background, hover, focus
+    const QRect r = style()->subElementRect(QStyle::SE_PushButtonContents, &opt, this);
+    // The stylesheet's muted / hover colours, which the cleared label no longer carries.
+    const QColor base = palette().color((opt.state & QStyle::State_MouseOver) ? QPalette::Text
+                                                                               : QPalette::PlaceholderText);
+    const QFontMetrics fm(font());
+    int x = r.left();
+    auto run = [&](const QString &s, const QColor &color) {
+        if (s.isEmpty() || x > r.right())
+            return;
+        p.setPen(color);
+        p.drawText(QRect(x, r.top(), r.right() - x + 1, r.height()),
+                   Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, s);
+        x += fm.horizontalAdvance(s);
+    };
+    const qsizetype space = stat.indexOf(QLatin1Char(' '));
+    run(full.left(at), base);
+    run(stat.left(space), QColor(QLatin1String(AcpDiffStat::kAddedColor)));
+    run(stat.mid(space), QColor(QLatin1String(AcpDiffStat::kRemovedColor)));
+    run(full.mid(at + stat.size()), base);
 }
 
 void AcpTurnFoldRow::refreshText()

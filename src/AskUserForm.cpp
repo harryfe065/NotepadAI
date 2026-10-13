@@ -517,7 +517,8 @@ QJsonObject toolDefinition()
              "`[ask_user answers]`; `no answer` means unanswered, so re-ask it in a later round. "
              "`needs clarification` means the user did not understand that question: treat the other answers "
              "as final, explain each such question in the user's language, then call ask_user again with only "
-             "those questions, keeping their ids. Never call it twice in one turn.")},
+             "those questions, keeping their ids. If the user writes in the chat instead, that message replaces "
+             "the form: act on it as written. Never call it twice in one turn.")},
         {QStringLiteral("inputSchema"), schema},
     };
 }
@@ -1159,12 +1160,6 @@ QString dismissPrompt(const QString &note)
     if (!note.trimmed().isEmpty())
         out += QStringLiteral("\nNote from the user: ") + note.trimmed();
     return out;
-}
-
-QString freeformPrompt(const QString &text)
-{
-    return QLatin1String(kAnswersHeader)
-        + QStringLiteral("\nThe user answered in free form instead of using the form:\n") + text;
 }
 
 QString noHumanPrompt(bool goalAgent)

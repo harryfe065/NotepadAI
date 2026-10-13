@@ -160,7 +160,6 @@ QString summaryFromAnswersText(const QString &text);
 QStringList answerOverview(const QString &text, int maxAnswerChars = 90);
 
 QString dismissPrompt(const QString &note);
-QString freeformPrompt(const QString &text);
 // Unattended session. `goalAgent`: a goal agent will answer plain-text questions.
 QString noHumanPrompt(bool goalAgent);
 

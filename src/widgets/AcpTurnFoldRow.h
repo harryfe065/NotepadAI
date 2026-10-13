@@ -21,6 +21,8 @@
 
 #include <QPushButton>
 
+#include "AcpDiffStat.h"
+
 class QFont;
 class QTimer;
 
@@ -49,6 +51,10 @@ public:
     // Shown after the duration ("Worked for 16s · 5 tool calls"); 0 hides it.
     void setToolCallCount(int count);
 
+    // Lines the turn's edits changed, shown last ("· +6 -10", the counts in the
+    // diff colours); empty hides it.
+    void setDiffStat(const AcpDiffStat::Lines &stat);
+
     // startMs: epoch ms the turn began (<= 0 = now).
     void startLive(qint64 startMs);
     // endMs: epoch ms the turn ended (<= 0 = now).
@@ -63,6 +69,9 @@ signals:
     // Emitted only for user-driven toggles, not for setExpanded().
     void expandedChanged(bool expanded);
 
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
 private:
     void refreshText();
     void onLiveTick();
@@ -72,6 +81,7 @@ private:
     qint64 m_liveStartMs = 0;
     QTimer *m_liveTimer = nullptr;
     int m_toolCalls = 0;
+    AcpDiffStat::Lines m_diffStat;
     bool m_expanded = false;
     bool m_expandable = true;
     bool m_live = false;

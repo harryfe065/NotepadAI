@@ -32,6 +32,7 @@
 
 #include <cstdint>
 
+#include "AcpDiffStat.h"
 #include "AcpErrorClassifier.h"
 #include "AcpPromptQueue.h"
 #include "AcpProtocol.h"
@@ -208,6 +209,8 @@ private:
     // wake-up turn continues the newest turn: its fold row goes live again and
     // the turn refolds once the wake-up stays over (m_wakeFoldTimer).
     void foldCompletedTurns(bool includeNewest = false);
+    void foldEndedTurn(qint64 endedMs = 0);
+    void releaseFormHeldFold();
     void foldTurn(const AcpTurnFolding::Turn &turn);
     void ensureLiveTurnRow();
     void dropLiveTurnRow();
@@ -232,6 +235,14 @@ private:
     // qApp's children and reads settings).
     QWidget *createEntryWidget(const AcpTimelineEntry &entry, const QFont &font);
     AcpTurnFoldRow *makeFoldRow(const AcpTurnFolding::Turn &turn, AcpTurnFoldRow *adopt = nullptr);
+    // Lines changed by the turn's completed edits, its subagents' included.
+    AcpDiffStat::Lines turnDiffStat(const AcpTurnFolding::Turn &turn) const;
+    // Sums the completed calls among `pending` and their subagent children;
+    // counted (optional) collects the completed ids.
+    AcpDiffStat::Lines diffStatOf(QStringList pending, QSet<QString> *counted) const;
+    // A call just completed in the running turn: its lines join the live row.
+    void noteLiveEdit(const AcpProtocol::AcpToolCall &tc);
+    void resetLiveDiff();
     void setFoldedMask(const QVector<int> &entries, bool folded);
     void setEntryFolded(int timelineIndex, bool folded);
     void pruneStaleFoldedTurns();
@@ -447,11 +458,17 @@ private:
     QPointer<AcpTurnFoldRow> m_liveRow; // heads the running turn; ticks once per second
     int m_liveTurnBegin = -1;           // timeline index of that turn's anchor
     int m_liveToolCalls = 0;            // tool calls so far in that turn
+    AcpDiffStat::Lines m_liveDiff;      // lines its completed calls changed so far
+    QSet<QString> m_liveDiffCounted;    // completed calls already in m_liveDiff
     // The live row is a folded turn's row gone live again: a wake-up turn
     // (background task result, no new prompt) continues the newest turn.
     bool m_liveRowReopened = false;
     QTimer *m_wakeFoldTimer = nullptr;  // single-shot: fold once a wake-up turn stays over
     qint64 m_wakeTurnEndedMs = 0;       // when that wait began (the turn's end)
+    // The newest turn ended while an ask-user form waited on the user: it stays
+    // unfolded (its text is what the questions are about) under a frozen row
+    // until the form settles or the next prompt folds it.
+    bool m_foldHeldByForm = false;
     AcpPlanWidget *m_planWidget = nullptr;
     QPointer<AcpMessageWidget> m_activeThought;
     QPointer<AcpPermissionPrompt> m_activePermissionPrompt;

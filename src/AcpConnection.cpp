@@ -1026,7 +1026,8 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
             u.status = st.toString();
             trackToolCallStatus(u.id, *u.status);
         }
-        if (AcpProtocol::toolCallUpdateIsBackgrounded(update)) {
+        if (AcpProtocol::toolCallUpdateIsBackgrounded(update)
+            || AcpProtocol::toolCallUpdateIsAsyncSubagentLaunch(update)) {
             u.backgrounded = true;
         }
         if (QString parent = AcpProtocol::subagentParentToolCallId(update); !parent.isEmpty()) {

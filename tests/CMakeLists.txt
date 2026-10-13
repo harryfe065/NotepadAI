@@ -698,8 +698,8 @@ target_sources(test_send_with_goal_dialog PRIVATE
 add_test(NAME SendWithGoalDialog COMMAND test_send_with_goal_dialog)
 
 
-# What AcpSessionView links beyond the ACP core: the prompt queue and the
-# prompt improver with its LLM client.
+# What AcpSessionView links beyond the ACP core: the prompt queue, the
+# prompt improver with its LLM client, and the fold row's diff stat (link xdiff).
 set(ACP_SESSION_VIEW_DEPS
     ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
@@ -716,6 +716,10 @@ set(ACP_SESSION_VIEW_DEPS
     ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
     ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
+    ${CMAKE_SOURCE_DIR}/src/AcpDiffStat.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpDiffStat.h
+    ${CMAKE_SOURCE_DIR}/src/git/BufferDiffEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/BufferDiffEngine.h
 )
 
 # Sources AcpMessageWidget.cpp now depends on (preprocessor + math renderer).
@@ -743,6 +747,7 @@ target_include_directories(test_acp_agent_manager PRIVATE
 target_link_libraries(test_acp_agent_manager PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Test
     SingleApplication::SingleApplication
+    xdiff
 )
 target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.cpp
@@ -854,6 +859,7 @@ target_include_directories(test_acp_agent_exit_restart PRIVATE
 target_link_libraries(test_acp_agent_exit_restart PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Test
     SingleApplication::SingleApplication
+    xdiff
 )
 target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.cpp
@@ -965,6 +971,7 @@ target_include_directories(test_acp_dock_close_event PRIVATE
 target_link_libraries(test_acp_dock_close_event PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Test
     SingleApplication::SingleApplication
+    xdiff
 )
 target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentDefinition.h
@@ -2414,6 +2421,20 @@ target_sources(test_acp_turn_folding PRIVATE
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
 )
 add_test(NAME AcpTurnFolding COMMAND test_acp_turn_folding)
+
+# --- AcpDiffStat: +N -M line counts for the "Worked for" fold row ---
+qt_add_executable(test_acp_diff_stat test_acp_diff_stat.cpp)
+target_include_directories(test_acp_diff_stat PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_diff_stat PRIVATE Qt6::Core Qt6::Test xdiff)
+target_sources(test_acp_diff_stat PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpDiffStat.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpDiffStat.h
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
+    ${CMAKE_SOURCE_DIR}/src/git/BufferDiffEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/BufferDiffEngine.h
+)
+add_test(NAME AcpDiffStat COMMAND test_acp_diff_stat)
 
 # --- AcpConversationCopy: final-report detection + "Copy conversation" markdown ---
 qt_add_executable(test_acp_conversation_copy test_acp_conversation_copy.cpp)
