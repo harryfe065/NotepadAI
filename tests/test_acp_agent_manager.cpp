@@ -25,6 +25,7 @@
 #include "AcpHistoryStore.h"
 #include "AiAgentDock.h"
 #include "ApplicationSettings.h"
+#include "DataPaths.h"
 
 class TestAcpAgentManager : public QObject
 {
@@ -54,6 +55,8 @@ void TestAcpAgentManager::initTestCase()
     QCoreApplication::setApplicationName("NotepadNextTest_AcpAgentManager");
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, tempDir.path());
+    // Session history lives under the data dir: keep it in the temp dir too.
+    DataPaths::init(tempDir.path(), DataPaths::Source::Default);
 }
 
 void TestAcpAgentManager::init()

@@ -35,7 +35,6 @@
 #include "AiAgentDock.h"
 #include "ApplicationSettings.h"
 #include "GoalAgent.h"
-#include "NotepadNextApplication.h"
 #include "ai/CredentialStore.h"
 #include "ai/PromptImprover.h"
 
@@ -773,9 +772,10 @@ void AcpSessionView::buildUi()
 
     // Prompt improver — uses the same AI provider as commit message generation.
     {
-        auto *npApp = qobject_cast<NotepadNextApplication *>(qApp);
         auto *settings = appSettings();
-        ai::CredentialStore *credStore = npApp ? npApp->getCredentialStore() : nullptr;
+        // The app owns it, like the settings: no dependency on the app class.
+        auto *credStore = qApp ? qApp->findChild<ai::CredentialStore *>(QString(), Qt::FindDirectChildrenOnly)
+                               : nullptr;
         if (settings) {
             m_promptImprover = new ai::PromptImprover(settings, credStore, this);
             connect(m_promptImprover, &ai::PromptImprover::finished,

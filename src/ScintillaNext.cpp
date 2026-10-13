@@ -23,7 +23,7 @@
 #include "ScintillaCommenter.h"
 
 #include "remote/IFileSystemBackend.h"
-#include "remote/RemoteFsBackend.h"
+#include "remote/IFileSystemBackend.h"
 
 #include "ByteArrayUtils.h"
 #include "uchardet.h"
@@ -246,9 +246,8 @@ void ScintillaNext::loadInto(LoadCallback cb)
         }
     };
 
-    // Use the tracked variant for remote backends so we can cancel on timeout.
-    // For local backends (no cancel needed) the regular path is fine.
-    auto *remoteFsBackend = qobject_cast<remote::RemoteFsBackend *>(fsBackend);
+    // Tracked, so a remote read can be cancelled on timeout (a local backend
+    // returns 0: nothing to cancel).
     loadReqId = 0;
     auto readCb = [this, guard, fireCb](bool ok, const QByteArray &data,
                                                                const QString &error) {
@@ -310,11 +309,7 @@ void ScintillaNext::loadInto(LoadCallback cb)
         emit loaded();
     };
 
-    if (remoteFsBackend) {
-        loadReqId = remoteFsBackend->readFileAsyncTracked(remoteFilePath, std::move(readCb));
-    } else {
-        fsBackend->readFileAsync(remoteFilePath, std::move(readCb));
-    }
+    loadReqId = fsBackend->readFileAsyncTracked(remoteFilePath, std::move(readCb));
 
     // 30-second timeout: if the read callback never fires, transition to error.
     connect(loadTimeoutTimer, &QTimer::timeout, this, [this, guard, backendGuard, fireCb]() {

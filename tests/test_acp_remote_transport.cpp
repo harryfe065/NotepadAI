@@ -180,22 +180,45 @@ private slots:
 
 // --- command construction -----------------------------------------------------
 
+namespace {
+
+// The remote command tries the default PATH, then bash -lc, then bash -ic
+// (SshAcpProcessChannel::buildRemoteCommand). The first tier is the plain
+// `cd ... && exec ...` that runs when the binary is on the default PATH.
+QString directTier(const QString &cmd)
+{
+    const QString then = QStringLiteral(" >/dev/null 2>&1; then ");
+    const int from = cmd.indexOf(then);
+    const int to = cmd.indexOf(QStringLiteral("; elif bash -lc "));
+    if (!cmd.startsWith(QStringLiteral("if command -v ")) || from < 0 || to < from
+        || !cmd.endsWith(QStringLiteral("; else exit 127; fi"))) {
+        return QStringLiteral("<unexpected shape: %1>").arg(cmd);
+    }
+    return cmd.mid(from + then.size(), to - from - then.size());
+}
+
+} // namespace
+
 void TestAcpRemoteTransport::command_cdPrefixExecAndQuoting()
 {
     const QString cmd = SshAcpProcessChannel::buildRemoteCommand(
         QStringLiteral("/home/alice/my project"),
         QStringLiteral("claude-code-acp"),
         { QStringLiteral("--acp"), QStringLiteral("--flag=v 2") });
-    QCOMPARE(cmd,
+    QCOMPARE(directTier(cmd),
              QStringLiteral("cd '/home/alice/my project' && exec 'claude-code-acp' "
                             "'--acp' '--flag=v 2'"));
+    // The shell fallbacks run the same thing, quoted once more.
+    QVERIFY(cmd.contains(QStringLiteral("exec bash -lc 'exec 0<&4 4<&- 1>&3 3>&-; "
+                                        "cd '\\''/home/alice/my project'\\'' && ")));
+    QVERIFY(cmd.contains(QStringLiteral("elif bash -ic 'command -v \"$0\"' 'claude-code-acp' ")));
 }
 
 void TestAcpRemoteTransport::command_emptyCwdSkipsCd()
 {
     const QString cmd = SshAcpProcessChannel::buildRemoteCommand(
         QString(), QStringLiteral("agent"), {});
-    QCOMPARE(cmd, QStringLiteral("exec 'agent'"));
+    QCOMPARE(directTier(cmd), QStringLiteral("exec 'agent'"));
 }
 
 void TestAcpRemoteTransport::command_embeddedSingleQuoteEscaped()
@@ -219,7 +242,7 @@ void TestAcpRemoteTransport::channel_writeFrameReachesChannel()
     QVERIFY(channel.isRunning());
 
     // The exact `cd ... && exec ...` string reached the transport's exec.
-    QCOMPARE(host.fake()->lastExecCommand,
+    QCOMPARE(directTier(host.fake()->lastExecCommand),
              QStringLiteral("cd '/repo' && exec 'agent' '--acp'"));
 
     // First exec channel gets transport id 1 (fake's nextId starts at 1).
@@ -310,11 +333,13 @@ void TestAcpRemoteTransport::probe_missEmitsErrorAndSpawnsNothing()
 
     conn.spawn(agent, QStringLiteral("/home/alice/project"));
 
-    // The probe ran `command -v <binary>` …
+    // The probe ran `command -v <binary>` under sh (then bash -lc / -ic) …
     QCOMPARE(ctx.execCalls, 1);
-    QCOMPARE(ctx.lastExecArgv,
-             (QStringList{ QStringLiteral("command"), QStringLiteral("-v"),
-                           QStringLiteral("claude-code-acp") }));
+    QCOMPARE(ctx.lastExecArgv.size(), 3);
+    QCOMPARE(ctx.lastExecArgv.at(0), QStringLiteral("sh"));
+    QCOMPARE(ctx.lastExecArgv.at(1), QStringLiteral("-c"));
+    QVERIFY(ctx.lastExecArgv.at(2).startsWith(
+        QStringLiteral("if command -v 'claude-code-acp' >/dev/null 2>&1; then command -v 'claude-code-acp'; ")));
     // … missed → a clear error naming the agent + host, and NO spawn (builder
     // never consulted — no local fallback).
     QCOMPARE(errorCount, 1);
@@ -358,7 +383,7 @@ void TestAcpRemoteTransport::probe_hitBuildsChannelAndStarts()
     QCOMPARE(errorCount, 0);
     QCOMPARE(builtCwd, QStringLiteral("/home/alice/project"));
     QCOMPARE(builtAgent.command, QStringLiteral("claude-code-acp"));
-    QCOMPARE(host->fake()->lastExecCommand,
+    QCOMPARE(directTier(host->fake()->lastExecCommand),
              QStringLiteral("cd '/home/alice/project' && exec 'claude-code-acp' '--acp'"));
 }
 

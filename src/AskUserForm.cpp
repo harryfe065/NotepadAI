@@ -611,6 +611,25 @@ QString valueText(const Question &q, const QJsonValue &v)
     return {};
 }
 
+// The recommended answer as the agent sees the chosen one: choices with
+// their labels.
+QString recommendedText(const Question &q)
+{
+    switch (q.type) {
+    case QuestionType::Single:
+    case QuestionType::Select:
+        return choiceText(q, q.recommended.toString());
+    case QuestionType::Multi: {
+        QStringList parts;
+        for (const auto &item : q.recommended.toArray())
+            parts.append(choiceText(q, item.toString()));
+        return parts.join(QStringLiteral(", "));
+    }
+    default:
+        return valueText(q, q.recommended);
+    }
+}
+
 QString answerText(const Question &q, const Answer &a)
 {
     const QString other = a.other.trimmed();
@@ -782,7 +801,7 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers)
         } else {
             out += answerText(q, a);
             if (isChanged(q, a))
-                out += QStringLiteral(" — changed (recommended: %1)").arg(valueText(q, q.recommended));
+                out += QStringLiteral(" — changed (recommended: %1)").arg(recommendedText(q));
             else if (!isEmptyValue(q.recommended))
                 out += QStringLiteral(" (recommended)");
         }

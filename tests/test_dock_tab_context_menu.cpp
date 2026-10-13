@@ -360,8 +360,8 @@ void TestDockTabContextMenu::populateMenu_closeAll_survivesDestroyedDock()
 
     menu.actions().at(4)->trigger(); // Close All
 
-    QVERIFY(b && !b->isVisible());
-    QVERIFY(c && !c->isVisible());
+    QVERIFY(b && b->isHidden());
+    QVERIFY(c && c->isHidden());
 }
 
 void TestDockTabContextMenu::populateMenu_close_doesNotInvokeCloseGroup()
@@ -376,9 +376,11 @@ void TestDockTabContextMenu::populateMenu_close_doesNotInvokeCloseGroup()
     DockTabContextMenu::populateMenu(&menu, {a, b}, 0);
     menu.actions().at(0)->trigger(); // Close
 
+    // The owner is never shown: check each dock's own hidden flag.
+
     QCOMPARE(a->closeGroupCalls, 0);
-    QVERIFY(!a->isVisible());
-    QVERIFY(b->isVisible());
+    QVERIFY(a->isHidden());
+    QVERIFY(!b->isHidden());
 }
 
 void TestDockTabContextMenu::populateMenu_closeAll_invokesCloseGroup()
@@ -394,8 +396,8 @@ void TestDockTabContextMenu::populateMenu_closeAll_invokesCloseGroup()
     menu.actions().at(4)->trigger(); // Close All
 
     QCOMPARE(a->closeGroupCalls, 1);
-    QVERIFY(!a->isVisible());
-    QVERIFY(!b->isVisible());
+    QVERIFY(a->isHidden());
+    QVERIFY(b->isHidden());
 }
 
 void TestDockTabContextMenu::showMenu_plainTabBar_returnsFalse()

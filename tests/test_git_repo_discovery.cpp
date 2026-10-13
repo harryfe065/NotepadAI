@@ -72,7 +72,7 @@ private slots:
     void filteredWorktrees_matchesNameBranchPathParent();
     void filteredWorktrees_scalesPastMenuDump();
     void worktreeMergeTargetName_usesParentBasename();
-    void comboLabel_worktree_hasNoIndent();
+    void comboLabel_worktree_isIndentedByDepth();
     void indentedLabel_prefixesFigureSpaces();
 };
 
@@ -812,7 +812,9 @@ void TestGitRepoDiscovery::worktreeMergeTargetName_usesParentBasename()
              QStringLiteral("master"));
 }
 
-void TestGitRepoDiscovery::comboLabel_worktree_hasNoIndent()
+// The indent is part of DisplayRole (8854230a): the list shows hierarchy
+// without a custom delegate.
+void TestGitRepoDiscovery::comboLabel_worktree_isIndentedByDepth()
 {
     GitRepoInfo wt;
     wt.displayName = QStringLiteral("context-engine-admin");
@@ -821,8 +823,8 @@ void TestGitRepoDiscovery::comboLabel_worktree_hasNoIndent()
     GitRepoModel model;
     model.setRepos({ wt });
     const QString label = model.data(model.index(0), Qt::DisplayRole).toString();
-    QVERIFY(!label.startsWith(QChar(0x2007)));
-    QCOMPARE(label, QStringLiteral("context-engine-admin (worktree)"));
+    QCOMPARE(label, GitRepoModel::indentedLabel(QStringLiteral("context-engine-admin (worktree)"), 2));
+    QVERIFY(label.startsWith(QString(4, QChar(0x2007))));
 }
 
 void TestGitRepoDiscovery::indentedLabel_prefixesFigureSpaces()

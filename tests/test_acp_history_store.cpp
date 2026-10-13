@@ -18,19 +18,31 @@
 #include <QThread>
 
 #include "AcpHistoryStore.h"
+#include "DataPaths.h"
 
 class TestAcpHistoryStore : public QObject
 {
     Q_OBJECT
 
 private slots:
+    void initTestCase();
     void writeCreatesDirectoryAndFile();
     void debounceCoalescesRapidWrites();
     void deleteMissingIsSuccess();
     void deleteExistingRemovesFile();
     void flushAllForcesImmediateWrites();
     void worksOnWorkerThread();
+
+private:
+    QTemporaryDir m_dataDir;
 };
+
+// The store's default directory comes from DataPaths; tests set their own.
+void TestAcpHistoryStore::initTestCase()
+{
+    QVERIFY(m_dataDir.isValid());
+    DataPaths::init(m_dataDir.path(), DataPaths::Source::Default);
+}
 
 static QJsonObject makePayload(int value)
 {

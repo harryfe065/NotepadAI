@@ -100,6 +100,15 @@ public:
     // event directly into the SSH log so it can be correlated with worker state.
     virtual void logEvent(const QString &) {}
 
+    // Like readFileAsync, returning a reqId for cancelReadAsync. 0 means there
+    // is nothing to cancel: the default reads untracked (the local backend
+    // completes inline).
+    virtual quint64 readFileAsyncTracked(const QString &path, const ReadCallback &cb)
+    {
+        readFileAsync(path, cb);
+        return 0;
+    }
+
     // Cancel a pending async read by reqId. No-op if the op has already
     // completed or the backend is local. Safe to call after timeout fires.
     virtual void cancelReadAsync(quint64 /*reqId*/) {}

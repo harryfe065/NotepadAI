@@ -100,7 +100,7 @@ public:
     // readdirAsync are remote-only extensions used by the file tree.
     void readFileAsync(const QString &path, const ReadCallback &cb) override;
     // Like readFileAsync but returns the reqId so the caller can cancel it later.
-    quint64 readFileAsyncTracked(const QString &path, const ReadCallback &cb);
+    quint64 readFileAsyncTracked(const QString &path, const ReadCallback &cb) override;
     // Streaming read: chunkCb fires for each chunk; doneCb fires once on completion.
     // Returns the reqId (usable with cancelReadAsync). The bulk SFTP lane is used.
     quint64 readFileStreamAsync(const QString &path,

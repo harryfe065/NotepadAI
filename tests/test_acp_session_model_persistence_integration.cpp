@@ -8,21 +8,21 @@
  * (at your option) any later version.
  *
  * Integration test for the load-on-construct contract from task 3.4: a session
- * survives a "restart" round-trip via the default AppDataLocation history
- * directory (no historyDirOverride). Uses QStandardPaths test mode so the
- * scratch lives under a temp dir that QStandardPaths picks up automatically.
+ * survives a "restart" round-trip via the default history directory (no
+ * historyDirOverride), under DataPaths::appDataLocation(). The data dir is
+ * pointed at a temp dir so the scratch never touches the real one.
  */
 
 #include <QtTest>
 #include <QFile>
 #include <QSignalSpy>
-#include <QStandardPaths>
 #include <QString>
 #include <QTemporaryDir>
 
 #include "AcpHistoryStore.h"
 #include "AcpProtocol.h"
 #include "AcpSessionModel.h"
+#include "DataPaths.h"
 
 class TestAcpSessionModelPersistenceIntegration : public QObject
 {
@@ -30,23 +30,16 @@ class TestAcpSessionModelPersistenceIntegration : public QObject
 
 private slots:
     void initTestCase();
-    void cleanupTestCase();
     void roundTripViaDefaultAppDataLocation();
 
 private:
-    bool m_priorTestMode = false;
+    QTemporaryDir m_dataDir;
 };
 
 void TestAcpSessionModelPersistenceIntegration::initTestCase()
 {
-    // Redirect AppDataLocation to a process-private temp tree.
-    m_priorTestMode = QStandardPaths::isTestModeEnabled();
-    QStandardPaths::setTestModeEnabled(true);
-}
-
-void TestAcpSessionModelPersistenceIntegration::cleanupTestCase()
-{
-    QStandardPaths::setTestModeEnabled(m_priorTestMode);
+    QVERIFY(m_dataDir.isValid());
+    DataPaths::init(m_dataDir.path(), DataPaths::Source::Default);
 }
 
 void TestAcpSessionModelPersistenceIntegration::roundTripViaDefaultAppDataLocation()
@@ -54,8 +47,7 @@ void TestAcpSessionModelPersistenceIntegration::roundTripViaDefaultAppDataLocati
     const QString sessionId = QStringLiteral("integ-session");
 
     // Pre-clean any leftover from a prior run.
-    const QString defaultDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                               + QStringLiteral("/acp-history");
+    const QString defaultDir = DataPaths::appDataLocation() + QStringLiteral("/acp-history");
     QFile::remove(defaultDir + QStringLiteral("/") + sessionId + QStringLiteral(".json"));
 
     AcpHistoryStore store;

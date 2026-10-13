@@ -54,10 +54,10 @@ void TestDockedEditorCurrentArea::attachedArea_passesThrough()
 {
     ads::CDockManager manager; // a CDockContainerWidget
 
-    // Parent is the container, so dockContainer() resolves to &manager.
-    // Manager arg is null only to skip the dockAreaCreated emit — irrelevant
-    // to the predicate, which keys solely on the parent chain.
-    auto *area = new ads::CDockAreaWidget(nullptr, &manager);
+    // Parent is the container, so dockContainer() resolves to &manager. ADS
+    // needs the manager argument (its components factory builds the title
+    // bar); the predicate keys solely on the parent chain.
+    auto *area = new ads::CDockAreaWidget(&manager, &manager);
 
     QVERIFY(area->dockContainer() == &manager);
     QCOMPARE(sanitizeDockArea(area), area);
@@ -69,7 +69,8 @@ void TestDockedEditorCurrentArea::detachedArea_collapsesToNull()
 {
     // No parent -> dockContainer() == nullptr: the exact state an area is in
     // between removeDockArea()'s setParent(nullptr) and its deleteLater().
-    auto *area = new ads::CDockAreaWidget(nullptr, nullptr);
+    ads::CDockManager manager;
+    auto *area = new ads::CDockAreaWidget(&manager, nullptr);
 
     QVERIFY(area->dockContainer() == nullptr);
     QVERIFY(sanitizeDockArea(area) == nullptr);
@@ -80,7 +81,7 @@ void TestDockedEditorCurrentArea::detachedArea_collapsesToNull()
 void TestDockedEditorCurrentArea::detachTransition_flipsToNull()
 {
     ads::CDockManager manager;
-    auto *area = new ads::CDockAreaWidget(nullptr, &manager);
+    auto *area = new ads::CDockAreaWidget(&manager, &manager);
 
     // Attached: the predicate hands the area straight back.
     QVERIFY(area->dockContainer() == &manager);

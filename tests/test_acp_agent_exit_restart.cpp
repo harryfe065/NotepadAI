@@ -28,6 +28,7 @@
 #include "AiAgentDock.h"
 #include "AiDockGroup.h"
 #include "ApplicationSettings.h"
+#include "DataPaths.h"
 
 class TestAcpAgentExitRestart : public QObject
 {
@@ -56,6 +57,8 @@ void TestAcpAgentExitRestart::initTestCase()
     QCoreApplication::setApplicationName("NotepadNextTest_AcpAgentExitRestart");
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_tempSettings.path());
+    // Session history lives under the data dir: keep it in the temp dir too.
+    DataPaths::init(m_tempSettings.path(), DataPaths::Source::Default);
 }
 
 void TestAcpAgentExitRestart::init()

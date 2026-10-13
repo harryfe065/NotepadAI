@@ -85,8 +85,8 @@ public:
     // and exec's through whichever shell found it. The structure is:
     //   if command -v <cmd> >/dev/null 2>&1; then
     //     cd <cwd> && exec <cmd> <args>
-    //   elif bash -lc 'command -v "$0"' <cmd> >/dev/null 2>&1; then
-    //     exec bash -lc 'exec 1>&3 3>&-; cd <cwd> && exec <cmd> <args>' 3>&1 1>/dev/null
+    //   elif bash -lc 'command -v "$0"' <cmd> </dev/null >/dev/null 2>&1; then
+    //     exec bash -lc 'exec 0<&4 4<&- 1>&3 3>&-; cd <cwd> && exec <cmd> <args>'     //       4<&0 3>&1 0</dev/null 1>/dev/null
     //   elif bash -ic 'command -v "$0"' <cmd> </dev/null >/dev/null 2>&1; then
     //     exec bash -ic 'exec 0<&4 4<&- 1>&3 3>&-; cd <cwd> && exec <cmd> <args>' \
     //       4<&0 3>&1 0</dev/null 1>/dev/null
@@ -97,8 +97,8 @@ public:
     //  1. Default PATH — no bash needed, no startup files, clean stdio.
     //  2. bash -lc — login, non-interactive. Sources /etc/profile +
     //     ~/.bash_profile (or ~/.profile). Covers profile-based nvm installs.
-    //     Stdout suppressed during startup via fd3 dup (profiles can echo);
-    //     restored (1>&3 3>&-) before exec.
+    //     Stdout and stdin protected during startup like tier 3 (profiles can
+    //     echo or read); restored (0<&4 4<&- 1>&3 3>&-) before exec.
     //  3. bash -ic — interactive, non-login. Sources ~/.bashrc directly.
     //     Covers the common case where nvm wrote to ~/.bashrc and .bashrc has
     //     a non-interactive early-return guard that blocks -lc from reaching

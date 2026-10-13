@@ -1564,11 +1564,18 @@ void AcpToolCallCard::refitBodyHeight()
     // Pin the card's own height. setFixedHeight on the inner browser only
     // clamps the browser; the card's QFrame sizeHint still cascades through
     // QAbstractScrollArea's font-derived default and inflates the card.
+    // Rows up to the header layout: a Goal badge may sit above it. The
+    // header layout caches its hint; a new title (refreshHeader pins the
+    // label's minimum height) only reaches it after an invalidate.
     int headerH = 0;
-    if (m_outer && m_outer->count() > 0) {
-        if (auto *headerItem = m_outer->itemAt(0)) {
-            headerH = headerItem->sizeHint().height();
-        }
+    for (int i = 0; m_outer && i < m_outer->count(); ++i) {
+        QLayoutItem *item = m_outer->itemAt(i);
+        QLayout *row = item->layout();
+        if (row)
+            row->invalidate();
+        headerH += item->sizeHint().height() + (i > 0 ? m_outer->spacing() : 0);
+        if (row)
+            break;
     }
     int cardH = marginT + marginB + headerH;
     if (m_collapsed || !m_body) {

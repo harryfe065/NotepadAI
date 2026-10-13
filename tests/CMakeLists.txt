@@ -768,6 +768,21 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
@@ -878,6 +893,21 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
@@ -980,6 +1010,29 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.h
+    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.cpp
+    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.h
+    ${CMAKE_SOURCE_DIR}/src/McpStdio.cpp
+    ${CMAKE_SOURCE_DIR}/src/McpStdio.h
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.h
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/PromptImprover.h
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/LlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/SsePartialParser.h
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/OpenaiAnthropicBridge.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.cpp
+    ${CMAKE_SOURCE_DIR}/src/PiAcpJudgeConfig.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
@@ -1870,6 +1923,11 @@ target_sources(test_remote_filesystem_model PRIVATE
     ${CMAKE_SOURCE_DIR}/src/remote/RemoteFileSystemModel.h
     ${CMAKE_SOURCE_DIR}/src/docks/FolderAsWorkspaceProxyModel.cpp
     ${CMAKE_SOURCE_DIR}/src/docks/FolderAsWorkspaceProxyModel.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.h
+    ${CMAKE_SOURCE_DIR}/src/git/PathStatusIndex.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/PathStatusIndex.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusEntry.h
 )
 add_test(NAME RemoteFilesystemModel COMMAND test_remote_filesystem_model)
 
@@ -2007,6 +2065,8 @@ target_sources(test_async_editor_load PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
     ${CMAKE_SOURCE_DIR}/src/remote/IFileSystemBackend.h
     ${CMAKE_SOURCE_DIR}/src/remote/SshProfile.h
+    ${CMAKE_SOURCE_DIR}/src/QRegexSearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/QRegexSearch.h
 )
 add_test(NAME AsyncEditorLoad COMMAND test_async_editor_load)
 
