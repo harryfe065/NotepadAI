@@ -24,6 +24,7 @@
 #include "TerminalManager.h"
 #include "TerminalTaskRegistry.h"
 #include "TerminalWidget.h"
+#include "WorkspaceTaskScanner.h"
 #include "remote/ExecutionContext.h"
 #include "remote/ExecutionContextRegistry.h"
 #include "remote/RemoteExecutionContext.h"
@@ -157,184 +158,50 @@ bool TaskRunnerGutter::isTaskFile(const QString &filename)
     return false;
 }
 
+// The parsers live in WorkspaceTaskScanner (shared with the terminal empty
+// panel's root scan); these wrappers only adapt the shared result to the
+// gutter's TaskEntry and, for package.json, supply the package manager
+// detected for the editor file's folder.
+
 QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parsePackageJson(const QByteArray &text)
 {
-    QVector<TaskEntry> entries;
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(text, &err);
-    if (doc.isNull() || !doc.isObject()) return entries;
-
-    const QJsonObject root = doc.object();
-    const QJsonObject scripts = root.value(QLatin1String("scripts")).toObject();
-    if (scripts.isEmpty()) return entries;
-
-    const QStringList keys = scripts.keys();
     const QString dir = QFileInfo(m_editor->getFilePath()).absolutePath();
-    const QString pm = detectPackageManager(dir);
-
-    // Line scan: find each key's line number within the "scripts" block.
-    // We search for `"<key>"` after the `"scripts"` line.
-    int scriptsLine = -1;
-    const QList<QByteArray> lines = text.split('\n');
-    for (int i = 0; i < lines.size(); ++i) {
-        if (lines[i].contains("\"scripts\"")) {
-            scriptsLine = i;
-            break;
-        }
-    }
-    if (scriptsLine < 0) scriptsLine = 0;
-
-    for (const QString &key : keys) {
-        const QByteArray needle = QStringLiteral("\"%1\"").arg(key).toUtf8();
-        // Search from scriptsLine forward
-        for (int i = scriptsLine; i < lines.size(); ++i) {
-            if (lines[i].contains(needle)) {
-                TaskEntry e;
-                e.line = i;
-                e.name = key;
-                // yarn uses `yarn <script>`, others use `<pm> run <script>`
-                if (pm == QLatin1String("yarn")) {
-                    e.command = QStringLiteral("yarn %1").arg(key);
-                } else {
-                    e.command = QStringLiteral("%1 run %2").arg(pm, key);
-                }
-                entries.append(e);
-                break;
-            }
-        }
-    }
+    const QList<WorkspaceTask> tasks =
+        WorkspaceTaskScanner::parsePackageJson(text, detectPackageManager(dir));
+    QVector<TaskEntry> entries;
+    entries.reserve(tasks.size());
+    for (const WorkspaceTask &t : tasks)
+        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
     return entries;
 }
 
 QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parseJustfile(const QByteArray &text)
 {
+    const QList<WorkspaceTask> tasks = WorkspaceTaskScanner::parseJustfile(text);
     QVector<TaskEntry> entries;
-    static const QRegularExpression re(
-        QStringLiteral(R"(^@?([A-Za-z_][A-Za-z0-9_-]*)(?:[\t ]+([^:\r\n]*))?[\t ]*:(?!=))"),
-        QRegularExpression::MultilineOption);
-
-    const QString content = QString::fromUtf8(text);
-    const QStringList lines = content.split(QLatin1Char('\n'));
-
-    QRegularExpressionMatchIterator it = re.globalMatch(content);
-    while (it.hasNext()) {
-        QRegularExpressionMatch m = it.next();
-        const QString name = m.captured(1);
-        const QString params = m.captured(2).trimmed();
-
-        // Determine line number from offset (both in QString code units)
-        const int offset = m.capturedStart(0);
-        int line = 0;
-        int pos = 0;
-        for (int i = 0; i < lines.size(); ++i) {
-            if (pos + lines[i].size() + 1 > offset) {
-                line = i;
-                break;
-            }
-            pos += lines[i].size() + 1;
-        }
-
-        TaskEntry e;
-        e.line = line;
-        e.name = name;
-        e.command = QStringLiteral("just %1").arg(name);
-
-        // Detect required params (params without `=` default)
-        if (!params.isEmpty()) {
-            // Split params by whitespace, check if any lack '='
-            static const QRegularExpression paramRe(
-                QStringLiteral(R"(([A-Za-z_][A-Za-z0-9_-]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|\S+))?)"));
-            QRegularExpressionMatchIterator pit = paramRe.globalMatch(params);
-            while (pit.hasNext()) {
-                QRegularExpressionMatch pm2 = pit.next();
-                const QString full = pm2.captured(0).trimmed();
-                if (!full.contains(QLatin1Char('='))) {
-                    e.hasRequiredParams = true;
-                    break;
-                }
-            }
-        }
-
-        entries.append(e);
-    }
+    entries.reserve(tasks.size());
+    for (const WorkspaceTask &t : tasks)
+        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
     return entries;
 }
 
 QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parseMakefile(const QByteArray &text)
 {
+    const QList<WorkspaceTask> tasks = WorkspaceTaskScanner::parseMakefile(text);
     QVector<TaskEntry> entries;
-    static const QRegularExpression re(
-        QStringLiteral(R"(^([A-Za-z_][A-Za-z0-9_-]*)[ \t]*:(?!=))"),
-        QRegularExpression::MultilineOption);
-
-    const QString content = QString::fromUtf8(text);
-    const QStringList lines = content.split(QLatin1Char('\n'));
-
-    QRegularExpressionMatchIterator it = re.globalMatch(content);
-    while (it.hasNext()) {
-        QRegularExpressionMatch m = it.next();
-        const QString name = m.captured(1);
-
-        // Exclude dot-prefixed targets
-        if (name.startsWith(QLatin1Char('.'))) continue;
-
-        const int offset = m.capturedStart(0);
-        int line = 0;
-        int pos = 0;
-        for (int i = 0; i < lines.size(); ++i) {
-            if (pos + lines[i].size() + 1 > offset) {
-                line = i;
-                break;
-            }
-            pos += lines[i].size() + 1;
-        }
-
-        TaskEntry e;
-        e.line = line;
-        e.name = name;
-        e.command = QStringLiteral("make %1").arg(name);
-        entries.append(e);
-    }
+    entries.reserve(tasks.size());
+    for (const WorkspaceTask &t : tasks)
+        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
     return entries;
 }
 
 QVector<TaskRunnerGutter::TaskEntry> TaskRunnerGutter::parseDenoJson(const QByteArray &text)
 {
+    const QList<WorkspaceTask> tasks = WorkspaceTaskScanner::parseDenoJson(text);
     QVector<TaskEntry> entries;
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(text, &err);
-    if (doc.isNull() || !doc.isObject()) return entries;
-
-    const QJsonObject root = doc.object();
-    const QJsonObject tasks = root.value(QLatin1String("tasks")).toObject();
-    if (tasks.isEmpty()) return entries;
-
-    const QStringList keys = tasks.keys();
-
-    // Line scan for task keys
-    int tasksLine = -1;
-    const QList<QByteArray> lines = text.split('\n');
-    for (int i = 0; i < lines.size(); ++i) {
-        if (lines[i].contains("\"tasks\"")) {
-            tasksLine = i;
-            break;
-        }
-    }
-    if (tasksLine < 0) tasksLine = 0;
-
-    for (const QString &key : keys) {
-        const QByteArray needle = QStringLiteral("\"%1\"").arg(key).toUtf8();
-        for (int i = tasksLine; i < lines.size(); ++i) {
-            if (lines[i].contains(needle)) {
-                TaskEntry e;
-                e.line = i;
-                e.name = key;
-                e.command = QStringLiteral("deno task %1").arg(key);
-                entries.append(e);
-                break;
-            }
-        }
-    }
+    entries.reserve(tasks.size());
+    for (const WorkspaceTask &t : tasks)
+        entries.append({t.line, t.name, t.command, t.hasRequiredParams});
     return entries;
 }
 

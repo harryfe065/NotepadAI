@@ -167,6 +167,7 @@ CREATE_SETTING(Terminal, TerminalCursorBlink, terminalCursorBlink, QString, QStr
 CREATE_SETTING(Terminal, TerminalScrollbackLines, terminalScrollbackLines, int, 10000)
 CREATE_SETTING(Terminal, TerminalCopyOnSelect, terminalCopyOnSelect, bool, false)
 CREATE_SETTING(Terminal, TerminalBellSound, terminalBellSound, bool, false)
+CREATE_SETTING(Terminal, TerminalShowEmptyPanel, terminalShowEmptyPanel, bool, true)
 
 // --- Quick Browser last-used proxy settings ------------------------------------
 

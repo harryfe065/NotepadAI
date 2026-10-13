@@ -21,6 +21,7 @@
 
 #include <QList>
 #include <QHash>
+#include <QSet>
 #include <QTimer>
 #include <QVector>
 
@@ -38,13 +39,14 @@ class NotepadNextApplication;
 class MainWindow;
 class TerminalDock;
 class TerminalAreaToolbar;
+class TerminalEmptyPanel;
 class AiAgentDock;
 // Not included: TerminalWidget.h pulls in vterm.h, whose `small` bit-field
 // collides with the Windows `small` macro in files that include windows.h.
 struct TerminalAppearance;
 struct TerminalColorScheme;
 class ScintillaNext;
-namespace ads { class CDockAreaWidget; }
+namespace ads { class CDockAreaWidget; class CDockWidget; }
 namespace remote { class ExecutionContext; }
 
 class TerminalManager : public QObject
@@ -100,6 +102,14 @@ public slots:
     void applyWorkspaceFilter(const QString &activeWorkspaceRoot, const QStringList &openWorkspaceRoots);
     void closeTerminalsForWorkspace(const QString &workspaceRoot, const QStringList &openWorkspaceRoots);
 
+    // Re-scans the empty panel's task lists (configured + discovered) for the
+    // active workspace. Called after Edit Tasks saves.
+    void refreshEmptyPanel();
+
+signals:
+    // The empty panel's "Configure tasks…" — MainWindow owns the dialog.
+    void editTasksRequested();
+
 protected:
     // Editor tabs dropped on a terminal type their file path into it.
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -127,6 +137,14 @@ private:
     void placeInEditor(TerminalDock *dock);
     void rememberDock(TerminalDock *dock);
     bool forgetDock(QObject *obj);
+    // Empty panel (bottom tool area placeholder when the active workspace has
+    // no visible terminal). Created lazily by ensureEmptyPanel(); suppression
+    // is keyed by TerminalEmptyPanelPolicy::workspaceKey and lives only while
+    // the workspace stays open.
+    void ensureEmptyPanel();
+    void updateEmptyPanel();
+    void hideEmptyPanel();
+    void applyEmptyPanelColors();
     void refreshProcessStats();
     bool syncStatsPoll();
 
@@ -138,6 +156,11 @@ private:
     QString m_filterActiveRoot;
     QStringList m_filterOpenRoots;
     bool m_shuttingDown = false;
+    QPointer<TerminalEmptyPanel> m_emptyPanel;
+    QPointer<ads::CDockWidget> m_emptyDock;
+    QSet<QString> m_emptySuppressed;
+    QString m_emptyPanelKey;
+    bool m_emptyPanelDirty = true;
     QTimer *m_statsTimer = nullptr;
     QVector<TerminalProcessStats::ProcessSample> m_processSnapshot;
     QVector<TerminalProcessStats::ProcessorTick> m_processorNow;

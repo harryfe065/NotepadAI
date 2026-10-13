@@ -116,6 +116,27 @@ target_sources(test_terminal_cwd_resolver PRIVATE
     ${CMAKE_SOURCE_DIR}/src/remote/ExecutionContext.h
 )
 add_test(NAME TerminalCwdResolver COMMAND test_terminal_cwd_resolver)
+
+# --- WorkspaceTaskScanner: root task-file discovery for the terminal empty panel ---
+qt_add_executable(test_workspace_task_scanner test_workspace_task_scanner.cpp)
+target_include_directories(test_workspace_task_scanner PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_workspace_task_scanner PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_workspace_task_scanner PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/WorkspaceTaskScanner.cpp
+    ${CMAKE_SOURCE_DIR}/src/WorkspaceTaskScanner.h
+)
+add_test(NAME WorkspaceTaskScanner COMMAND test_workspace_task_scanner)
+
+# --- TerminalEmptyPanelPolicy: pure show/hide decision for the empty panel ---
+qt_add_executable(test_terminal_empty_panel_policy test_terminal_empty_panel_policy.cpp)
+target_include_directories(test_terminal_empty_panel_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_terminal_empty_panel_policy PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_terminal_empty_panel_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/TerminalEmptyPanelPolicy.cpp
+    ${CMAKE_SOURCE_DIR}/src/TerminalEmptyPanelPolicy.h
+    ${CMAKE_SOURCE_DIR}/src/remote/SshProfile.h
+)
+add_test(NAME TerminalEmptyPanelPolicy COMMAND test_terminal_empty_panel_policy)
 # --- TerminalProcessStats: PTY process-tree CPU/RAM aggregation ---
 qt_add_executable(test_terminal_process_stats test_terminal_process_stats.cpp)
 target_include_directories(test_terminal_process_stats PRIVATE ${CMAKE_SOURCE_DIR}/src)

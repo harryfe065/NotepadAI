@@ -545,6 +545,12 @@ qt_add_executable(NotepadAI
 	EditorThemeColors.h
 	TerminalManager.h
 	TerminalManager.cpp
+	TerminalEmptyPanelPolicy.h
+	TerminalEmptyPanelPolicy.cpp
+	WorkspaceTaskScanner.h
+	WorkspaceTaskScanner.cpp
+	widgets/TerminalEmptyPanel.h
+	widgets/TerminalEmptyPanel.cpp
 	TerminalTaskRegistry.h
 	TerminalTaskRegistry.cpp
 	MiniAppDefinition.h

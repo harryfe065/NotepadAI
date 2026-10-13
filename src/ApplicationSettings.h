@@ -177,6 +177,9 @@ public:
     DEFINE_SETTING(TerminalCopyOnSelect, terminalCopyOnSelect, bool)
     // Play the system sound on BEL; the tab dot is shown either way.
     DEFINE_SETTING(TerminalBellSound, terminalBellSound, bool)
+    // Show the terminal empty panel in the bottom tool area when a workspace
+    // becomes active with no visible terminal.
+    DEFINE_SETTING(TerminalShowEmptyPanel, terminalShowEmptyPanel, bool)
 
     DEFINE_SETTING(LastProxyType, lastProxyType, int)
     DEFINE_SETTING(LastProxyHost, lastProxyHost, QString)

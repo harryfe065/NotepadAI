@@ -1893,7 +1893,17 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
         EditTasksDialog dlg(cwd, existing, this);
         if (dlg.exec() == QDialog::Accepted) {
             terminalManager->setTasks(workspaceRoot, dlg.tasks());
+            terminalManager->refreshEmptyPanel();
         }
+    });
+
+    // The terminal empty panel's "Configure tasks…" reuses this dialog flow.
+    // The action's enabled state is only refreshed when the Terminal menu is
+    // about to show, so don't let a stale disabled state swallow the click —
+    // the handler itself re-validates the workspace.
+    connect(terminalManager, &TerminalManager::editTasksRequested, this, [this]() {
+        ui->actionEditTasks->setEnabled(true);
+        ui->actionEditTasks->trigger();
     });
 
     setupSshMenu();

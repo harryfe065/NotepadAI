@@ -28,6 +28,10 @@
 #include "TerminalCwdResolver.h"
 #include "TerminalDock.h"
 #include "TerminalTaskRegistry.h"
+#include "TerminalEmptyPanelPolicy.h"
+#include "WorkspaceTaskScanner.h"
+#include "widgets/TerminalEmptyPanel.h"
+#include "remote/SshProfile.h"
 #include "TerminalWidget.h"
 #include "TerminalColorScheme.h"
 #include "TerminalAreaToolbar.h"
@@ -102,6 +106,8 @@ TerminalManager::TerminalManager(NotepadNextApplication *app, MainWindow *mainWi
         connect(s, &ApplicationSettings::terminalScrollbackLinesChanged, this, &TerminalManager::applyAppearance);
         connect(s, &ApplicationSettings::terminalCopyOnSelectChanged, this, &TerminalManager::applyAppearance);
         connect(s, &ApplicationSettings::terminalBellSoundChanged, this, &TerminalManager::applyAppearance);
+        connect(s, &ApplicationSettings::terminalShowEmptyPanelChanged, this,
+                [this](bool) { updateEmptyPanel(); });
     }
 }
 
@@ -439,6 +445,7 @@ void TerminalManager::updateLinkBaseDirs(TerminalDock *dock)
 
 void TerminalManager::applyAppearance()
 {
+    applyEmptyPanelColors();
     const TerminalAppearance a = appearance();
     for (const auto &d : m_docks) {
         if (!d.isNull()) {
@@ -473,6 +480,7 @@ void TerminalManager::zoomTerminals(int steps)
 void TerminalManager::shutdown()
 {
     m_shuttingDown = true;
+    hideEmptyPanel();
     if (m_statsTimer)
         m_statsTimer->stop();
 
@@ -684,6 +692,19 @@ void TerminalManager::placeInEditor(TerminalDock *dock)
         if (removed)
             applyWorkspaceFilter(m_filterActiveRoot, m_filterOpenRoots);
     });
+
+    // Explicitly creating a terminal re-arms the empty panel for its
+    // workspace: if the user closed the panel earlier in this workspace's
+    // lifetime, closing this terminal brings the panel back.
+    {
+        const auto space = dock->isRemoteSession()
+                               ? TerminalCwdResolver::CwdSpace::Remote
+                               : TerminalCwdResolver::CwdSpace::Local;
+        const QString owner = TerminalCwdResolver::matchingWorkspace(
+            dock->initialCwd(), space, m_filterOpenRoots);
+        if (!owner.isEmpty())
+            m_emptySuppressed.remove(TerminalEmptyPanelPolicy::workspaceKey(owner));
+    }
 
     dw->toggleView(true);
     dw->raise();
@@ -1113,6 +1134,7 @@ void TerminalManager::applyWorkspaceFilter(const QString &activeWorkspaceRoot,
             dw->toggleView(false);
         }
     }
+    updateEmptyPanel();
 }
 
 
@@ -1121,6 +1143,11 @@ void TerminalManager::closeTerminalsForWorkspace(const QString &workspaceRoot,
 {
     if (workspaceRoot.isEmpty())
         return;
+
+    // The workspace is going away: its "panel closed" suppression dies with
+    // it, so re-opening the workspace shows the panel again.
+    m_emptySuppressed.remove(TerminalEmptyPanelPolicy::workspaceKey(workspaceRoot));
+    m_emptyPanelDirty = true;
 
     QStringList cwds;
     QList<TerminalCwdResolver::CwdSpace> spaces;
@@ -1166,3 +1193,165 @@ void TerminalManager::closeTerminalsForWorkspace(const QString &workspaceRoot,
 }
 
 
+
+// --- Terminal empty panel -------------------------------------------------
+
+void TerminalManager::applyEmptyPanelColors()
+{
+    if (!m_emptyPanel)
+        return;
+    const TerminalColorScheme scheme = currentScheme();
+    m_emptyPanel->setSchemeColors(scheme.defaultBg, scheme.defaultFg, scheme.selection);
+    if (m_emptyDock) {
+        const QColor tint = m_mainWindow->palette().color(QPalette::PlaceholderText);
+        m_emptyDock->setIcon(
+            terminalTintedIcon(QStringLiteral(":/icons/square-terminal.svg"), tint));
+    }
+}
+
+void TerminalManager::hideEmptyPanel()
+{
+    if (m_emptyDock && !m_emptyDock->isClosed())
+        m_emptyDock->toggleView(false);
+}
+
+void TerminalManager::refreshEmptyPanel()
+{
+    m_emptyPanelDirty = true;
+    updateEmptyPanel();
+}
+
+void TerminalManager::ensureEmptyPanel()
+{
+    if (m_emptyPanel)
+        return;
+    DockedEditor *editor = m_mainWindow->getDockedEditor();
+    if (!editor)
+        return;
+
+    m_emptyPanel = new TerminalEmptyPanel(m_mainWindow);
+    applyEmptyPanelColors();
+
+    connect(m_emptyPanel, &TerminalEmptyPanel::newTerminalRequested, this, [this]() {
+        const QString root = m_filterActiveRoot;
+        remote::ExecutionContext *ctx = m_mainWindow->activeExecutionContext();
+        if (ctx && ctx->isRemote()) {
+            const QString cwd = TerminalCwdResolver::resolveWorkspaceForContext(ctx, root);
+            if (!cwd.isEmpty())
+                openRemoteTerminal(ctx, cwd, QString());
+            return;
+        }
+        const QString cwd = TerminalCwdResolver::resolveWorkspace(root);
+        if (!cwd.isEmpty())
+            openTerminal(cwd);
+    });
+    connect(m_emptyPanel, &TerminalEmptyPanel::configuredTaskRequested, this,
+            [this](const TerminalTask &task) {
+        const QString cwd = TerminalCwdResolver::resolveWorkspace(m_filterActiveRoot);
+        if (!cwd.isEmpty())
+            openTask(cwd, task);
+    });
+    connect(m_emptyPanel, &TerminalEmptyPanel::discoveredTaskRequested, this,
+            [this](const WorkspaceTask &task) {
+        const QString cwd = TerminalCwdResolver::resolveWorkspace(m_filterActiveRoot);
+        if (cwd.isEmpty())
+            return;
+        if (task.hasRequiredParams) {
+            // Like the task gutter: open a plain terminal with the command
+            // typed but not entered, so the user supplies the arguments.
+            const int before = m_docks.size();
+            openTerminal(cwd);
+            if (m_docks.size() > before && !m_docks.last().isNull()) {
+                if (TerminalWidget *w = m_docks.last()->terminalWidget()) {
+                    const QByteArray cmd = (task.command + QLatin1Char(' ')).toUtf8();
+                    connect(w, &TerminalWidget::firstOutputReceived, w,
+                            [w, cmd]() { w->writeToPty(cmd); }, Qt::SingleShotConnection);
+                }
+            }
+            return;
+        }
+        TerminalTask t;
+        t.name = task.name;
+        t.command = task.command;
+        openTask(cwd, t);
+    });
+    connect(m_emptyPanel, &TerminalEmptyPanel::editTasksRequested, this,
+            &TerminalManager::editTasksRequested);
+
+    const QColor tint = m_mainWindow->palette().color(QPalette::PlaceholderText);
+    ads::CDockWidget *dw = editor->addBottomToolTab(
+        m_emptyPanel, tr("Terminal"),
+        terminalTintedIcon(QStringLiteral(":/icons/square-terminal.svg"), tint));
+    if (!dw) {
+        m_emptyPanel->deleteLater();
+        m_emptyPanel = nullptr;
+        return;
+    }
+    m_emptyDock = dw;
+
+    // Closing the panel tab (the only X the ADS area offers) hides it and
+    // suppresses it for this workspace's lifetime; nothing is destroyed, so
+    // another workspace can reuse the same panel.
+    dw->setFeature(ads::CDockWidget::DockWidgetFeature::CustomCloseHandling, true);
+    connect(dw, &ads::CDockWidget::closeRequested, this,
+            [this, dw = QPointer<ads::CDockWidget>(dw)]() {
+        if (!m_emptyPanelKey.isEmpty())
+            m_emptySuppressed.insert(m_emptyPanelKey);
+        if (dw && !dw->isClosed())
+            dw->toggleView(false);
+    });
+    dw->toggleView(false);
+}
+
+void TerminalManager::updateEmptyPanel()
+{
+    if (QCoreApplication::closingDown())
+        return;
+
+    TerminalEmptyPanelPolicy::Input in;
+    in.settingEnabled = m_app && m_app->getSettings()
+                            ? m_app->getSettings()->terminalShowEmptyPanel()
+                            : false;
+    in.hasActiveWorkspace = !m_filterActiveRoot.isEmpty();
+    const QString key = TerminalEmptyPanelPolicy::workspaceKey(m_filterActiveRoot);
+    in.suppressedForActiveWorkspace = !key.isEmpty() && m_emptySuppressed.contains(key);
+    in.shuttingDown = m_shuttingDown;
+    for (const auto &d : m_docks) {
+        if (d.isNull())
+            continue;
+        if (ads::CDockWidget *dw = d->hostDockWidget(); dw && !dw->isClosed()) {
+            in.anyTerminalVisible = true;
+            break;
+        }
+    }
+
+    if (!TerminalEmptyPanelPolicy::shouldShow(in)) {
+        hideEmptyPanel();
+        return;
+    }
+
+    ensureEmptyPanel();
+    if (!m_emptyPanel || !m_emptyDock)
+        return;
+
+    // Rescan on every (re)show and on workspace switch: four small root
+    // files, so the lists are always fresh after edits elsewhere.
+    if (m_emptyDock->isClosed())
+        m_emptyPanelDirty = true;
+    if (m_emptyPanelDirty || m_emptyPanelKey != key) {
+        const bool remoteWs = remote::isSshUri(m_filterActiveRoot);
+        const remote::SshUri ssh = remote::parseSshUri(m_filterActiveRoot);
+        m_emptyPanel->setContent(
+            remoteWs && ssh.valid ? ssh.remotePath : m_filterActiveRoot, remoteWs,
+            remoteWs ? QList<TerminalTask>() : tasksForWorkspace(m_filterActiveRoot),
+            remoteWs ? QList<WorkspaceTaskGroup>()
+                     : WorkspaceTaskScanner::scanRoot(m_filterActiveRoot));
+        m_emptyPanelKey = key;
+        m_emptyPanelDirty = false;
+    }
+
+    if (m_emptyDock->isClosed()) {
+        m_emptyDock->toggleView(true);
+        m_emptyDock->raise();
+    }
+}

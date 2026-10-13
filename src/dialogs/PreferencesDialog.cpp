@@ -475,13 +475,19 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
     addTerminalRow(tr("Bell"), bellSound,
                    tr("A bell in a tab you are not looking at always marks the tab with a dot."));
 
+    auto *showEmptyPanel = new QCheckBox(tr("Show the empty panel when a workspace opens"),
+                                         ui->groupBoxTerminal);
+    addTerminalRow(tr("Empty panel"), showEmptyPanel,
+                   tr("Reserves the terminal area with a panel offering a new terminal and the "
+                      "workspace's tasks, until a terminal is opened."));
+
     auto setComboData = [](QComboBox *combo, const QString &value) {
         const int i = combo->findData(value);
         combo->setCurrentIndex(i < 0 ? 0 : i);
     };
     auto loadTerminalAppearance = [=, this]() {
         const QSignalBlocker b1(lineHeight), b2(colorScheme), b3(contrast), b4(cursorShape),
-            b5(cursorBlink), b6(scrollback), b7(copyOnSelect), b8(bellSound);
+            b5(cursorBlink), b6(scrollback), b7(copyOnSelect), b8(bellSound), b9(showEmptyPanel);
         lineHeight->setValue(settings->terminalLineHeightPct());
         setComboData(colorScheme, settings->terminalColorScheme());
         contrast->setValue(settings->terminalMinimumContrast());
@@ -490,6 +496,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
         scrollback->setValue(settings->terminalScrollbackLines());
         copyOnSelect->setChecked(settings->terminalCopyOnSelect());
         bellSound->setChecked(settings->terminalBellSound());
+        showEmptyPanel->setChecked(settings->terminalShowEmptyPanel());
     };
     loadTerminalAppearance();
 
@@ -502,6 +509,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
     }
     connect(copyOnSelect, &QCheckBox::toggled, this, markDirty);
     connect(bellSound, &QCheckBox::toggled, this, markDirty);
+    connect(showEmptyPanel, &QCheckBox::toggled, this, markDirty);
 
     m_pending.addApply([=, this]() {
         settings->setTerminalLineHeightPct(lineHeight->value());
@@ -512,6 +520,7 @@ PreferencesDialog::PreferencesDialog(ApplicationSettings *settings, QWidget *par
         settings->setTerminalScrollbackLines(scrollback->value());
         settings->setTerminalCopyOnSelect(copyOnSelect->isChecked());
         settings->setTerminalBellSound(bellSound->isChecked());
+        settings->setTerminalShowEmptyPanel(showEmptyPanel->isChecked());
     });
     m_pending.addRevert(loadTerminalAppearance);
 
