@@ -105,6 +105,14 @@ Result compareRow(const QFont &font, qreal dpr, const QString &text, uint8_t sty
     return r;
 }
 
+// The offscreen platform on Windows has no fonts: Qt hands out a placeholder
+// with pixel size -1, which says nothing about real rendering.
+bool hasUsableFont(const QFont &font)
+{
+    const QRawFont raw = QRawFont::fromFont(font);
+    return raw.isValid() && raw.pixelSize() > 0;
+}
+
 QFont monoFont()
 {
     QFont f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -143,7 +151,7 @@ void TestTerminalGlyphTiles::tilesMatchQt()
     QFETCH(qreal, dpr);
     QFETCH(int, style);
     const QFont font = monoFont();
-    if (!QRawFont::fromFont(font).isValid()) QSKIP("no usable fixed-pitch font on this platform");
+    if (!hasUsableFont(font)) QSKIP("no usable fixed-pitch font on this platform");
 
     const QString text = QStringLiteral("fn main() { let x = a_b[0] + y; } // WMgjpqy@#%");
     const Result dark = compareRow(font, dpr, text, uint8_t(style), qRgb(0xD4, 0xD4, 0xD4), qRgb(0x1E, 0x1E, 0x1E));
@@ -171,7 +179,7 @@ void TestTerminalGlyphTiles::tilesMatchQt()
 void TestTerminalGlyphTiles::budgetSpentStillDrawsEverything()
 {
     const QFont font = monoFont();
-    if (!QRawFont::fromFont(font).isValid()) QSKIP("no usable fixed-pitch font on this platform");
+    if (!hasUsableFont(font)) QSKIP("no usable fixed-pitch font on this platform");
     TerminalGlyphCache cache;
     cache.setFont(font);
     const int cellW = 8;

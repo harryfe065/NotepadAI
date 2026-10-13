@@ -151,7 +151,9 @@ const QRawFont &TerminalGlyphCache::deviceFont(uint16_t slot)
         m_rawDevice.resize(m_raw.size());
         for (std::size_t i = from; i < m_raw.size(); ++i) {
             m_rawDevice[i] = m_raw[i];
-            if (m_tileDpr != 1) {
+            // A font without a usable size (no fonts on the platform) is left
+            // alone: scaling -1 px gives Qt a negative glyph cache size.
+            if (m_tileDpr != 1 && m_raw[i].pixelSize() > 0) {
                 m_rawDevice[i].setPixelSize(m_raw[i].pixelSize() * m_tileDpr);
             }
         }

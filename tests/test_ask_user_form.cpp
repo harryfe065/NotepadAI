@@ -206,8 +206,7 @@ void TestAskUserForm::summaryLine()
     // Dismiss and legacy clarify prompts share the collapsed bubble.
     QCOMPARE(summaryFromAnswersText(dismissPrompt(QString())), QStringLiteral("Dismissed the form"));
     const QString legacyClarify = QStringLiteral(
-        "[ask_user clarify]
-The user does not understand question Q2 \"Controls\". Explain it in the "
+        "[ask_user clarify]\nThe user does not understand question Q2 \"Controls\". Explain it in the "
         "user's language (the language the user writes in), then call ask_user again with the revised form.");
     QCOMPARE(summaryFromAnswersText(legacyClarify), QStringLiteral("Asked to clarify Q2 \"Controls\""));
 }
@@ -227,27 +226,17 @@ void TestAskUserForm::reportsQuestionsToClarify()
     answers[2].clarify = true;
     const QString text = formatAnswers(spec, answers);
     const QString expected = QStringLiteral(
-        "[ask_user answers]
-"
-        "Form: Round 2
-"
-        "Q1 \"Architecture\": a (Elicitation) — changed (recommended: b2 (No-op tool))
-"
-        "Q2 \"Controls\": needs clarification
-"
-        "  note: what is a slider here?
-"
-        "Q3 \"Module layout\": needs clarification
-"
-        "Q4 \"Scan inside?\": no (Skip) (recommended)
-"
-        "Q5 \"Describe it\": \"free text\"
-"
-        "Q6 \"Days\": 30 (recommended)
-"
+        "[ask_user answers]\n"
+        "Form: Round 2\n"
+        "Q1 \"Architecture\": a (Elicitation) — changed (recommended: b2 (No-op tool))\n"
+        "Q2 \"Controls\": needs clarification\n"
+        "  note: what is a slider here?\n"
+        "Q3 \"Module layout\": needs clarification\n"
+        "Q4 \"Scan inside?\": no (Skip) (recommended)\n"
+        "Q5 \"Describe it\": \"free text\"\n"
+        "Q6 \"Days\": 30 (recommended)\n"
         "To clarify: Q2, Q3. Explain them in the user's language, then call ask_user again with only these "
-        "questions, keeping their ids. The other answers are final.
-");
+        "questions, keeping their ids. The other answers are final.\n");
     QCOMPARE(text, expected);
 
     // Flagged questions are neither answered nor changed.
