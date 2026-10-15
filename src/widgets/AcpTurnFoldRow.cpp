@@ -45,7 +45,7 @@ AcpTurnFoldRow::AcpTurnFoldRow(qint64 workedMs, int toolCalls, QWidget *parent)
         "QPushButton#acpTurnFoldRow:hover { color: palette(text); }"));
     refreshText();
     connect(this, &QPushButton::clicked, this, [this]() {
-        if (m_live || !m_expandable)
+        if (!clickable())
             return;
         m_expanded = !m_expanded;
         refreshText();
@@ -66,8 +66,8 @@ void AcpTurnFoldRow::startLive(qint64 startMs)
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     m_liveStartMs = (startMs > 0 && startMs <= now) ? startMs : now;
     m_live = true;
-    setCursor(Qt::ArrowCursor);
-    setFocusPolicy(Qt::NoFocus);
+    m_liveInteractive = false;
+    refreshInteraction();
     if (!m_liveTimer) {
         // One-shot, re-armed to the next whole-second boundary each tick: the
         // label never skips or repeats a second, and it costs one wakeup/s.
@@ -79,16 +79,25 @@ void AcpTurnFoldRow::startLive(qint64 startMs)
     onLiveTick();
 }
 
+void AcpTurnFoldRow::setLiveInteractive(bool interactive)
+{
+    if (!m_live || m_liveInteractive == interactive)
+        return;
+    m_liveInteractive = interactive;
+    refreshInteraction();
+    refreshText();
+}
+
 void AcpTurnFoldRow::finishLive(qint64 endMs)
 {
     if (!m_live)
         return;
     m_live = false;
+    m_liveInteractive = false;
     if (m_liveTimer)
         m_liveTimer->stop();
     m_workedMs = qMax<qint64>(0, (endMs > 0 ? endMs : QDateTime::currentMSecsSinceEpoch()) - m_liveStartMs);
-    setCursor(m_expandable ? Qt::PointingHandCursor : Qt::ArrowCursor);
-    setFocusPolicy(m_expandable ? Qt::TabFocus : Qt::NoFocus);
+    refreshInteraction();
     refreshText();
 }
 
@@ -97,20 +106,23 @@ void AcpTurnFoldRow::setExpandable(bool expandable)
     if (m_expandable == expandable)
         return;
     m_expandable = expandable;
-    if (!m_live) {
-        setCursor(expandable ? Qt::PointingHandCursor : Qt::ArrowCursor);
-        setFocusPolicy(expandable ? Qt::TabFocus : Qt::NoFocus);
-        refreshText();
-    }
+    refreshInteraction();
+    refreshText();
+}
+
+void AcpTurnFoldRow::refreshInteraction()
+{
+    const bool on = clickable();
+    setCursor(on ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    setFocusPolicy(on ? Qt::TabFocus : Qt::NoFocus);
 }
 
 void AcpTurnFoldRow::onLiveTick()
 {
     if (!m_live)
         return;
+    refreshText();
     const qint64 elapsed = qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs);
-    setText(label(elapsed));
-    setToolTip(tr("Working…"));
     m_liveTimer->start(static_cast<int>(1000 - elapsed % 1000) + 1);
 }
 
@@ -124,10 +136,7 @@ void AcpTurnFoldRow::setToolCallCount(int count)
     if (m_toolCalls == count)
         return;
     m_toolCalls = count;
-    if (m_live)
-        setText(label(qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs)));
-    else
-        refreshText();
+    refreshText();
 }
 
 void AcpTurnFoldRow::setDiffStat(const AcpDiffStat::Lines &stat)
@@ -135,10 +144,7 @@ void AcpTurnFoldRow::setDiffStat(const AcpDiffStat::Lines &stat)
     if (m_diffStat.added == stat.added && m_diffStat.removed == stat.removed)
         return;
     m_diffStat = stat;
-    if (m_live)
-        setText(label(qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs)));
-    else
-        refreshText();
+    refreshText();
 }
 
 QString AcpTurnFoldRow::label(qint64 workedMs) const
@@ -193,11 +199,17 @@ void AcpTurnFoldRow::paintEvent(QPaintEvent *event)
 
 void AcpTurnFoldRow::refreshText()
 {
-    if (!m_expandable) {
-        setText(label(m_workedMs));
-        setToolTip(QString());
+    const qint64 worked = m_live ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs)
+                                 : m_workedMs;
+    QString tip;
+    if (m_live)
+        tip = m_liveInteractive ? tr("Background work the agent started is still running") : tr("Working…");
+    if (!clickable()) {
+        setText(label(worked));
+        setToolTip(tip);
         return;
     }
-    setText(label(m_workedMs) + (m_expanded ? QStringLiteral(" ⌄") : QStringLiteral(" ›")));
-    setToolTip(m_expanded ? tr("Hide tool calls") : tr("Show tool calls"));
+    setText(label(worked) + (m_expanded ? QStringLiteral(" ⌄") : QStringLiteral(" ›")));
+    const QString action = m_expanded ? tr("Hide tool calls") : tr("Show tool calls");
+    setToolTip(tip.isEmpty() ? action : tip + QLatin1Char('\n') + action);
 }

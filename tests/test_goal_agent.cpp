@@ -183,6 +183,8 @@ private slots:
     void promptEnded_wakeTurnEndsWhenToolCallCompletes();
     void promptEnded_rpcResultDropsStaleOpenToolCalls();
     void promptEnded_cancelEndsWakeTurnWithOpenToolCall();
+    void promptEnded_cycleResultEndsWakeTurnConfirmed();
+    void promptEnded_cycleResultLeavesPromptTurnAndOpenWork();
     void asyncTasks_trackLiveCountFromWire();
     void initialize_declaresAsyncTasksCapability();
     void backgroundIdle_firesAfterWakeGraceWhenNoWakeTurn();
@@ -2195,6 +2197,86 @@ void TestGoalAgent::promptEnded_wakeTurnEndsWhenToolCallCompletes()
     channel->pushStdout(toolCallStatusFrame(QStringLiteral("t1"), QStringLiteral("completed")));
     QCOMPARE(ended, 0);
     QTRY_COMPARE(ended, 1);
+}
+
+namespace {
+// claude-agent-acp's usage_update at a model cycle's SDK result.
+QByteArray cycleResultFrame()
+{
+    return sessionUpdateFrame(QStringLiteral("usage_update"), QJsonObject{
+        {QStringLiteral("used"), 1000},
+        {QStringLiteral("size"), 200000},
+        {QStringLiteral("cost"), QJsonObject{{QStringLiteral("amount"), 0.1},
+                                             {QStringLiteral("currency"), QStringLiteral("USD")}}}});
+}
+
+QByteArray agentTextFrame(const QString &text)
+{
+    return sessionUpdateFrame(QStringLiteral("agent_message_chunk"), QJsonObject{
+        {QStringLiteral("content"), QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                                {QStringLiteral("text"), text}}}});
+}
+} // namespace
+
+// A wake-up turn (here a Monitor event's reply) ends at its cycle result, not
+// after the quiet period, and says the end is the agent's own.
+void TestGoalAgent::promptEnded_cycleResultEndsWakeTurnConfirmed()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    int ended = 0;
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() {
+        ++ended;
+        QVERIFY(conn.turnEndConfirmed());
+    });
+
+    channel->pushStdout(cycleResultFrame()); // no turn running: starts none
+    QCOMPARE(ended, 0);
+    channel->pushStdout(agentTextFrame(QStringLiteral("got tick 1")));
+    QCOMPARE(ended, 0);
+    channel->pushStdout(cycleResultFrame());
+    QCOMPARE(ended, 1);
+
+    // The next wake-up starts unconfirmed again and falls back to the guess
+    // when no cycle result comes.
+    channel->pushStdout(agentTextFrame(QStringLiteral("got tick 2")));
+    QVERIFY(!conn.turnEndConfirmed());
+    disconnect(&conn, &AcpConnection::promptEnded, &conn, nullptr);
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() { ++ended; });
+    QTRY_COMPARE(ended, 2);
+    QVERIFY(!conn.turnEndConfirmed());
+}
+
+// A prompt turn ends on its session/prompt result (the cycle result comes just
+// before it), and open work still holds a wake-up turn open.
+void TestGoalAgent::promptEnded_cycleResultLeavesPromptTurnAndOpenWork()
+{
+    AcpConnection conn;
+    auto *channel = new RecordingChannel(&conn);
+    conn.attachChannelForTest(channel);
+    channel->start();
+    conn.setSessionIdForTest(QStringLiteral("s1"));
+
+    int ended = 0;
+    connect(&conn, &AcpConnection::promptEnded, &conn, [&]() { ++ended; });
+
+    conn.sendPrompt(QStringLiteral("hi"), {});
+    channel->pushStdout(agentTextFrame(QStringLiteral("done")));
+    channel->pushStdout(cycleResultFrame());
+    QCOMPARE(ended, 0);
+    channel->pushStdout(rpcResultFrame(1));
+    QTRY_COMPARE(ended, 1);
+
+    channel->pushStdout(toolCallFrame(QStringLiteral("t1"), QStringLiteral("pending")));
+    channel->pushStdout(cycleResultFrame());
+    QTest::qWait(400);
+    QCOMPARE(ended, 1);
+    channel->pushStdout(toolCallStatusFrame(QStringLiteral("t1"), QStringLiteral("completed")));
+    QTRY_COMPARE(ended, 2);
 }
 
 // The agent's own session/prompt result is authoritative: a tool call it

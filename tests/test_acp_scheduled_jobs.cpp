@@ -81,6 +81,37 @@ void feedCron(ScheduledJobTracker &t, qint64 now, const QString &jobId, bool rec
                    completed(QStringLiteral("Scheduled job"))), now);
 }
 
+// claude-agent-acp 0.90.0: Monitor, then TaskStop on its task.
+void feedMonitor(ScheduledJobTracker &t, qint64 now, const QString &taskId, const QJsonObject &toolResponse,
+                 const QString &callId = QStringLiteral("m1"))
+{
+    const QString tool = QStringLiteral("Monitor");
+    t.apply(update(QStringLiteral("tool_call"), tool, callId, pending()), now);
+    t.apply(update(QStringLiteral("tool_call_update"), tool, callId,
+                   rawInput({{QStringLiteral("command"), QStringLiteral("while true; do echo beat; sleep 20; done")},
+                             {QStringLiteral("description"), QStringLiteral("heartbeat every 20s")},
+                             {QStringLiteral("timeout_ms"), 3600000}})), now);
+    if (!toolResponse.isEmpty())
+        t.apply(update(QStringLiteral("tool_call_update"), tool, callId, {}, toolResponse), now);
+    t.apply(update(QStringLiteral("tool_call_update"), tool, callId,
+                   completed(QStringLiteral("Monitor started (task %1, expires in 30m unless the source "
+                                            "ends first; ...)").arg(taskId))), now);
+}
+
+bool feedTaskStop(ScheduledJobTracker &t, qint64 now, const QString &taskId)
+{
+    const QString tool = QStringLiteral("TaskStop");
+    const QString callId = QStringLiteral("s1");
+    t.apply(update(QStringLiteral("tool_call"), tool, callId, pending()), now);
+    t.apply(update(QStringLiteral("tool_call_update"), tool, callId,
+                   rawInput({{QStringLiteral("task_id"), taskId}})), now);
+    t.apply(update(QStringLiteral("tool_call_update"), tool, callId, {},
+                   {{QStringLiteral("task_id"), taskId}, {QStringLiteral("task_type"), QStringLiteral("local_bash")}}),
+            now);
+    return t.apply(update(QStringLiteral("tool_call_update"), tool, callId,
+                          completed(QStringLiteral("{\"task_id\":\"%1\"}").arg(taskId))), now);
+}
+
 } // namespace
 
 class TestAcpScheduledJobs : public QObject
@@ -100,6 +131,10 @@ private slots:
     void cron_deleteRemovesJobById();
     void cron_listReconcilesCronJobs();
     void cron_idParsedFromOutputTextWhenMetaMissing();
+    void monitor_trackedUntilItsTimeout();
+    void monitor_persistentLivesWithTheSession();
+    void monitor_taskIdFromOutputWithoutToolResponse();
+    void monitor_taskStopRemovesOnlyThatWatch();
     void unrelatedToolsAreIgnored();
     void clear_dropsEverythingAndReportsChange();
     void expire_falseWhenNothingExpired();
@@ -267,6 +302,60 @@ void TestAcpScheduledJobs::cron_idParsedFromOutputTextWhenMetaMissing()
     QCOMPARE(t.jobs().size(), 1);
     QCOMPARE(t.jobs().first().id, QStringLiteral("134dd71d"));
     QVERIFY(t.jobs().first().recurring);
+}
+
+void TestAcpScheduledJobs::monitor_trackedUntilItsTimeout()
+{
+    ScheduledJobTracker t;
+    feedMonitor(t, kNow, QStringLiteral("b9727pa2e"),
+                {{QStringLiteral("taskId"), QStringLiteral("b9727pa2e")},
+                 {QStringLiteral("timeoutMs"), 1800000}, // granted, not the 3600000 asked for
+                 {QStringLiteral("persistent"), false}});
+    QCOMPARE(t.jobs().size(), 1);
+    const AcpScheduledJob &j = t.jobs().first();
+    QCOMPARE(j.kind, AcpScheduledJob::Kind::Monitor);
+    QCOMPARE(j.id, QStringLiteral("b9727pa2e"));
+    QCOMPARE(j.prompt, QStringLiteral("heartbeat every 20s"));
+    QCOMPARE(j.command, QStringLiteral("while true; do echo beat; sleep 20; done"));
+    QCOMPARE(j.fireAtMs, kNow);
+    QCOMPARE(j.expiresAtMs, kNow + 1800000);
+    QVERIFY(AcpProtocol::formatScheduledJob(j).contains(QStringLiteral("heartbeat every 20s")));
+    QVERIFY(!t.expire(kNow + 1799999));
+    QVERIFY(t.expire(kNow + 1800000));
+}
+
+void TestAcpScheduledJobs::monitor_persistentLivesWithTheSession()
+{
+    ScheduledJobTracker t;
+    feedMonitor(t, kNow, QStringLiteral("p1"),
+                {{QStringLiteral("taskId"), QStringLiteral("p1")}, {QStringLiteral("persistent"), true}});
+    QCOMPARE(t.jobs().size(), 1);
+    QCOMPARE(t.jobs().first().expiresAtMs, kNow + ScheduledJobTracker::kRecurringLifetimeMs);
+}
+
+void TestAcpScheduledJobs::monitor_taskIdFromOutputWithoutToolResponse()
+{
+    ScheduledJobTracker t;
+    feedMonitor(t, kNow, QStringLiteral("b6x8d7os3"), {});
+    QCOMPARE(t.jobs().size(), 1);
+    QCOMPARE(t.jobs().first().id, QStringLiteral("b6x8d7os3"));
+    QCOMPARE(t.jobs().first().expiresAtMs, kNow + 3600000); // rawInput timeout_ms
+}
+
+void TestAcpScheduledJobs::monitor_taskStopRemovesOnlyThatWatch()
+{
+    ScheduledJobTracker t;
+    feedMonitor(t, kNow, QStringLiteral("a1"), {{QStringLiteral("taskId"), QStringLiteral("a1")}},
+                QStringLiteral("m1"));
+    feedMonitor(t, kNow, QStringLiteral("a2"), {{QStringLiteral("taskId"), QStringLiteral("a2")}},
+                QStringLiteral("m2"));
+    feedCron(t, kNow, QStringLiteral("a1"), true); // same id, other kind: untouched
+    QCOMPARE(t.jobs().size(), 3);
+    QVERIFY(!feedTaskStop(t, kNow, QStringLiteral("zz"))); // a Bash task, not a watch
+    QVERIFY(feedTaskStop(t, kNow, QStringLiteral("a1")));
+    QCOMPARE(t.jobs().size(), 2);
+    for (const AcpScheduledJob &j : t.jobs())
+        QVERIFY(!(j.kind == AcpScheduledJob::Kind::Monitor && j.id == QStringLiteral("a1")));
 }
 
 void TestAcpScheduledJobs::unrelatedToolsAreIgnored()

@@ -118,6 +118,11 @@ public:
 
     void setSessionIdForTest(const QString &id) { m_sessionId = id; }
 
+    // The last promptEnded was the agent's own end of a model cycle (a cycle
+    // result), not the 250 ms quiet-period guess a wake-up turn otherwise
+    // ends on. Valid until the next promptStarted.
+    bool turnEndConfirmed() const { return m_turnEndConfirmed; }
+
     // Live background (async) tasks the agent reported via AIR `async_task_*`.
     int backgroundTaskCount() const { return m_liveAsyncTasks.size(); }
     // Live background tasks in spawn order (for a "stop which one?" picker).
@@ -283,6 +288,9 @@ private:
     void notePromptClosed();
     void noteStreamingActivity();
     void schedulePromptIdleEnd();
+    // A model cycle reached its SDK result (usage_update with `cost`): ends a
+    // wake-up turn now instead of on the quiet-period guess.
+    void noteModelCycleResult();
     // True while the agent still has unfinished work the idle timer cannot
     // see as traffic: an open tool call or a permission waiting on the user.
     bool hasOpenWork() const;
@@ -377,6 +385,7 @@ private:
     bool m_promptInFlight = false;
     int m_openPrompts = 0;
     bool m_promptProducedOutput = false;
+    bool m_turnEndConfirmed = false;
     QTimer *m_promptIdleEndTimer = nullptr;
     QTimer *m_sessionBusyRetryTimer = nullptr;
     PendingPrompt m_busyRetryPrompt;

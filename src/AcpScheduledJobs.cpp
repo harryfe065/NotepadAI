@@ -34,7 +34,9 @@ constexpr int kTooltipPromptMaxChars = 80;
 bool isScheduleTool(const QString &tool)
 {
     return tool == QLatin1String("ScheduleWakeup") || tool == QLatin1String("CronCreate")
-        || tool == QLatin1String("CronDelete") || tool == QLatin1String("CronList");
+        || tool == QLatin1String("CronDelete") || tool == QLatin1String("CronList")
+        || tool == QLatin1String("Monitor") || tool == QLatin1String("TaskStop")
+        || tool == QLatin1String("KillShell");
 }
 
 QString toolNameOf(const QJsonObject &update)
@@ -158,7 +160,7 @@ bool ScheduledJobTracker::commit(const QString &toolCallId, const PendingCall &c
             if (next > 0)
                 job.expiresAtMs = next + kWakeGraceMs;
         }
-        removeCron(jobId); // same id re-created: keep one entry
+        removeJob(AcpScheduledJob::Kind::Cron, jobId); // same id re-created: keep one entry
         m_jobs.append(job);
         return true;
     }
@@ -167,7 +169,51 @@ bool ScheduledJobTracker::commit(const QString &toolCallId, const PendingCall &c
         QString jobId = call.input.value(QStringLiteral("id")).toString();
         if (jobId.isEmpty())
             jobId = call.response.value(QStringLiteral("id")).toString();
-        return !jobId.isEmpty() && removeCron(jobId);
+        return !jobId.isEmpty() && removeJob(AcpScheduledJob::Kind::Cron, jobId);
+    }
+
+    // Wire (claude-agent-acp 0.90.0): rawInput {command, description,
+    // timeout_ms, persistent}, toolResponse {taskId, timeoutMs, persistent},
+    // rawOutput "Monitor started (task <id>, expires in 30m ...)".
+    if (call.tool == QLatin1String("Monitor")) {
+        QString taskId = call.response.value(QStringLiteral("taskId")).toString();
+        if (taskId.isEmpty()) {
+            static const QRegularExpression taskRe(QStringLiteral("\\(task ([0-9a-z]+)"));
+            taskId = taskRe.match(call.output).captured(1);
+        }
+        if (taskId.isEmpty())
+            return false;
+        const QJsonValue persistentMeta = call.response.value(QStringLiteral("persistent"));
+        const bool persistent = persistentMeta.isBool()
+            ? persistentMeta.toBool()
+            : call.input.value(QStringLiteral("persistent")).toBool(false);
+        auto timeoutMs = static_cast<qint64>(call.response.value(QStringLiteral("timeoutMs")).toDouble(0));
+        if (timeoutMs <= 0)
+            timeoutMs = static_cast<qint64>(call.input.value(QStringLiteral("timeout_ms")).toDouble(0));
+        if (timeoutMs <= 0)
+            timeoutMs = kMonitorDefaultTimeoutMs;
+
+        AcpScheduledJob job;
+        job.kind = AcpScheduledJob::Kind::Monitor;
+        job.id = taskId;
+        job.prompt = call.input.value(QStringLiteral("description")).toString();
+        job.command = call.input.value(QStringLiteral("command")).toString();
+        job.fireAtMs = nowMs;
+        // A persistent watch lives as long as the session.
+        job.expiresAtMs = nowMs + (persistent ? kRecurringLifetimeMs : timeoutMs);
+        removeJob(AcpScheduledJob::Kind::Monitor, taskId);
+        m_jobs.append(job);
+        return true;
+    }
+
+    // TaskStop {task_id}; KillShell is its older name, with {shell_id}.
+    if (call.tool == QLatin1String("TaskStop") || call.tool == QLatin1String("KillShell")) {
+        QString taskId = call.input.value(QStringLiteral("task_id")).toString();
+        if (taskId.isEmpty())
+            taskId = call.input.value(QStringLiteral("shell_id")).toString();
+        if (taskId.isEmpty())
+            taskId = call.response.value(QStringLiteral("task_id")).toString();
+        return !taskId.isEmpty() && removeJob(AcpScheduledJob::Kind::Monitor, taskId);
     }
 
     if (call.tool == QLatin1String("CronList")) {
@@ -188,12 +234,12 @@ bool ScheduledJobTracker::commit(const QString &toolCallId, const PendingCall &c
     return false;
 }
 
-bool ScheduledJobTracker::removeCron(const QString &id)
+bool ScheduledJobTracker::removeJob(AcpScheduledJob::Kind kind, const QString &id)
 {
     const qsizetype before = m_jobs.size();
     m_jobs.erase(std::remove_if(m_jobs.begin(), m_jobs.end(),
-                                [&id](const AcpScheduledJob &j) {
-                                    return j.kind == AcpScheduledJob::Kind::Cron && j.id == id;
+                                [kind, &id](const AcpScheduledJob &j) {
+                                    return j.kind == kind && j.id == id;
                                 }),
                  m_jobs.end());
     return m_jobs.size() != before;
@@ -230,6 +276,17 @@ qint64 ScheduledJobTracker::nextExpiryMs() const
 QString formatScheduledJob(const AcpScheduledJob &job)
 {
     QString head;
+    if (job.kind == AcpScheduledJob::Kind::Monitor) {
+        head = QStringLiteral("Monitor until %1")
+                   .arg(QDateTime::fromMSecsSinceEpoch(job.expiresAtMs).toString(QStringLiteral("HH:mm:ss")));
+        QString what = job.prompt.simplified();
+        const QString command = job.command.simplified();
+        if (!command.isEmpty())
+            what = what.isEmpty() ? command : QStringLiteral("%1 (%2)").arg(what, command);
+        if (what.size() > kTooltipPromptMaxChars)
+            what = what.left(kTooltipPromptMaxChars) + QChar(0x2026);
+        return what.isEmpty() ? head : head + QStringLiteral(" — ") + what;
+    }
     if (job.kind == AcpScheduledJob::Kind::Wake) {
         head = QStringLiteral("Wake-up %1")
                    .arg(QDateTime::fromMSecsSinceEpoch(job.fireAtMs).toString(QStringLiteral("HH:mm:ss")));

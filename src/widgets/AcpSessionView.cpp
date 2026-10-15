@@ -883,6 +883,12 @@ void AcpSessionView::wireSignals()
                 this, &AcpSessionView::onRequestFailed);
         connect(m_connection, &AcpConnection::scheduledJobsChanged,
                 this, &AcpSessionView::onScheduledJobsChanged);
+        // The last task ended and no wake-up came: the turn is over.
+        connect(m_connection, &AcpConnection::backgroundIdle,
+                this, [this]() { settleLingerRow(); });
+        // Tasks and watches die with the process; it emits no backgroundIdle.
+        connect(m_connection, &AcpConnection::agentExited,
+                this, [this]() { settleLingerRow(true); });
         connect(m_connection, &AcpConnection::errorOccurred,
                 this, &AcpSessionView::onErrorOccurred);
         connect(m_connection, &AcpConnection::planReceived,
@@ -1065,6 +1071,7 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_foldedMask.clear();
     m_foldedCount = 0;
     m_liveRow.clear(); // already queued for deletion with the rest of the layout
+    m_lingerRow.clear();
     m_liveTurnBegin = -1;
     resetLiveDiff();
     m_liveRowReopened = false;
@@ -1478,7 +1485,13 @@ void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
         // A deferred wake-up fold: the turn ended when the wait began.
         const qint64 endedMs = m_wakeFoldTimer->isActive() ? m_wakeTurnEndedMs : 0;
         m_wakeFoldTimer->stop();
-        live->finishLive(endedMs);
+        if (agentWorkPending()) {
+            // Its entries fold, but the clock runs on until that work is over.
+            live->setLiveInteractive(true);
+            m_lingerRow = live;
+        } else {
+            live->finishLive(endedMs);
+        }
     }
     const int at = before ? m_transcriptLayout->indexOf(before) : -1;
     AcpTurnFoldRow *row = makeFoldRow(turn, live);
@@ -1561,6 +1574,8 @@ void AcpSessionView::ensureLiveTurnRow()
         m_expandQueue.removeOne(begin);
         m_foldedTurns.erase(folded);
         if (row) {
+            if (m_lingerRow == row)
+                m_lingerRow.clear(); // live for the wake-up now; foldTurn decides again
             disconnect(row, &AcpTurnFoldRow::expandedChanged, this, nullptr); // makeFoldRow reconnects
             row->setExpanded(false);
             row->setToolCallCount(m_liveToolCalls);
@@ -1573,6 +1588,9 @@ void AcpSessionView::ensureLiveTurnRow()
             return;
         }
     }
+    // A new prompt: the older turn's row stops; its background work, if any,
+    // now runs under this turn.
+    settleLingerRow(true);
 
     QWidget *anchorWidget = widgetForTimelineEntry(anchor);
     const int at = anchorWidget ? m_transcriptLayout->indexOf(anchorWidget) : -1;
@@ -1587,6 +1605,28 @@ void AcpSessionView::ensureLiveTurnRow()
     m_liveTurnBegin = begin;
     m_liveRowReopened = false;
     syncTranscriptHostWidth();
+}
+
+bool AcpSessionView::agentWorkPending() const
+{
+    if (!m_connection)
+        return m_model && m_model->backgroundTaskCount() > 0;
+    // Includes the short grace after the last task, before its wake-up turn
+    // starts, so the row does not stop and restart in between.
+    if (m_connection->hasPendingBackgroundWork())
+        return true;
+    const auto &jobs = m_connection->scheduledJobs();
+    return std::any_of(jobs.cbegin(), jobs.cend(), [](const AcpProtocol::AcpScheduledJob &job) {
+        return job.kind == AcpProtocol::AcpScheduledJob::Kind::Monitor;
+    });
+}
+
+void AcpSessionView::settleLingerRow(bool force)
+{
+    if (!m_lingerRow || (!force && agentWorkPending()))
+        return;
+    m_lingerRow->finishLive();
+    m_lingerRow.clear();
 }
 
 void AcpSessionView::dropLiveTurnRow()
@@ -2353,9 +2393,11 @@ void AcpSessionView::onTurnEnded(int groupId)
             }
         }
     }
-    if (m_liveRow && m_liveRowReopened) {
+    if (m_liveRow && m_liveRowReopened && !(m_connection && m_connection->turnEndConfirmed())) {
         // A wake-up turn: its end is a guess that the next tool step often
-        // undoes, so fold only if it stays over (m_wakeFoldTimer).
+        // undoes, so fold only if it stays over (m_wakeFoldTimer). An end the
+        // agent confirmed folds now: Monitor events wake the model faster than
+        // the timer, which then never fired and every reply stayed unfolded.
         m_wakeTurnEndedMs = QDateTime::currentMSecsSinceEpoch();
         m_wakeFoldTimer->start();
     } else {
@@ -3193,13 +3235,14 @@ void AcpSessionView::resetElapsed()
 void AcpSessionView::onElapsedTick()
 {
     if (m_model && m_model->isProcessing())
-        m_elapsedMs += 100;
+        m_elapsedMs += m_elapsedTimer->interval();
     updateElapsedLabel();
 }
 
 void AcpSessionView::onBackgroundTaskCountChanged(int)
 {
     updateElapsedLabel();
+    settleLingerRow();
 }
 
 void AcpSessionView::onBackgroundStopRequested()
@@ -3237,6 +3280,7 @@ void AcpSessionView::onScheduledJobsChanged()
 {
     ++m_scheduledRev;
     updateElapsedLabel();
+    settleLingerRow(); // a Monitor watch expired or was stopped
 }
 
 void AcpSessionView::updateElapsedLabel()
@@ -3246,7 +3290,17 @@ void AcpSessionView::updateElapsedLabel()
     const int background = m_model ? m_model->backgroundTaskCount() : 0;
     const auto scheduledJobs = m_connection ? m_connection->scheduledJobs()
                                             : QVector<AcpProtocol::AcpScheduledJob>();
-    const int scheduled = static_cast<int>(scheduledJobs.size());
+    // Monitor watches get their own ticking entry; the rest are "Scheduled".
+    int monitors = 0;
+    qint64 monitorSinceMs = 0; // earliest live watch's start
+    for (const auto &job : scheduledJobs) {
+        if (job.kind != AcpProtocol::AcpScheduledJob::Kind::Monitor)
+            continue;
+        ++monitors;
+        if (monitorSinceMs == 0 || job.fireAtMs < monitorSinceMs)
+            monitorSinceMs = job.fireAtMs;
+    }
+    const int scheduled = static_cast<int>(scheduledJobs.size()) - monitors;
 
     QString text;
     if (processing) {
@@ -3258,11 +3312,19 @@ void AcpSessionView::updateElapsedLabel()
         m_bgWaitClock.start();
     else if (background == 0 && m_bgWaitClock.isValid())
         m_bgWaitClock.invalidate();
-    if (m_elapsedTimer && (processing || background > 0) != m_elapsedTimer->isActive()) {
-        if (processing || background > 0)
-            m_elapsedTimer->start();
-        else
-            m_elapsedTimer->stop();
+    const bool ticking = processing || background > 0 || monitors > 0;
+    if (m_elapsedTimer) {
+        // Tenths only show while a turn or a background task runs; a lone
+        // Monitor clock counts whole seconds (it can run for 30 min).
+        const int interval = (processing || background > 0) ? 100 : 1000;
+        if (m_elapsedTimer->interval() != interval)
+            m_elapsedTimer->setInterval(interval);
+        if (ticking != m_elapsedTimer->isActive()) {
+            if (ticking)
+                m_elapsedTimer->start();
+            else
+                m_elapsedTimer->stop();
+        }
     }
     if (background > 0) {
         if (!text.isEmpty())
@@ -3272,6 +3334,15 @@ void AcpSessionView::updateElapsedLabel()
                     .arg(AcpProtocol::formatWaitDuration(m_bgWaitClock.elapsed()));
         if (m_connection && m_connection->hasStoppableBackgroundTask())
             text += QStringLiteral("  <a href=\"stop\">⏹ ") + tr("Stop") + QStringLiteral("</a>");
+    }
+    // Monitor watches: every line their command prints wakes the agent, so the
+    // conversation is not over while one is live.
+    if (monitors > 0) {
+        if (!text.isEmpty())
+            text += QStringLiteral("  ·  ");
+        text += tr("👁 Monitor (%1)  %2")
+                    .arg(monitors)
+                    .arg(AcpProtocol::formatToolDuration(QDateTime::currentMSecsSinceEpoch() - monitorSinceMs));
     }
     // Wake-ups / cron jobs the agent set for itself. Display only (the agent
     // cannot be told to drop them) and no ticking clock: absolute times live
@@ -3290,20 +3361,26 @@ void AcpSessionView::updateElapsedLabel()
         QStringList lines;
         if (m_elapsedTipIsBackground)
             lines << tr("Background tasks started by the agent are still running").toHtmlEscaped();
-        else if (scheduled == 0)
+        else if (scheduled == 0 && monitors == 0)
             lines << tr("Time since the last new event from the agent").toHtmlEscaped();
-        if (scheduled > 0) {
+        auto addJobs = [&](const QString &heading, bool monitorJobs) {
             if (!lines.isEmpty())
                 lines << QString();
-            lines << tr("Scheduled by the agent (cannot be cancelled from here):").toHtmlEscaped();
-            for (const auto &job : scheduledJobs)
-                lines << QStringLiteral("• ") + AcpProtocol::formatScheduledJob(job).toHtmlEscaped();
-        }
+            lines << heading.toHtmlEscaped();
+            for (const auto &job : scheduledJobs) {
+                if ((job.kind == AcpProtocol::AcpScheduledJob::Kind::Monitor) == monitorJobs)
+                    lines << QStringLiteral("• ") + AcpProtocol::formatScheduledJob(job).toHtmlEscaped();
+            }
+        };
+        if (monitors > 0)
+            addJobs(tr("Watched by the agent; each new line of output wakes it:"), true);
+        if (scheduled > 0)
+            addJobs(tr("Scheduled by the agent (cannot be cancelled from here):"), false);
         const QString tip = QStringLiteral("<div>") + lines.join(QStringLiteral("<br>"))
                           + QStringLiteral("</div>");
         m_elapsedLabel->setToolTip(tip);
     }
-    m_elapsedLabel->setVisible(processing || background > 0 || scheduled > 0);
+    m_elapsedLabel->setVisible(processing || background > 0 || scheduled > 0 || monitors > 0);
     if (m_elapsedLabel->text() != text)
         m_elapsedLabel->setText(text);
 }

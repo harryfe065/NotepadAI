@@ -1152,6 +1152,9 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
             }
         }
         emit usageReplaced(usage);
+        // claude-agent-acp sends `cost` only from a cycle's SDK result.
+        if (costVal.isObject())
+            noteModelCycleResult();
     } else if (const auto asyncEv = AcpProtocol::asyncTaskEventFromUpdate(kind, update)) {
         // Task lifecycle is liveness info, not turn traffic: it must neither
         // start a turn nor delay the idle end of one.
@@ -1667,6 +1670,7 @@ void AcpConnection::beginPrompt()
     }
     m_promptInFlight = true;
     m_promptProducedOutput = false;
+    m_turnEndConfirmed = false;
     // A turn is running: its own promptEnded settles supervisors from here.
     m_bgIdleTimer->stop();
     emit promptStarted();
@@ -1712,6 +1716,19 @@ void AcpConnection::noteStreamingActivity()
         beginPrompt();
     if (m_openPrompts == 0 && !m_busyRetryPending)
         schedulePromptIdleEnd();
+}
+
+// A session/prompt turn ends on its prompt result. A wake-up turn (Claude Code
+// woke the model itself: a background task finished, a Monitor event) has no
+// such frame, so the quiet-period guess ends it; its cycle result is the real
+// end. Monitor events can come a second apart, faster than any guess settles.
+// Open work keeps the guess in charge: the cycle may be held for it.
+void AcpConnection::noteModelCycleResult()
+{
+    if (!m_promptInFlight || m_openPrompts > 0 || m_busyRetryPending || hasOpenWork())
+        return;
+    m_turnEndConfirmed = true;
+    endPrompt();
 }
 
 void AcpConnection::schedulePromptIdleEnd()

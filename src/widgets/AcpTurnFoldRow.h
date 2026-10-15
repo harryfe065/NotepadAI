@@ -33,7 +33,10 @@ class QTimer;
 // While its turn is still running the row is "live": a non-interactive
 // "Worked for Xs" whose seconds tick once per second, no chevron. finishLive()
 // freezes the total and turns it into the regular collapsible row. A finished
-// row can go live again (a background wake-up continues its turn).
+// row can go live again (a background wake-up continues its turn). A live row
+// can also be interactive: the turn has folded, but background work it started
+// (tasks, Monitor watches) still runs, so the seconds keep ticking while the
+// row expands like a finished one.
 class AcpTurnFoldRow : public QPushButton
 {
     Q_OBJECT
@@ -55,11 +58,14 @@ public:
     // diff colours); empty hides it.
     void setDiffStat(const AcpDiffStat::Lines &stat);
 
-    // startMs: epoch ms the turn began (<= 0 = now).
+    // startMs: epoch ms the turn began (<= 0 = now). Non-interactive.
     void startLive(qint64 startMs);
+    // Live only: keep ticking but expand on click (see the class comment).
+    void setLiveInteractive(bool interactive);
     // endMs: epoch ms the turn ended (<= 0 = now).
     void finishLive(qint64 endMs = 0);
     bool isLive() const { return m_live; }
+    bool isLiveInteractive() const { return m_live && m_liveInteractive; }
 
     // Styled widget: the transcript host's font does not reach it, so the
     // owner pushes the chat (Default Font) typeface down explicitly.
@@ -74,8 +80,10 @@ protected:
 
 private:
     void refreshText();
+    void refreshInteraction();
     void onLiveTick();
     QString label(qint64 workedMs) const;
+    bool clickable() const { return m_expandable && (!m_live || m_liveInteractive); }
 
     qint64 m_workedMs = -1;
     qint64 m_liveStartMs = 0;
@@ -85,6 +93,7 @@ private:
     bool m_expanded = false;
     bool m_expandable = true;
     bool m_live = false;
+    bool m_liveInteractive = false;
 };
 
 #endif // ACP_TURN_FOLD_ROW_H

@@ -1108,11 +1108,31 @@ target_sources(test_acp_dock_close_event PRIVATE
 )
 add_test(NAME AcpDockCloseEvent COMMAND test_acp_dock_close_event)
 
+# --- AcpSessionView driven by real wire frames (wake-up turns) ---
+qt_add_executable(test_acp_session_view_wake test_acp_session_view_wake.cpp)
+get_target_property(_acp_view_srcs test_acp_dock_close_event SOURCES)
+list(FILTER _acp_view_srcs EXCLUDE REGEX "test_acp_dock_close_event\\.cpp$")
+target_sources(test_acp_session_view_wake PRIVATE ${_acp_view_srcs})
+target_include_directories(test_acp_session_view_wake PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/dialogs
+    ${CMAKE_SOURCE_DIR}/src/docks
+    ${CMAKE_SOURCE_DIR}/src/remote
+    ${CMAKE_SOURCE_DIR}/src/widgets
+)
+target_link_libraries(test_acp_session_view_wake PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Test
+    SingleApplication::SingleApplication
+    xdiff
+)
+add_test(NAME AcpSessionViewWake COMMAND test_acp_session_view_wake)
+
 foreach(_goal_http_tgt
         test_send_with_goal_dialog
         test_acp_agent_manager
         test_acp_agent_exit_restart
-        test_acp_dock_close_event)
+        test_acp_dock_close_event
+        test_acp_session_view_wake)
     if(WIN32)
         target_sources(${_goal_http_tgt} PRIVATE
             ${CMAKE_SOURCE_DIR}/src/ai/CredentialStore_Windows.cpp)
@@ -2456,6 +2476,7 @@ foreach(goal_prompt_test
         test_acp_agent_manager
         test_acp_agent_exit_restart
         test_acp_dock_close_event
+        test_acp_session_view_wake
         test_goal_http_judge
         test_goal_agent)
     target_sources(${goal_prompt_test} PRIVATE ${CMAKE_SOURCE_DIR}/src/prompts/prompts.qrc)

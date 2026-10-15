@@ -29,22 +29,27 @@
 
 namespace AcpProtocol {
 
-// A wake-up or cron job Claude Code scheduled for itself (ScheduleWakeup /
-// CronCreate). The agent re-invokes the model with `prompt` when it fires, as
-// an unsolicited turn with no session/prompt. Display-only: neither
-// `session/cancel` nor `_session/async_task/stop` can cancel these.
+// Something Claude Code set up to wake itself later: a wake-up or cron job
+// (ScheduleWakeup / CronCreate), or a Monitor watch, which wakes the model on
+// every line its command prints. Each wake-up is an unsolicited turn with no
+// session/prompt. Display-only: neither `session/cancel` nor
+// `_session/async_task/stop` can cancel these (claude-agent-acp never
+// publishes a Monitor's task).
 struct AcpScheduledJob
 {
-    enum class Kind : std::uint8_t { Wake, Cron };
+    enum class Kind : std::uint8_t { Wake, Cron, Monitor };
 
     Kind kind = Kind::Wake;
-    QString id;            // cron job id; the tool-call id for a wake-up
-    QString prompt;
+    QString id;            // cron job id; the tool-call id for a wake-up; the task id for a Monitor
+    QString prompt;        // Monitor: its description
     QString cron;          // Cron only
     QString humanSchedule; // Cron only, e.g. "Every minute"
+    QString command;       // Monitor only: the watched command
     bool recurring = false;
-    qint64 fireAtMs = 0;   // Wake only: epoch ms the agent will wake
-    qint64 expiresAtMs = 0; // when the host drops the job from its live list
+    qint64 fireAtMs = 0;   // Wake: epoch ms the agent will wake; Monitor: when it started
+    // When the host drops the job from its live list. A Monitor whose command
+    // exits early stays listed until then: nothing on the wire says it ended.
+    qint64 expiresAtMs = 0;
 };
 
 // Live list of scheduled jobs, rebuilt from the tool-call stream. Pure: the
@@ -60,6 +65,9 @@ public:
     static constexpr qint64 kWakeGraceMs = 30'000;
     // Claude Code auto-expires recurring jobs after 7 days.
     static constexpr qint64 kRecurringLifetimeMs = 7LL * 24 * 3600 * 1000;
+    // A Monitor with no known timeout: Claude Code's cap (it granted 30 min
+    // when asked for 60).
+    static constexpr qint64 kMonitorDefaultTimeoutMs = 30LL * 60 * 1000;
 
     // Next fire time (epoch ms) of a cron expression strictly after `fromMs`;
     // <= 0 when unknown. Used to expire one-shot cron jobs.
@@ -88,7 +96,7 @@ private:
     };
 
     bool commit(const QString &toolCallId, const PendingCall &call, qint64 nowMs);
-    bool removeCron(const QString &id);
+    bool removeJob(AcpScheduledJob::Kind kind, const QString &id);
 
     QHash<QString, PendingCall> m_pending; // tool calls not yet completed
     QVector<AcpScheduledJob> m_jobs;       // creation order

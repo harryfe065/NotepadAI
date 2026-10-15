@@ -19,6 +19,7 @@
 #include <QtTest>
 #include <QApplication>
 #include <QLabel>
+#include <QLayout>
 #include <QPushButton>
 
 #include "widgets/TerminalEmptyPanel.h"
