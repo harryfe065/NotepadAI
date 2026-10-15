@@ -74,6 +74,12 @@ try
     QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
 #endif
 
+    // Native child widgets (embedded-window and WebView2 hosts) must not turn
+    // every sibling of every ancestor native too: Qt does that by default and
+    // it sticks for the session (dozens of extra HWNDs to show/hide/move on
+    // every tab switch and resize).
+    QApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+
     // Default settings format
     QSettings::setDefaultFormat(QSettings::IniFormat);
 

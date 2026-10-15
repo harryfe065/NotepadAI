@@ -9,9 +9,11 @@
 
 #ifdef Q_OS_WIN
 #include <Windows.h>
+#include <commctrl.h>
 
 namespace {
 constexpr wchar_t EmbedPropertyName[] = L"NotepadAI.EmbeddedWindow.Token";
+constexpr UINT_PTR kCaptionGuardId = 0x4e414945;
 
 bool setLong(HWND hwnd, int index, LONG_PTR value)
 {
@@ -46,6 +48,74 @@ WINDOWPLACEMENT placementFrom(const EmbeddedWindowWin32::NativeWindowState &s)
                           s.placementNormalRight, s.placementNormalBottom};
     return p;
 }
+
+bool hostClientOnScreen(HWND host, RECT *rect)
+{
+    if (!GetClientRect(host, rect))
+        return false;
+    MapWindowPoints(host, HWND_DESKTOP, reinterpret_cast<POINT *>(rect), 2);
+    return true;
+}
+
+// Make `hwnd` a direct top-level again if something reparented it as a child
+// (an app may do that itself); our model never does.
+bool ensureTopLevel(HWND hwnd)
+{
+    return GetAncestor(hwnd, GA_PARENT) == GetDesktopWindow() || setParent(hwnd, nullptr);
+}
+
+bool embedOwnedBy(HWND window, HWND topLevel)
+{
+    HWND root = GetAncestor(window, GA_ROOT);
+    return root && GetPropW(root, EmbedPropertyName) && GetWindow(root, GW_OWNER) == topLevel;
+}
+
+EmbeddedWindowWin32::ActivationFocusCallback g_activationFocusCallback = nullptr;
+
+LRESULT CALLBACK captionGuardProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+                                  UINT_PTR id, DWORD_PTR)
+{
+    switch (message) {
+    case WM_NCACTIVATE:
+        // One of our embeds is being activated: it is part of this window as
+        // far as the user can tell, so keep the caption painted active.
+        if (!wParam && lParam && embedOwnedBy(reinterpret_cast<HWND>(lParam), hwnd))
+            return DefSubclassProc(hwnd, message, TRUE, lParam);
+        break;
+    case WM_ACTIVATE:
+        // WM_NCACTIVATE's lParam is not guaranteed under visual styles;
+        // WM_ACTIVATE's is. Repaint active if the deactivation went to an embed.
+        if (LOWORD(wParam) == WA_INACTIVE && lParam && embedOwnedBy(reinterpret_cast<HWND>(lParam), hwnd)) {
+            const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+            DefSubclassProc(hwnd, WM_NCACTIVATE, TRUE, 0);
+            return result;
+        }
+        if (LOWORD(wParam) != WA_INACTIVE && !HIWORD(wParam) && g_activationFocusCallback) {
+            // Activated while the keyboard is still in an embed: the focus
+            // move DefWindowProc would do here waits for the embed's thread.
+            HWND focus = GetFocus();
+            DWORD focusProcess = 0;
+            if (focus && GetWindowThreadProcessId(focus, &focusProcess) && focusProcess != GetCurrentProcessId()
+                && g_activationFocusCallback(reinterpret_cast<quintptr>(hwnd), reinterpret_cast<quintptr>(focus)))
+                return 0;
+        }
+        break;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, captionGuardProc, id);
+        break;
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+EmbeddedWindowWin32::ForegroundCallback g_foregroundCallback = nullptr;
+
+void CALLBACK onForegroundEvent(HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, DWORD, DWORD)
+{
+    if (g_foregroundCallback)
+        g_foregroundCallback(reinterpret_cast<quintptr>(hwnd));
+}
 } // namespace
 #endif
 
@@ -63,12 +133,15 @@ bool markWindow(quintptr handle, quintptr token)
 #endif
 }
 
-bool isDirectChildOfHost(quintptr targetHandle, quintptr hostHandle)
+bool isEmbeddedIn(quintptr targetHandle, quintptr hostHandle)
 {
 #ifdef Q_OS_WIN
     HWND target = reinterpret_cast<HWND>(targetHandle);
     HWND host = reinterpret_cast<HWND>(hostHandle);
-    return IsWindow(target) && IsWindow(host) && GetParent(target) == host;
+    if (!IsWindow(target) || !IsWindow(host))
+        return false;
+    return GetWindow(target, GW_OWNER) == GetAncestor(host, GA_ROOT)
+        || GetAncestor(target, GA_PARENT) == host;
 #else
     Q_UNUSED(targetHandle) Q_UNUSED(hostHandle)
     return false;
@@ -113,23 +186,47 @@ bool sameWindow(const NativeWindowState &state, quintptr token)
 #endif
 }
 
+bool ownsWindow(quintptr targetHandle, quintptr token)
+{
+#ifdef Q_OS_WIN
+    HWND target = reinterpret_cast<HWND>(targetHandle);
+    return IsWindow(target) && GetPropW(target, EmbedPropertyName) == reinterpret_cast<HANDLE>(token);
+#else
+    Q_UNUSED(targetHandle) Q_UNUSED(token)
+    return false;
+#endif
+}
+
 bool prepareEmbed(const NativeWindowState &s, quintptr hostHandle, quintptr token)
 {
 #ifdef Q_OS_WIN
     if (!sameWindow(s, token))
         return false;
     HWND hwnd = reinterpret_cast<HWND>(s.handle);
-    const LONG_PTR style = (s.originalStyle | WS_CHILD | WS_CLIPSIBLINGS)
-        & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX
-            | WS_MAXIMIZEBOX | WS_SYSMENU);
+    HWND host = reinterpret_cast<HWND>(hostHandle);
+    HWND topLevel = GetAncestor(host, GA_ROOT);
+    RECT rect{};
+    if (!topLevel || !hostClientOnScreen(host, &rect))
+        return false;
+    // Leave minimized / maximized state first, through the app's own window
+    // procedure, so it does not keep maximized insets or a minimized frame.
+    if ((IsIconic(hwnd) || IsZoomed(hwnd)) && sameWindow(s, token))
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    const LONG_PTR style = (s.originalStyle | WS_POPUP)
+        & ~(WS_CHILD | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+            | WS_MAXIMIZE | WS_MINIMIZE);
+    // Owned and without WS_EX_APPWINDOW: no taskbar button, not in Alt-Tab.
     const LONG_PTR exStyle = s.originalExStyle & ~(WS_EX_APPWINDOW | WS_EX_TOPMOST);
-    return setLong(hwnd, GWL_STYLE, style) && sameWindow(s, token)
-        && setLong(hwnd, GWL_EXSTYLE, exStyle) && sameWindow(s, token)
-        && setParent(hwnd, reinterpret_cast<HWND>(hostHandle))
-        && GetParent(hwnd) == reinterpret_cast<HWND>(hostHandle) && sameWindow(s, token)
-        && SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
-                            | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+    if (!(sameWindow(s, token) && setLong(hwnd, GWL_STYLE, style)
+          && sameWindow(s, token) && setLong(hwnd, GWL_EXSTYLE, exStyle)
+          && sameWindow(s, token) && setLong(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(topLevel))
+          && GetWindow(hwnd, GW_OWNER) == topLevel && sameWindow(s, token)))
+        return false;
+    if (s.originalExStyle & WS_EX_TOPMOST)
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    return sameWindow(s, token)
+        && SetWindowPos(hwnd, HWND_TOP, rect.left, rect.top, rect.right - rect.left,
+                        rect.bottom - rect.top, SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
 #else
     Q_UNUSED(s) Q_UNUSED(hostHandle) Q_UNUSED(token)
     return false;
@@ -148,16 +245,15 @@ bool restoreExact(const NativeWindowState &s, quintptr token)
     if (!sameWindow(s, token))
         return !sameIdentity(s); // gone → released; alive-but-untagged → fail
 
-    // THE release-defining step: reparent the window off our host. Once this
-    // succeeds the window can no longer be destroyed with the host and the tab
-    // is safe to reap. It runs FIRST and is the SOLE gate on the return value.
-    // Everything afterwards (styles, geometry, placement, visibility, untag) is
-    // best-effort cosmetic restoration: a cosmetic failure must NOT report the
-    // window as "still attached", otherwise the controller vetoes the close and
-    // NativeWindowHost::sync() immediately re-parents the window back into the
-    // host — the endless in/out tab bounce.
-    if (!setParent(hwnd, reinterpret_cast<HWND>(s.originalParent))) {
-        qWarning("EmbeddedWindow: restoreExact SetParent failed (err=%lu)", GetLastError());
+    // THE release-defining step: drop our ownership (and any parent). Once it
+    // succeeds the window can no longer be destroyed with our top-level and the
+    // tab is safe to reap. It is the SOLE gate on the return value: a cosmetic
+    // failure below must not report the window as still embedded, or the
+    // controller vetoes the close and the host takes the window right back.
+    HWND originalOwner = reinterpret_cast<HWND>(s.originalOwner);
+    if (!ensureTopLevel(hwnd) || !setLong(hwnd, GWLP_HWNDPARENT, s.originalOwner)
+        || GetWindow(hwnd, GW_OWNER) != originalOwner) {
+        qWarning("EmbeddedWindow: restoreExact could not drop ownership (err=%lu)", GetLastError());
         return false;
     }
 
@@ -167,18 +263,12 @@ bool restoreExact(const NativeWindowState &s, quintptr token)
         setLong(hwnd, GWL_STYLE, s.originalStyle);
     if (sameWindow(s, token))
         setLong(hwnd, GWL_EXSTYLE, s.originalExStyle);
-    if (!(s.originalStyle & WS_CHILD) && sameWindow(s, token))
-        setLong(hwnd, GWLP_HWNDPARENT, s.originalOwner);
-    RECT rect{s.rectLeft, s.rectTop, s.rectRight, s.rectBottom};
-    if ((s.originalStyle & WS_CHILD) && s.originalParent)
-        MapWindowPoints(HWND_DESKTOP, reinterpret_cast<HWND>(s.originalParent),
-                        reinterpret_cast<POINT *>(&rect), 2);
     if (sameWindow(s, token)) {
         HWND z = (s.originalExStyle & WS_EX_TOPMOST) ? HWND_TOPMOST : HWND_NOTOPMOST;
-        SetWindowPos(hwnd, z, rect.left, rect.top, rect.right - rect.left,
-                     rect.bottom - rect.top, SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        SetWindowPos(hwnd, z, s.rectLeft, s.rectTop, s.rectRight - s.rectLeft,
+                     s.rectBottom - s.rectTop, SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
-    if (s.placementValid && !(s.originalStyle & WS_CHILD) && sameWindow(s, token)) {
+    if (s.placementValid && sameWindow(s, token)) {
         WINDOWPLACEMENT placement = placementFrom(s);
         SetWindowPlacement(hwnd, &placement);
     }
@@ -187,7 +277,7 @@ bool restoreExact(const NativeWindowState &s, quintptr token)
         ShowWindowAsync(hwnd, s.originallyVisible ? (show == SW_HIDE ? SW_SHOWNOACTIVATE : show) : SW_HIDE);
     }
     // Untag is best-effort: if the window was recycled the new owner keeps its
-    // property; our host is already detached so no re-grab can occur.
+    // property; our host no longer tracks it so no re-grab can occur.
     if (sameWindow(s, token))
         RemovePropW(hwnd, EmbedPropertyName);
     return true;
@@ -206,34 +296,27 @@ bool failSafeDetach(const NativeWindowState &s, quintptr token)
     // Never mutate a window that no longer carries our token. Token loss means
     // either external removal or same-process/thread HWND recycling; neither is
     // safe to distinguish using PID/TID alone. The controller separately reads
-    // the host hierarchy to decide whether the tab must be retained.
+    // the hierarchy to decide whether the tab must be retained.
     if (!sameWindow(s, token))
         return false;
 
-    // The reparent is the only release-defining operation. Do it before all
-    // cosmetic cleanup so a style/owner/placement failure cannot cause the
-    // controller to veto after the target is already outside our host.
-    if (!setParent(hwnd, nullptr) || GetParent(hwnd)) {
-        qWarning("EmbeddedWindow: failSafeDetach SetParent failed (err=%lu)", GetLastError());
+    // The release-defining step first (see restoreExact).
+    if (!ensureTopLevel(hwnd) || !setLong(hwnd, GWLP_HWNDPARENT, 0) || GetWindow(hwnd, GW_OWNER)) {
+        qWarning("EmbeddedWindow: failSafeDetach could not drop ownership (err=%lu)", GetLastError());
         return false;
     }
 
-    // Best-effort cosmetic cleanup, always token-gated. None of these failures
-    // can turn an already-detached window back into an attached one.
+    // Best-effort cosmetic cleanup, always token-gated.
     if (sameWindow(s, token))
-        setLong(hwnd, GWL_STYLE, (s.originalStyle & ~WS_CHILD) | WS_POPUP);
+        setLong(hwnd, GWL_STYLE, s.originalStyle & ~WS_CHILD);
     if (sameWindow(s, token))
         setLong(hwnd, GWL_EXSTYLE, s.originalExStyle);
-    if (sameWindow(s, token))
-        setLong(hwnd, GWLP_HWNDPARENT, s.originalOwner);
     if (sameWindow(s, token)) {
-        UINT flags = SWP_NOACTIVATE | SWP_FRAMECHANGED
-            | (s.originallyVisible ? SWP_SHOWWINDOW : SWP_NOZORDER);
+        const UINT flags = SWP_NOACTIVATE | SWP_FRAMECHANGED
+            | (s.originallyVisible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
         SetWindowPos(hwnd, HWND_TOP, s.rectLeft, s.rectTop,
                      s.rectRight - s.rectLeft, s.rectBottom - s.rectTop, flags);
     }
-    if (!s.originallyVisible && sameWindow(s, token))
-        ShowWindowAsync(hwnd, SW_HIDE);
     if (sameWindow(s, token))
         RemovePropW(hwnd, EmbedPropertyName);
     return true;
@@ -243,166 +326,169 @@ bool failSafeDetach(const NativeWindowState &s, quintptr token)
 #endif
 }
 
-SyncResult syncGeometry(quintptr targetHandle, quintptr hostHandle, quintptr token)
+GeometryCheck checkGeometry(quintptr targetHandle, quintptr hostHandle, quintptr token,
+                            EmbedGeometry *wanted)
 {
 #ifdef Q_OS_WIN
     HWND target = reinterpret_cast<HWND>(targetHandle);
     HWND host = reinterpret_cast<HWND>(hostHandle);
-    HANDLE mark = reinterpret_cast<HANDLE>(token);
-    const auto ownsTarget = [target, mark]() {
-        return IsWindow(target) && GetPropW(target, EmbedPropertyName) == mark;
-    };
-    if (!ownsTarget())
-        return SyncResult::WindowLost;
-    if (GetParent(target) != host) {
-        if (!ownsTarget())
-            return SyncResult::WindowLost;
-        if (!setParent(target, host))
-            return SyncResult::TransientError;
+    if (!ownsWindow(targetHandle, token))
+        return GeometryCheck::WindowLost;
+    HWND topLevel = GetAncestor(host, GA_ROOT);
+    if (GetWindow(target, GW_OWNER) != topLevel) {
+        // The app dropped or changed its owner: take it back. Rare, so the
+        // synchronous cross-thread call is acceptable.
+        if (!ensureTopLevel(target)
+            || !setLong(target, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(topLevel)))
+            return GeometryCheck::TransientError;
+        if (!ownsWindow(targetHandle, token))
+            return GeometryCheck::WindowLost;
     }
-    RECT rect{};
-    if (!GetClientRect(host, &rect))
-        return SyncResult::TransientError;
-    const int width = rect.right - rect.left;
-    const int height = rect.bottom - rect.top;
-    if (!ownsTarget())
-        return SyncResult::WindowLost;
-    if (!SetWindowPos(target, nullptr, 0, 0, width, height,
-                      SWP_NOACTIVATE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW))
-        return SyncResult::TransientError;
-    if (!ownsTarget())
-        return SyncResult::WindowLost;
-    RedrawWindow(target, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
-    if (!ownsTarget())
-        return SyncResult::WindowLost;
-    PostMessageW(target, WM_SIZE, SIZE_RESTORED,
-                 MAKELPARAM(static_cast<WORD>(width), static_cast<WORD>(height)));
-    return ownsTarget() ? SyncResult::Ok : SyncResult::WindowLost;
+    RECT client{};
+    RECT current{};
+    if (!topLevel || !hostClientOnScreen(host, &client) || !GetWindowRect(target, &current))
+        return GeometryCheck::TransientError;
+    EmbedGeometry geometry;
+    geometry.x = client.left;
+    geometry.y = client.top;
+    geometry.width = client.right - client.left;
+    geometry.height = client.bottom - client.top;
+    geometry.visible = IsWindowVisible(host) && !IsIconic(topLevel) && geometry.width > 0
+        && geometry.height > 0;
+    if (wanted)
+        *wanted = geometry;
+    const bool shown = (GetWindowLongPtrW(target, GWL_STYLE) & WS_VISIBLE) != 0;
+    if (!geometry.visible)
+        return shown ? GeometryCheck::NeedsUpdate : GeometryCheck::Ok;
+    return shown && EqualRect(&client, &current) ? GeometryCheck::Ok : GeometryCheck::NeedsUpdate;
 #else
-    Q_UNUSED(targetHandle) Q_UNUSED(hostHandle) Q_UNUSED(token)
-    return SyncResult::WindowLost;
+    Q_UNUSED(targetHandle) Q_UNUSED(hostHandle) Q_UNUSED(token) Q_UNUSED(wanted)
+    return GeometryCheck::WindowLost;
 #endif
 }
 
-bool attachForeignInput(quintptr targetHandle, quintptr token, quint32 *foreignThreadIdOut,
-                        quint32 *foreignProcessIdOut)
+quintptr rootWindow(quintptr windowHandle)
 {
 #ifdef Q_OS_WIN
-    if (!foreignThreadIdOut || !foreignProcessIdOut)
-        return false;
-    *foreignThreadIdOut = 0;
-    *foreignProcessIdOut = 0;
-    HWND target = reinterpret_cast<HWND>(targetHandle);
-    if (!IsWindow(target) || GetPropW(target, EmbedPropertyName) != reinterpret_cast<HANDLE>(token))
-        return false;
-    DWORD foreignProcessId = 0;
-    const DWORD foreignThreadId = GetWindowThreadProcessId(target, &foreignProcessId);
-    const DWORD currentThreadId = GetCurrentThreadId();
-    if (!foreignThreadId || !foreignProcessId)
-        return false;
-    if (foreignThreadId == currentThreadId)
-        return true;
-    if (!AttachThreadInput(currentThreadId, foreignThreadId, TRUE)) {
-        qWarning("EmbeddedWindow: AttachThreadInput failed (err=%lu)", GetLastError());
-        return false;
-    }
-    *foreignThreadIdOut = static_cast<quint32>(foreignThreadId);
-    *foreignProcessIdOut = static_cast<quint32>(foreignProcessId);
-    return true;
+    return reinterpret_cast<quintptr>(GetAncestor(reinterpret_cast<HWND>(windowHandle), GA_ROOT));
 #else
-    Q_UNUSED(targetHandle) Q_UNUSED(token) Q_UNUSED(foreignThreadIdOut) Q_UNUSED(foreignProcessIdOut)
+    Q_UNUSED(windowHandle)
+    return 0;
+#endif
+}
+
+quintptr foregroundWindow()
+{
+#ifdef Q_OS_WIN
+    return reinterpret_cast<quintptr>(GetForegroundWindow());
+#else
+    return 0;
+#endif
+}
+
+bool isEmbedOwnedBy(quintptr windowHandle, quintptr topLevelHandle)
+{
+#ifdef Q_OS_WIN
+    return windowHandle && topLevelHandle
+        && embedOwnedBy(reinterpret_cast<HWND>(windowHandle), reinterpret_cast<HWND>(topLevelHandle));
+#else
+    Q_UNUSED(windowHandle) Q_UNUSED(topLevelHandle)
     return false;
 #endif
 }
 
-bool focusForeign(quintptr targetHandle, quintptr token)
+quintptr positionChangedWindow(const void *message)
 {
 #ifdef Q_OS_WIN
-    HWND target = reinterpret_cast<HWND>(targetHandle);
-    if (!IsWindow(target) || GetPropW(target, EmbedPropertyName) != reinterpret_cast<HANDLE>(token))
-        return false;
-    // With the input queues merged by attachForeignInput(), SetFocus routes
-    // keystrokes to the foreign child; the child is now parented under our
-    // top-level window, so there is no separate top-level to SetActiveWindow.
-    SetLastError(ERROR_SUCCESS);
-    SetFocus(target);
-    const bool focused = GetFocus() == target;
-    const DWORD focusError = GetLastError();
-    // Self-drawn apps (Godot, Chromium/Edge, ...) gate keyboard/IME input on
-    // their OWN activation flag, which they update only from WM_NCACTIVATE /
-    // WM_ACTIVATE. A WS_CHILD window never receives those (only top-levels do),
-    // so after reparenting they believe they are inactive and silently drop
-    // every keystroke even when Win32 focus already points at them.
-    // Synthesize activation to re-enable their input path. PostMessage (async) so
-    // a hung foreign message loop can never block our GUI thread — matches
-    // syncGeometry. lParam (the "other" window) is left 0; these apps ignore it.
-    if (!PostMessageW(target, WM_NCACTIVATE, TRUE, 0))
-        qWarning("EmbeddedWindow: WM_NCACTIVATE post failed (err=%lu)", GetLastError());
-    if (!PostMessageW(target, WM_ACTIVATE, MAKEWPARAM(WA_ACTIVE, 0), 0))
-        qWarning("EmbeddedWindow: WM_ACTIVATE post failed (err=%lu)", GetLastError());
-    if (focused)
-        return true;
-    qWarning("EmbeddedWindow: SetFocus on foreign child failed (err=%lu)", focusError);
-    return false;
-#else
-    Q_UNUSED(targetHandle) Q_UNUSED(token)
-    return false;
-#endif
-}
-
-bool detachForeignInput(quint32 foreignThreadId, quint32 foreignProcessId)
-{
-#ifdef Q_OS_WIN
-    if (!foreignThreadId)
-        return true;
-    const DWORD threadId = static_cast<DWORD>(foreignThreadId);
-    HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadId);
-    if (!thread) {
-        const DWORD error = GetLastError();
-        if (error == ERROR_INVALID_PARAMETER)
-            return true; // Thread exited; Windows automatically detached its queue.
-        qWarning("EmbeddedWindow: OpenThread before input detach failed (err=%lu)", error);
-        return false;
-    }
-    const DWORD currentProcessId = GetProcessIdOfThread(thread);
-    CloseHandle(thread);
-    if (!currentProcessId)
-        return true; // Thread exited during validation.
-    if (currentProcessId != static_cast<DWORD>(foreignProcessId))
-        return true; // Thread id was reused; never mutate the replacement thread.
-    if (AttachThreadInput(GetCurrentThreadId(), threadId, FALSE))
-        return true;
-    const DWORD error = GetLastError();
-    if (error == ERROR_INVALID_PARAMETER)
-        return true; // Thread exited between validation and detach.
-    qWarning("EmbeddedWindow: AttachThreadInput detach failed (err=%lu)", error);
-    return false;
-#else
-    Q_UNUSED(foreignThreadId) Q_UNUSED(foreignProcessId)
-    return true;
-#endif
-}
-
-bool isChildMouseActivationMessage(const void *message)
-{
-#ifdef Q_OS_WIN
-    if (!message)
-        return false;
     const auto *native = static_cast<const MSG *>(message);
-    if (native->message != WM_PARENTNOTIFY)
-        return false;
-    switch (LOWORD(native->wParam)) {
-    case WM_LBUTTONDOWN:
-    case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN:
-    case WM_XBUTTONDOWN:
-        return true;
-    default:
-        return false;
-    }
+    return native && native->message == WM_WINDOWPOSCHANGED ? reinterpret_cast<quintptr>(native->hwnd) : 0;
 #else
     Q_UNUSED(message)
+    return 0;
+#endif
+}
+
+quintptr mouseActivateWindow(const void *message)
+{
+#ifdef Q_OS_WIN
+    const auto *native = static_cast<const MSG *>(message);
+    // Qt runs the mouse through WM_POINTER, whose activation message is
+    // WM_POINTERACTIVATE (same result codes: PA_NOACTIVATE == MA_NOACTIVATE).
+    return native && (native->message == WM_MOUSEACTIVATE || native->message == WM_POINTERACTIVATE)
+        ? reinterpret_cast<quintptr>(native->hwnd) : 0;
+#else
+    Q_UNUSED(message)
+    return 0;
+#endif
+}
+
+qintptr mouseActivateNoActivate()
+{
+#ifdef Q_OS_WIN
+    return MA_NOACTIVATE;
+#else
+    return 0;
+#endif
+}
+
+bool installCaptionGuard(quintptr topLevelHandle, ActivationFocusCallback onActivation)
+{
+#ifdef Q_OS_WIN
+    g_activationFocusCallback = onActivation;
+    return topLevelHandle
+        && SetWindowSubclass(reinterpret_cast<HWND>(topLevelHandle), captionGuardProc, kCaptionGuardId, 0);
+#else
+    Q_UNUSED(topLevelHandle) Q_UNUSED(onActivation)
     return false;
+#endif
+}
+
+void removeCaptionGuard(quintptr topLevelHandle)
+{
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(topLevelHandle);
+    if (IsWindow(hwnd))
+        RemoveWindowSubclass(hwnd, captionGuardProc, kCaptionGuardId);
+#else
+    Q_UNUSED(topLevelHandle)
+#endif
+}
+
+void paintCaptionActive(quintptr topLevelHandle, bool active)
+{
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(topLevelHandle);
+    if (IsWindow(hwnd))
+        SendMessageW(hwnd, WM_NCACTIVATE, active ? TRUE : FALSE, 0);
+#else
+    Q_UNUSED(topLevelHandle) Q_UNUSED(active)
+#endif
+}
+
+quintptr installForegroundHook(ForegroundCallback callback)
+{
+#ifdef Q_OS_WIN
+    if (!callback)
+        return 0;
+    g_foregroundCallback = callback;
+    // Out-of-context: delivered through this thread's message loop; foreground
+    // changes are rare, so watching every process costs nothing measurable.
+    return reinterpret_cast<quintptr>(SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                                                      nullptr, onForegroundEvent, 0, 0,
+                                                      WINEVENT_OUTOFCONTEXT));
+#else
+    Q_UNUSED(callback)
+    return 0;
+#endif
+}
+
+void removeForegroundHook(quintptr hook)
+{
+#ifdef Q_OS_WIN
+    if (hook)
+        UnhookWinEvent(reinterpret_cast<HWINEVENTHOOK>(hook));
+#else
+    Q_UNUSED(hook)
 #endif
 }
 

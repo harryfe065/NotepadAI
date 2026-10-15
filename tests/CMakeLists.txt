@@ -2116,6 +2116,33 @@ target_sources(test_embedded_window_focus_router PRIVATE
 )
 add_test(NAME EmbeddedWindowFocusRouter COMMAND test_embedded_window_focus_router)
 
+# --- Embedded-window live behaviour (Windows, interactive desktop): embeds a
+#     real foreign process (embed_test_target) and drives it with SendInput.
+#     Skips unless NOTEPADAI_INTERACTIVE_TESTS=1 because it takes the foreground. ---
+if(WIN32)
+    add_executable(embed_test_target WIN32 embed_test_target.cpp embed_test_target_shared.h)
+    target_link_libraries(embed_test_target PRIVATE shell32 user32 gdi32)
+    qt_add_executable(test_embedded_window_win32 test_embedded_window_win32.cpp)
+    target_include_directories(test_embedded_window_win32 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_embedded_window_win32 PRIVATE Qt6::Widgets Qt6::Test dwmapi comctl32)
+    target_sources(test_embedded_window_win32 PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/EmbeddedWindowFocusRouter.h
+        ${CMAKE_SOURCE_DIR}/src/EmbeddedWindowWin32.cpp
+        ${CMAKE_SOURCE_DIR}/src/EmbeddedWindowWin32.h
+        ${CMAKE_SOURCE_DIR}/src/EmbeddedWindowEnumeration.cpp
+        ${CMAKE_SOURCE_DIR}/src/EmbeddedWindowWorker.cpp
+        ${CMAKE_SOURCE_DIR}/src/EmbeddedWindowWorker.h
+        ${CMAKE_SOURCE_DIR}/src/NativeWindowHost.cpp
+        ${CMAKE_SOURCE_DIR}/src/NativeWindowHost.h
+        embed_test_target_shared.h
+    )
+    target_compile_definitions(test_embedded_window_win32 PRIVATE
+        EMBED_TEST_TARGET_PATH="$<TARGET_FILE:embed_test_target>"
+        EMBED_BLENDER_SCRIPT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/embed_blender_log_events.py")
+    add_dependencies(test_embedded_window_win32 embed_test_target)
+    add_test(NAME EmbeddedWindowWin32 COMMAND test_embedded_window_win32)
+endif()
+
 # --- LlmHttpClient: OpenAI vs Anthropic payload / URL encoding ---
 qt_add_executable(test_llm_http_client test_llm_http_client.cpp)
 target_include_directories(test_llm_http_client PRIVATE ${CMAKE_SOURCE_DIR}/src)

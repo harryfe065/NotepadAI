@@ -47,6 +47,7 @@ protected:
         const EmbeddedWindowWin32::NativeWindowState &state, quintptr token) override;
     bool platHostRetainsForeignChild(quintptr token) override;
     bool platRestoreExact(const EmbeddedWindowWin32::NativeWindowState &state, quintptr token) override;
+    void platTick(quintptr token) override;
     bool platFailSafeDetach(const EmbeddedWindowWin32::NativeWindowState &state, quintptr token) override;
     void platDetachHost(quintptr token) override;
     void platClearHostCallback(quintptr token) override;

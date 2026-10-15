@@ -20,6 +20,15 @@
 // window attributes are captured into a POD NativeWindowState of fixed-width
 // integers (no WINDOWPLACEMENT in the header). On non-Windows every entry point
 // is a no-op returning a safe default so the rest of the app still builds.
+//
+// Embedding model: the foreign window stays a top-level window. It becomes a
+// borderless popup OWNED by the host's top-level (so it stays above it, hides
+// with it, and is left out of the taskbar and Alt-Tab) and is kept exactly over
+// the host's client area. It is not reparented as a WS_CHILD: Windows delivers
+// raw input (WM_INPUT, which Blender, Unity and many games read the keyboard
+// from) only to the thread that owns the foreground window, so a child window
+// never gets it. As a top-level, the embed is activated natively by a click and
+// gets the keyboard, IME and raw input like any window.
 namespace EmbeddedWindowWin32 {
 
 // A top-level, user-visible, foreign-process window the user may embed.
@@ -57,12 +66,30 @@ struct NativeWindowState {
     bool originallyVisible = false;
 };
 
-// Result of re-syncing the foreign child's geometry to its host client area.
-enum class SyncResult : std::uint8_t {
-    Ok,             // reparented (if asked) and resized successfully
-    TransientError, // a Win32 call failed but the window still looks alive
+// Where the embed should be: the host's client area in screen pixels, and
+// whether the host is currently visible on screen.
+struct EmbedGeometry {
+    qint32 x = 0;
+    qint32 y = 0;
+    qint32 width = 0;
+    qint32 height = 0;
+    bool visible = false;
+};
+
+// Result of comparing the embed with where its host wants it.
+enum class GeometryCheck : std::uint8_t {
+    Ok,             // in place, with the right visibility
+    NeedsUpdate,    // alive and owned, but moved, resized or shown wrongly
+    TransientError, // a Win32 read failed but the window still looks alive
     WindowLost,     // the window is gone or the token no longer matches
 };
+
+// Called for EVENT_SYSTEM_FOREGROUND (GUI thread, any process).
+using ForegroundCallback = void (*)(quintptr foregroundWindow);
+// Called when a guarded top-level is activated while the keyboard focus is
+// still in another process's window (an embed). Return true to take over
+// moving the focus (off the GUI thread); false lets DefWindowProc do it.
+using ActivationFocusCallback = bool (*)(quintptr topLevel, quintptr focus);
 
 // Alt-tab style set: top-level, visible, titled windows owned by other
 // processes. Cold path (menu open); returns [] on non-Windows.
@@ -77,62 +104,73 @@ bool captureState(quintptr handle, NativeWindowState *out);
 // already tagged or the property could not be set.
 bool markWindow(quintptr handle, quintptr token);
 
-// Read-only target-specific hierarchy test. True iff `targetHandle` currently
-// exists and is a direct child of `hostHandle`, independent of token ownership.
-// Used to retain a host when a token was lost but its target is still attached.
-bool isDirectChildOfHost(quintptr targetHandle, quintptr hostHandle);
+// Read-only target-specific test. True iff `targetHandle` exists and is still
+// embedded for `hostHandle`: owned by the host's top-level (or, defensively, a
+// direct child of the host). Independent of token ownership; used to retain a
+// tab while its window would still die with our top-level.
+bool isEmbeddedIn(quintptr targetHandle, quintptr hostHandle);
 
 // Read-only hierarchy test. True iff `hostHandle` currently has at least one
-// live descendant window owned by another process. This is the only proof that
-// destroying the host could still destroy/reparent a foreign child. It does not
-// inspect or mutate the embed token and returns false on non-Windows.
+// live descendant window owned by another process (an app that reparented
+// itself into our host). Destroying the host would destroy it. Does not inspect
+// or mutate the embed token; false on non-Windows.
 bool hostRetainsForeignChild(quintptr hostHandle);
 
 // True only while the handle still resolves to the *same* native window our
 // token+pid+tid describe — guards every mutation against handle recycling.
 bool sameWindow(const NativeWindowState &state, quintptr token);
 
-// Reparent the foreign window into the host HWND with child styles. Returns
-// false without partial rollback expectations if Windows refuses any step.
+// Read-only ownership test: the window exists and carries our token.
+bool ownsWindow(quintptr targetHandle, quintptr token);
+
+// Turn the foreign window into a borderless popup owned by the host's top-level
+// and place it over the host. Returns false without partial rollback
+// expectations if Windows refuses any step.
 bool prepareEmbed(const NativeWindowState &state, quintptr hostHandle, quintptr token);
 
-// Exact restore: original styles, owner, placement, visibility, and untag.
-// Returns false if any step failed while the window was still alive (caller
-// decides whether to escalate to failSafeDetach).
+// Exact restore: original owner, styles, placement, visibility, and untag.
+// Returns false only if the release-defining step (dropping our ownership)
+// failed while the window was still alive.
 bool restoreExact(const NativeWindowState &state, quintptr token);
 
-// Guaranteed best-effort: strip WS_CHILD, reparent to the desktop so an
-// imminent host destruction cannot take the foreign window down, then untag.
-// Returns true if the window ended detached from any host (or was already gone).
+// Guaranteed best-effort: drop our ownership so our top-level's destruction
+// cannot take the foreign window down, make it a plain visible top-level, untag.
+// Returns true if the window ended unowned by us (or was already gone).
 bool failSafeDetach(const NativeWindowState &state, quintptr token);
 
-// Resize the foreign child to the host's client rect (optionally reparenting
-// first) and nudge it to repaint. Never blocks on the foreign process.
-SyncResult syncGeometry(quintptr targetHandle, quintptr hostHandle, quintptr token);
+// Where the embed should be (host client area in screen pixels, visibility),
+// compared with where it is. Takes ownership back first if the app dropped it.
+// Pure reads otherwise: nothing reaches the foreign thread.
+GeometryCheck checkGeometry(quintptr targetHandle, quintptr hostHandle, quintptr token,
+                            EmbedGeometry *wanted);
 
-// Merge THIS (GUI) thread's input queue with the foreign window's thread via
-// AttachThreadInput so keyboard focus can cross the process/thread boundary — a
-// reparented foreign child otherwise receives mouse input (delivered by
-// hit-testing) but never keyboard input (which follows per-input-queue focus).
-// Returns false if the target is invalid or AttachThreadInput fails. On success,
-// writes the attached foreign thread/process ids (both 0 when the target already
-// belongs to this thread, so no detach is needed).
-bool attachForeignInput(quintptr targetHandle, quintptr token, quint32 *foreignThreadIdOut,
-                        quint32 *foreignProcessIdOut);
+quintptr rootWindow(quintptr windowHandle);
+quintptr foregroundWindow();
+// True if `window` is (inside) an embedded foreign window owned by `topLevel`.
+bool isEmbedOwnedBy(quintptr windowHandle, quintptr topLevelHandle);
 
-// Direct keyboard focus to the foreign child (SetFocus). Only meaningful while
-// the input queues are attached. Returns false if the target is invalid or the
-// postcondition GetFocus() != target.
-bool focusForeign(quintptr targetHandle, quintptr token);
+// For a native WM_WINDOWPOSCHANGED: the window that moved. 0 otherwise.
+quintptr positionChangedWindow(const void *message);
+// For a native WM_MOUSEACTIVATE / WM_POINTERACTIVATE: the window clicked.
+// 0 otherwise.
+quintptr mouseActivateWindow(const void *message);
+// The WM_MOUSEACTIVATE result that processes the click without activating.
+qintptr mouseActivateNoActivate();
 
-// Reverse a prior attachForeignInput(). Validates that the thread id still
-// belongs to the captured process before touching it, avoiding thread-id reuse.
-// Returns true when detached or already gone; false on a live detach failure.
-bool detachForeignInput(quint32 foreignThreadId, quint32 foreignProcessId);
+// Keep `topLevel`'s caption painted active while one of its embeds is the
+// active window, and route the focus hand-off on its activation through
+// `onActivation` (subclasses its window procedure; idempotent per top-level).
+//
+// Why the hand-off: DefWindowProc(WM_ACTIVATE) calls SetFocus on the activated
+// window, and with the input queue shared with the embed that SetFocus waits
+// for the embed's thread to process WM_KILLFOCUS, on the GUI thread.
+bool installCaptionGuard(quintptr topLevelHandle, ActivationFocusCallback onActivation);
+void removeCaptionGuard(quintptr topLevelHandle);
+// Repaint `topLevel`'s caption active or inactive without changing activation.
+void paintCaptionActive(quintptr topLevelHandle, bool active);
 
-// True for a native WM_PARENTNOTIFY generated by a mouse-button press in a
-// foreign child. The opaque pointer is the platform message received by
-// QWidget::nativeEvent; keeping MSG/Windows.h out of NativeWindowHost.
-bool isChildMouseActivationMessage(const void *message);
+// Out-of-context EVENT_SYSTEM_FOREGROUND hook (0 on failure).
+quintptr installForegroundHook(ForegroundCallback callback);
+void removeForegroundHook(quintptr hook);
 
 } // namespace EmbeddedWindowWin32

@@ -152,6 +152,8 @@ void EmbeddedWindowController::poll()
     for (Embed *embed : snapshot) {
         if (embed->closePending || !platTargetOwnsToken(embed->state, embed->token))
             closeEmbeddedTab(embed, ReleaseMode::FailSafeDetach);
+        else
+            platTick(embed->token);
     }
     updateWatchdog();
 }

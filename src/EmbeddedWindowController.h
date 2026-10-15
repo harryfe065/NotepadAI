@@ -93,15 +93,17 @@ protected:
     virtual quintptr platCreateTab(quintptr token, const QString &title) = 0;
     // Tag the foreign window with `token`. False if refused/already tagged.
     virtual bool platMarkWindow(quintptr handle, quintptr token) = 0;
-    // Reparent + restyle the foreign window into the host, then attach/sync.
+    // Restyle the foreign window into a popup owned by the host's top-level and
+    // place it over the host, then attach/sync.
     virtual bool platPrepareAndAttach(quintptr token, const EmbeddedWindowWin32::NativeWindowState &state,
                                       quintptr hostHandle) = 0;
     // Read-only ownership guard: the expected target still carries our token
     // (also validates handle + pid + tid). This gates every HWND mutation.
     virtual bool platTargetOwnsToken(
         const EmbeddedWindowWin32::NativeWindowState &state, quintptr token) = 0;
-    // Read-only target-specific hierarchy guard: the expected HWND is currently
-    // a direct child of this embed's native host, independent of token state.
+    // Read-only target-specific hierarchy guard: the expected HWND is still
+    // embedded (owned by the host's top-level, so it would be destroyed with
+    // it), independent of token state.
     virtual bool platExpectedTargetAttached(
         const EmbeddedWindowWin32::NativeWindowState &state, quintptr token) = 0;
     // Read-only final destruction guard: the host still parents any live foreign
@@ -125,6 +127,9 @@ protected:
     virtual void platNotifyEmbedRefused() = 0;
     // Show the user the "cannot detach; tab kept open" feedback.
     virtual void platNotifyCloseVetoed() = 0;
+
+    // Periodic (watchdog) check of a live, owned embed. Default: nothing.
+    virtual void platTick(quintptr token) { Q_UNUSED(token) }
 
     // Start/stop the retry watchdog. Base impl toggles a coarse timer; override
     // is unnecessary for tests (they call poll() directly, watchdog stays idle).

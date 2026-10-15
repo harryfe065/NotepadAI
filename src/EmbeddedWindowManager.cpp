@@ -30,6 +30,14 @@ EmbeddedWindowManager::EmbeddedWindowManager(DockedEditor *dockedEditor, QObject
     , m_dockedEditor(dockedEditor)
 {
     connect(m_dockedEditor, &DockedEditor::previewTabActivated, this, [this](QWidget *widget) {
+        // Choosing an embed tab gives the embed the keyboard, like an editor:
+        // Qt focus on its host, then the (coalesced) activation.
+        for (const Tab *tab : std::as_const(m_tabs)) {
+            if (tab->host && tab->host.data() == widget) {
+                widget->setFocus(Qt::OtherFocusReason);
+                break;
+            }
+        }
         m_focusRouter.request(widget);
     });
 }
@@ -86,7 +94,7 @@ quintptr EmbeddedWindowManager::platCreateTab(quintptr token, const QString &tit
     const QPointer<NativeWindowHost> hostGuard(host);
     m_focusRouter.registerHost(host, [hostGuard]() {
         if (hostGuard)
-            hostGuard->restoreForeignFocus();
+            hostGuard->activateForeign();
     });
     host->setFocusRequestCallback([managerGuard, hostGuard]() {
         if (managerGuard && hostGuard)
@@ -147,8 +155,7 @@ bool EmbeddedWindowManager::platExpectedTargetAttached(
 {
     Tab *tab = m_tabs.value(token);
     return tab && tab->host
-        && EmbeddedWindowWin32::isDirectChildOfHost(
-            state.handle, tab->host->nativeHandle());
+        && EmbeddedWindowWin32::isEmbeddedIn(state.handle, tab->host->nativeHandle());
 }
 
 bool EmbeddedWindowManager::platHostRetainsForeignChild(quintptr token)
@@ -161,13 +168,33 @@ bool EmbeddedWindowManager::platHostRetainsForeignChild(quintptr token)
 bool EmbeddedWindowManager::platRestoreExact(
     const EmbeddedWindowWin32::NativeWindowState &state, quintptr token)
 {
-    return EmbeddedWindowWin32::restoreExact(state, token);
+    Tab *tab = m_tabs.value(token);
+    if (tab && tab->host)
+        tab->host->pauseForeignCalls();
+    const bool released = EmbeddedWindowWin32::restoreExact(state, token);
+    if (!released && tab && tab->host)
+        tab->host->resumeForeignCalls();
+    return released;
 }
 
 bool EmbeddedWindowManager::platFailSafeDetach(
     const EmbeddedWindowWin32::NativeWindowState &state, quintptr token)
 {
-    return EmbeddedWindowWin32::failSafeDetach(state, token);
+    Tab *tab = m_tabs.value(token);
+    if (tab && tab->host)
+        tab->host->pauseForeignCalls();
+    const bool released = EmbeddedWindowWin32::failSafeDetach(state, token);
+    if (!released && tab && tab->host)
+        tab->host->resumeForeignCalls();
+    return released;
+}
+
+void EmbeddedWindowManager::platTick(quintptr token)
+{
+    // Self-heal geometry if the embedded app resized itself (pure reads unless
+    // the rect differs).
+    if (Tab *tab = m_tabs.value(token); tab && tab->host && tab->host->isVisible())
+        tab->host->sync();
 }
 
 void EmbeddedWindowManager::platDetachHost(quintptr token)

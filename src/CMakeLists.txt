@@ -570,6 +570,8 @@ qt_add_executable(NotepadAI
 	EmbeddedWindowWin32.h
 	EmbeddedWindowWin32.cpp
 	EmbeddedWindowEnumeration.cpp
+	EmbeddedWindowWorker.h
+	EmbeddedWindowWorker.cpp
 	NativeWindowHost.h
 	NativeWindowHost.cpp
 	PendingCloseState.h
@@ -699,7 +701,7 @@ if(WIN32)
     # crypt32/dbghelp: existing deps. ws2_32: winsock for the SSH transport's
     # raw socket (Libssh2Transport.cpp calls getaddrinfo/connect/closesocket).
     # dwmapi: filters cloaked compositor windows from the Embed menu.
-    target_link_libraries(NotepadAI PRIVATE crypt32 dbghelp ws2_32 dwmapi)
+    target_link_libraries(NotepadAI PRIVATE crypt32 dbghelp ws2_32 dwmapi comctl32)
 elseif(APPLE)
     target_sources(NotepadAI PRIVATE ai/CredentialStore_Mac.mm)
     target_link_libraries(NotepadAI PRIVATE "-framework Security" "-framework CoreFoundation")
