@@ -135,6 +135,7 @@ private slots:
     void monitor_persistentLivesWithTheSession();
     void monitor_taskIdFromOutputWithoutToolResponse();
     void monitor_taskStopRemovesOnlyThatWatch();
+    void monitor_airUpdatesWithoutToolName();
     void unrelatedToolsAreIgnored();
     void clear_dropsEverythingAndReportsChange();
     void expire_falseWhenNothingExpired();
@@ -356,6 +357,49 @@ void TestAcpScheduledJobs::monitor_taskStopRemovesOnlyThatWatch()
     QCOMPARE(t.jobs().size(), 2);
     for (const AcpScheduledJob &j : t.jobs())
         QVERIFY(!(j.kind == AcpScheduledJob::Kind::Monitor && j.id == QStringLiteral("a1")));
+}
+
+// The wire NotepadAI actually gets (it declares the AIR capability): only the
+// first frame names the tool; updates have no `_meta`, no toolResponse and no
+// rawOutput, just `content` text.
+void TestAcpScheduledJobs::monitor_airUpdatesWithoutToolName()
+{
+    auto bare = [](const QString &kind, const QString &id, QJsonObject extra) {
+        extra.insert(QStringLiteral("sessionUpdate"), kind);
+        extra.insert(QStringLiteral("toolCallId"), id);
+        return extra;
+    };
+    auto contentText = [](const QString &text) {
+        return QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("content")},
+                                      {QStringLiteral("content"), QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                                                              {QStringLiteral("text"), text}}}}};
+    };
+    ScheduledJobTracker t;
+    t.apply(update(QStringLiteral("tool_call"), QStringLiteral("Monitor"), QStringLiteral("m1"), pending()), kNow);
+    t.apply(bare(QStringLiteral("tool_call_update"), QStringLiteral("m1"),
+                 {{QStringLiteral("rawInput"), QJsonObject{{QStringLiteral("command"), QStringLiteral("for i in 1 2 3; do echo $i; sleep 10; done")},
+                                                           {QStringLiteral("description"), QStringLiteral("ticks")},
+                                                           {QStringLiteral("timeout_ms"), 70000}}}}),
+            kNow);
+    QVERIFY(t.apply(bare(QStringLiteral("tool_call_update"), QStringLiteral("m1"),
+                         {{QStringLiteral("status"), QStringLiteral("completed")},
+                          {QStringLiteral("content"), contentText(QStringLiteral(
+                               "Monitor started (task bp6eipu4t, expires in 1m 10s unless the source ends first)."))}}),
+                    kNow));
+    QCOMPARE(t.jobs().size(), 1);
+    QCOMPARE(t.jobs().first().kind, AcpScheduledJob::Kind::Monitor);
+    QCOMPARE(t.jobs().first().id, QStringLiteral("bp6eipu4t"));
+    QCOMPARE(t.jobs().first().expiresAtMs, kNow + 70000);
+
+    t.apply(update(QStringLiteral("tool_call"), QStringLiteral("TaskStop"), QStringLiteral("s1"), pending()), kNow);
+    t.apply(bare(QStringLiteral("tool_call_update"), QStringLiteral("s1"),
+                 {{QStringLiteral("rawInput"), QJsonObject{{QStringLiteral("task_id"), QStringLiteral("bp6eipu4t")}}}}),
+            kNow);
+    QVERIFY(t.apply(bare(QStringLiteral("tool_call_update"), QStringLiteral("s1"),
+                         {{QStringLiteral("status"), QStringLiteral("completed")},
+                          {QStringLiteral("content"), contentText(QStringLiteral("{\"task_id\":\"bp6eipu4t\"}"))}}),
+                    kNow));
+    QVERIFY(t.jobs().isEmpty());
 }
 
 void TestAcpScheduledJobs::unrelatedToolsAreIgnored()

@@ -82,44 +82,49 @@ QByteArray cycleResult(const QString &origin)
                                                           QJsonObject{{QStringLiteral("kind"), origin}}}}}});
 }
 
-QByteArray toolCall(const QString &kind, const QString &tool, const QString &id, QJsonObject extra)
-{
-    extra.insert(QStringLiteral("_meta"), QJsonObject{{QStringLiteral("claudeCode"),
-                                                       QJsonObject{{QStringLiteral("toolName"), tool}}}});
-    extra.insert(QStringLiteral("toolCallId"), id);
-    return update(kind, extra);
-}
-
+// Tool-call frames as claude-agent-acp sends them to a client that declares
+// the AIR capability (NotepadAI does): only the first frame names the tool,
+// later updates carry no `_meta`, and results come as `content` text only.
 QByteArray toolStart(const QString &tool, const QString &id)
 {
-    return toolCall(QStringLiteral("tool_call"), tool, id,
-                    {{QStringLiteral("title"), tool},
-                     {QStringLiteral("kind"), QStringLiteral("other")},
-                     {QStringLiteral("status"), QStringLiteral("pending")},
-                     {QStringLiteral("rawInput"), QJsonObject{}}});
+    return update(QStringLiteral("tool_call"),
+                  {{QStringLiteral("_meta"), QJsonObject{{QStringLiteral("claudeCode"),
+                                                          QJsonObject{{QStringLiteral("toolName"), tool}}}}},
+                   {QStringLiteral("toolCallId"), id},
+                   {QStringLiteral("name"), tool},
+                   {QStringLiteral("title"), tool},
+                   {QStringLiteral("kind"), QStringLiteral("other")},
+                   {QStringLiteral("status"), QStringLiteral("pending")},
+                   {QStringLiteral("content"), QJsonArray{}}});
 }
 
-QByteArray toolDone(const QString &tool, const QString &id, const QString &output,
-                    const QJsonObject &rawInput = {})
+QByteArray toolInput(const QString &id, const QJsonObject &rawInput)
 {
-    QJsonObject extra{{QStringLiteral("status"), QStringLiteral("completed")},
-                      {QStringLiteral("rawOutput"), output},
-                      {QStringLiteral("content"), QJsonArray{QJsonObject{
-                           {QStringLiteral("type"), QStringLiteral("content")},
-                           {QStringLiteral("content"), QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                                                   {QStringLiteral("text"), output}}}}}}};
-    if (!rawInput.isEmpty())
-        extra.insert(QStringLiteral("rawInput"), rawInput);
-    return toolCall(QStringLiteral("tool_call_update"), tool, id, extra);
+    return update(QStringLiteral("tool_call_update"),
+                  {{QStringLiteral("toolCallId"), id}, {QStringLiteral("rawInput"), rawInput}});
 }
 
-QByteArray monitorArmed(const QString &taskId)
+QByteArray toolDone(const QString &id, const QString &output)
 {
-    return toolDone(QStringLiteral("Monitor"), QStringLiteral("toolu_monitor"),
-                    QStringLiteral("Monitor started (task %1, expires in 30m unless the source ends first). "
-                                   "You will be notified on each event.").arg(taskId),
-                    {{QStringLiteral("command"), QStringLiteral("npm run e2e")},
-                     {QStringLiteral("description"), QStringLiteral("e2e steps")}});
+    return update(QStringLiteral("tool_call_update"),
+                  {{QStringLiteral("toolCallId"), id},
+                   {QStringLiteral("status"), QStringLiteral("completed")},
+                   {QStringLiteral("content"), QJsonArray{QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("content")},
+                        {QStringLiteral("content"), QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                                                {QStringLiteral("text"), output}}}}}}});
+}
+
+// Captured from claude-agent-acp 0.90.0 with NotepadAI's initialize params.
+QList<QByteArray> monitorFrames(const QString &taskId)
+{
+    const QString id = QStringLiteral("toolu_monitor");
+    return {toolStart(QStringLiteral("Monitor"), id),
+            toolInput(id, {{QStringLiteral("command"), QStringLiteral("for i in 1 2 3 4 5 6; do echo \"tick $i\"; sleep 10; done")},
+                           {QStringLiteral("description"), QStringLiteral("test ticks every 10s for 1 minute")},
+                           {QStringLiteral("timeout_ms"), 70000}}),
+            toolDone(id, QStringLiteral("Monitor started (task %1, expires in 1m 10s unless the source ends "
+                                        "first; you get one notice at expiry).").arg(taskId))};
 }
 
 void wire(AcpConnection *conn, AcpSessionModel *model)
@@ -134,9 +139,8 @@ void wire(AcpConnection *conn, AcpSessionModel *model)
     QObject::connect(conn, &AcpConnection::asyncTasksChanged, model, &AcpSessionModel::onAsyncTasksChanged);
 }
 
-// The transcript top to bottom, one line per visible message, card or fold row.
-// A fold row reads "fold (live)" while its turn runs and "fold (waiting)" once
-// the turn folded but background work it started is still alive.
+// The transcript top to bottom, one line per visible message, card or fold row;
+// a fold row reads "fold (live)" while its clock ticks.
 QStringList transcript(AcpSessionView &view)
 {
     QStringList out;
@@ -156,9 +160,7 @@ QStringList transcript(AcpSessionView &view)
         else if (auto *c = qobject_cast<AcpToolCallCard *>(w))
             out << QStringLiteral("card %1").arg(c->id());
         else if (auto *r = qobject_cast<AcpTurnFoldRow *>(w))
-            out << (r->isLiveInteractive() ? QStringLiteral("fold (waiting)")
-                    : r->isLive()          ? QStringLiteral("fold (live)")
-                                           : QStringLiteral("fold"));
+            out << (r->isLive() ? QStringLiteral("fold (live)") : QStringLiteral("fold"));
     }
     return out;
 }
@@ -236,27 +238,29 @@ class TestAcpSessionViewWake : public QObject
     Q_OBJECT
 
 private slots:
-    void monitorEventsCloseTogether_foldEachWakeUp();
-    void backgroundTask_keepsFoldedRowTickingUntilIdle();
+    void monitor_keepsTurnOpenUntilStopped();
+    void backgroundTask_keepsTurnOpenUntilIdle();
+    void wakeUpsWithoutPendingWork_foldAtConfirmedEnd();
 };
 
-// A Monitor tool streams its events to the model as wake-up turns (no
-// session/prompt), often a second or two apart. Each one must fold back under
-// the turn's row when its cycle ends, leaving only the newest reply visible;
-// they used to pile up as one bubble per event while the turn stayed live.
-// While the watch lives the row keeps ticking and the status line says so;
-// TaskStop ends both.
-void TestAcpSessionViewWake::monitorEventsCloseTogether_foldEachWakeUp()
+// A Monitor wakes the agent on every line its command prints, so the turn that
+// armed it is not over: it stays open (row ticking, cards and replies shown,
+// "👁 Monitor" on the status line) through every wake-up, and folds as soon as
+// the watch is stopped.
+void TestAcpSessionViewWake::monitor_keepsTurnOpenUntilStopped()
 {
     Session s;
-    const int id = s.prompt(QStringLiteral("watch the e2e run"));
-    s.channel->pushStdout(toolStart(QStringLiteral("Monitor"), QStringLiteral("toolu_monitor")));
-    s.channel->pushStdout(monitorArmed(QStringLiteral("b6x8d7os3")));
+    const int id = s.prompt(QStringLiteral("thử dùng monitor tool 1 phút xem"));
+    for (const QByteArray &f : monitorFrames(QStringLiteral("bp6eipu4t")))
+        s.channel->pushStdout(f);
     s.channel->pushStdout(agentText(QStringLiteral("armed"), QStringLiteral("msg_0")));
     s.endPrompt(id);
-    QTRY_COMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: watch the e2e run"),
-                                                   QStringLiteral("fold (waiting)"),
-                                                   QStringLiteral("assistant: armed")}));
+    QTest::qWait(500); // past the 250 ms quiet period that ends the prompt turn
+    const QStringList armed{QStringLiteral("user: thử dùng monitor tool 1 phút xem"),
+                            QStringLiteral("fold (live)"), QStringLiteral("card toolu_monitor"),
+                            QStringLiteral("assistant: armed")};
+    QCOMPARE(transcript(*s.view), armed);
+    QVERIFY(!s.model->isProcessing()); // the composer is free meanwhile
     QVERIFY2(statusLine(*s.view).contains(QStringLiteral("Monitor (1)")), qPrintable(statusLine(*s.view)));
 
     // Two events 1 s apart, each answered in a wake-up cycle of its own.
@@ -264,25 +268,23 @@ void TestAcpSessionViewWake::monitorEventsCloseTogether_foldEachWakeUp()
         s.wakeUp({agentText(QStringLiteral("got tick %1").arg(tick), QStringLiteral("msg_%1").arg(tick))});
         QTest::qWait(1000);
     }
-    QCOMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: watch the e2e run"),
-                                               QStringLiteral("fold (waiting)"),
-                                               QStringLiteral("assistant: got tick 2")}));
+    QCOMPARE(transcript(*s.view), (armed + QStringList{QStringLiteral("assistant: got tick 1"),
+                                                       QStringLiteral("assistant: got tick 2")}));
 
-    // The agent stops the watch: nothing is left to wake it, the clock stops.
+    // The agent stops the watch: nothing is left to wake it, the turn folds.
     s.wakeUp({toolStart(QStringLiteral("TaskStop"), QStringLiteral("toolu_stop")),
-              toolDone(QStringLiteral("TaskStop"), QStringLiteral("toolu_stop"),
-                       QStringLiteral("{\"task_id\":\"b6x8d7os3\"}"),
-                       {{QStringLiteral("task_id"), QStringLiteral("b6x8d7os3")}}),
+              toolInput(QStringLiteral("toolu_stop"), {{QStringLiteral("task_id"), QStringLiteral("bp6eipu4t")}}),
+              toolDone(QStringLiteral("toolu_stop"), QStringLiteral("{\"task_id\":\"bp6eipu4t\"}")),
               agentText(QStringLiteral("stopped"), QStringLiteral("msg_3"))});
-    QTRY_COMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: watch the e2e run"),
-                                                   QStringLiteral("fold"),
-                                                   QStringLiteral("assistant: stopped")}));
+    QTest::qWait(100);
+    QCOMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: thử dùng monitor tool 1 phút xem"),
+                                               QStringLiteral("fold"), QStringLiteral("assistant: stopped")}));
     QVERIFY(statusLine(*s.view).isEmpty());
 }
 
-// A background task outlives the prompt: the turn folds, its row keeps ticking
-// (and still expands), and stops once the task ends with no wake-up after it.
-void TestAcpSessionViewWake::backgroundTask_keepsFoldedRowTickingUntilIdle()
+// A background task outlives the prompt the same way, until it ends with no
+// wake-up after it.
+void TestAcpSessionViewWake::backgroundTask_keepsTurnOpenUntilIdle()
 {
     Session s;
     const int id = s.prompt(QStringLiteral("start the server"));
@@ -292,21 +294,14 @@ void TestAcpSessionViewWake::backgroundTask_keepsFoldedRowTickingUntilIdle()
                                   {QStringLiteral("name"), QStringLiteral("dev server")},
                                   {QStringLiteral("canStop"), true},
                                   {QStringLiteral("toolCallId"), QStringLiteral("toolu_t1")}}));
-    s.channel->pushStdout(toolDone(QStringLiteral("Bash"), QStringLiteral("toolu_t1"), QStringLiteral("started")));
+    s.channel->pushStdout(toolDone(QStringLiteral("toolu_t1"), QStringLiteral("started")));
     s.channel->pushStdout(agentText(QStringLiteral("server is up"), QStringLiteral("msg_0")));
     s.endPrompt(id);
-    QTRY_COMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: start the server"),
-                                                   QStringLiteral("fold (waiting)"),
-                                                   QStringLiteral("assistant: server is up")}));
+    QTest::qWait(500);
+    QCOMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: start the server"),
+                                               QStringLiteral("fold (live)"), QStringLiteral("card toolu_t1"),
+                                               QStringLiteral("assistant: server is up")}));
     QVERIFY(statusLine(*s.view).contains(QStringLiteral("Waiting background (1)")));
-
-    auto *row = s.view->findChild<AcpTurnFoldRow *>();
-    QVERIFY(row);
-    row->click(); // expandable while it waits
-    QVERIFY(row->isExpanded());
-    QTRY_VERIFY(transcript(*s.view).contains(QStringLiteral("card toolu_t1")));
-    row->click();
-    QTRY_VERIFY(!transcript(*s.view).contains(QStringLiteral("card toolu_t1")));
 
     s.channel->pushStdout(update(QStringLiteral("async_task_state_update"),
                                  {{QStringLiteral("asyncTaskId"), QStringLiteral("t1")},
@@ -314,6 +309,26 @@ void TestAcpSessionViewWake::backgroundTask_keepsFoldedRowTickingUntilIdle()
     QTRY_COMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: start the server"),
                                                    QStringLiteral("fold"),
                                                    QStringLiteral("assistant: server is up")}));
+}
+
+// With nothing left to wake it, every wake-up (a scheduled one, a Monitor's
+// expiry notice) folds back the moment its cycle ends, even when they come
+// faster than the quiet-period guess settles: they once piled up as one bubble
+// each under a row that never stopped.
+void TestAcpSessionViewWake::wakeUpsWithoutPendingWork_foldAtConfirmedEnd()
+{
+    Session s;
+    const int id = s.prompt(QStringLiteral("check back later"));
+    s.channel->pushStdout(agentText(QStringLiteral("ok"), QStringLiteral("msg_0")));
+    s.endPrompt(id);
+    QTRY_COMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: check back later"),
+                                                   QStringLiteral("fold"), QStringLiteral("assistant: ok")}));
+    for (int n = 1; n <= 2; ++n) {
+        s.wakeUp({agentText(QStringLiteral("woke %1").arg(n), QStringLiteral("msg_%1").arg(n))});
+        QTest::qWait(1000);
+    }
+    QCOMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: check back later"),
+                                               QStringLiteral("fold"), QStringLiteral("assistant: woke 2")}));
 }
 
 QTEST_MAIN(TestAcpSessionViewWake)

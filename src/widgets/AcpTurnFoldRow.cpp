@@ -66,7 +66,6 @@ void AcpTurnFoldRow::startLive(qint64 startMs)
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     m_liveStartMs = (startMs > 0 && startMs <= now) ? startMs : now;
     m_live = true;
-    m_liveInteractive = false;
     refreshInteraction();
     if (!m_liveTimer) {
         // One-shot, re-armed to the next whole-second boundary each tick: the
@@ -79,21 +78,11 @@ void AcpTurnFoldRow::startLive(qint64 startMs)
     onLiveTick();
 }
 
-void AcpTurnFoldRow::setLiveInteractive(bool interactive)
-{
-    if (!m_live || m_liveInteractive == interactive)
-        return;
-    m_liveInteractive = interactive;
-    refreshInteraction();
-    refreshText();
-}
-
 void AcpTurnFoldRow::finishLive(qint64 endMs)
 {
     if (!m_live)
         return;
     m_live = false;
-    m_liveInteractive = false;
     if (m_liveTimer)
         m_liveTimer->stop();
     m_workedMs = qMax<qint64>(0, (endMs > 0 ? endMs : QDateTime::currentMSecsSinceEpoch()) - m_liveStartMs);
@@ -199,17 +188,16 @@ void AcpTurnFoldRow::paintEvent(QPaintEvent *event)
 
 void AcpTurnFoldRow::refreshText()
 {
-    const qint64 worked = m_live ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs)
-                                 : m_workedMs;
-    QString tip;
-    if (m_live)
-        tip = m_liveInteractive ? tr("Background work the agent started is still running") : tr("Working…");
-    if (!clickable()) {
-        setText(label(worked));
-        setToolTip(tip);
+    if (m_live) {
+        setText(label(qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_liveStartMs)));
+        setToolTip(tr("Working…"));
         return;
     }
-    setText(label(worked) + (m_expanded ? QStringLiteral(" ⌄") : QStringLiteral(" ›")));
-    const QString action = m_expanded ? tr("Hide tool calls") : tr("Show tool calls");
-    setToolTip(tip.isEmpty() ? action : tip + QLatin1Char('\n') + action);
+    if (!m_expandable) {
+        setText(label(m_workedMs));
+        setToolTip(QString());
+        return;
+    }
+    setText(label(m_workedMs) + (m_expanded ? QStringLiteral(" ⌄") : QStringLiteral(" ›")));
+    setToolTip(m_expanded ? tr("Hide tool calls") : tr("Show tool calls"));
 }

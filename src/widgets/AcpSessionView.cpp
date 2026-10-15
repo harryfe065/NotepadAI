@@ -881,10 +881,10 @@ void AcpSessionView::wireSignals()
                 this, &AcpSessionView::onScheduledJobsChanged);
         // The last task ended and no wake-up came: the turn is over.
         connect(m_connection, &AcpConnection::backgroundIdle,
-                this, [this]() { settleLingerRow(); });
+                this, [this]() { releaseWorkHeldFold(); });
         // Tasks and watches die with the process; it emits no backgroundIdle.
         connect(m_connection, &AcpConnection::agentExited,
-                this, [this]() { settleLingerRow(true); });
+                this, [this]() { releaseWorkHeldFold(true); });
         connect(m_connection, &AcpConnection::errorOccurred,
                 this, &AcpSessionView::onErrorOccurred);
         connect(m_connection, &AcpConnection::planReceived,
@@ -1067,7 +1067,7 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_foldedMask.clear();
     m_foldedCount = 0;
     m_liveRow.clear(); // already queued for deletion with the rest of the layout
-    m_lingerRow.clear();
+    m_foldHeldByWork = false;
     m_liveTurnBegin = -1;
     resetLiveDiff();
     m_liveRowReopened = false;
@@ -1477,16 +1477,11 @@ void AcpSessionView::foldTurn(const AcpTurnFolding::Turn &turn)
         resetLiveDiff(); // makeFoldRow recounts the whole turn
         m_liveRowReopened = false;
         m_foldHeldByForm = false;
+        m_foldHeldByWork = false;
         // A deferred wake-up fold: the turn ended when the wait began.
         const qint64 endedMs = m_wakeFoldTimer->isActive() ? m_wakeTurnEndedMs : 0;
         m_wakeFoldTimer->stop();
-        if (agentWorkPending()) {
-            // Its entries fold, but the clock runs on until that work is over.
-            live->setLiveInteractive(true);
-            m_lingerRow = live;
-        } else {
-            live->finishLive(endedMs);
-        }
+        live->finishLive(endedMs);
     }
     const int at = before ? m_transcriptLayout->indexOf(before) : -1;
     AcpTurnFoldRow *row = makeFoldRow(turn, live);
@@ -1569,8 +1564,6 @@ void AcpSessionView::ensureLiveTurnRow()
         m_expandQueue.removeOne(begin);
         m_foldedTurns.erase(folded);
         if (row) {
-            if (m_lingerRow == row)
-                m_lingerRow.clear(); // live for the wake-up now; foldTurn decides again
             disconnect(row, &AcpTurnFoldRow::expandedChanged, this, nullptr); // makeFoldRow reconnects
             row->setExpanded(false);
             row->setToolCallCount(m_liveToolCalls);
@@ -1583,9 +1576,6 @@ void AcpSessionView::ensureLiveTurnRow()
             return;
         }
     }
-    // A new prompt: the older turn's row stops; its background work, if any,
-    // now runs under this turn.
-    settleLingerRow(true);
 
     QWidget *anchorWidget = widgetForTimelineEntry(anchor);
     const int at = anchorWidget ? m_transcriptLayout->indexOf(anchorWidget) : -1;
@@ -1616,12 +1606,15 @@ bool AcpSessionView::agentWorkPending() const
     });
 }
 
-void AcpSessionView::settleLingerRow(bool force)
+void AcpSessionView::releaseWorkHeldFold(bool force)
 {
-    if (!m_lingerRow || (!force && agentWorkPending()))
+    if (!m_foldHeldByWork || (!force && agentWorkPending()))
         return;
-    m_lingerRow->finishLive();
-    m_lingerRow.clear();
+    // A wake-up is running: its own end folds the turn (onTurnEnded).
+    if (m_model && m_model->isProcessing())
+        return;
+    m_foldHeldByWork = false;
+    foldEndedTurn();
 }
 
 void AcpSessionView::dropLiveTurnRow()
@@ -1633,6 +1626,7 @@ void AcpSessionView::dropLiveTurnRow()
     resetLiveDiff();
     m_liveRowReopened = false;
     m_foldHeldByForm = false;
+    m_foldHeldByWork = false;
     m_wakeFoldTimer->stop();
 }
 
@@ -2387,6 +2381,17 @@ void AcpSessionView::onTurnEnded(int groupId)
                 showGrillMeToolCallForm(tc.value());
             }
         }
+    }
+    m_foldHeldByWork = false;
+    if (m_liveRow && agentWorkPending()) {
+        // Background work this turn started (a task, a Monitor watch) will
+        // wake the agent again, so the turn is not over: no fold, no card
+        // collapse, the row keeps ticking. releaseWorkHeldFold folds it once
+        // that work ends; each wake-up just continues it.
+        m_foldHeldByWork = true;
+        m_wakeFoldTimer->stop();
+        refreshResponseActions(true);
+        return;
     }
     if (m_liveRow && m_liveRowReopened && !(m_connection && m_connection->turnEndConfirmed())) {
         // A wake-up turn: its end is a guess that the next tool step often
@@ -3201,7 +3206,7 @@ void AcpSessionView::onElapsedTick()
 void AcpSessionView::onBackgroundTaskCountChanged(int)
 {
     updateElapsedLabel();
-    settleLingerRow();
+    releaseWorkHeldFold();
 }
 
 void AcpSessionView::onBackgroundStopRequested()
@@ -3239,7 +3244,7 @@ void AcpSessionView::onScheduledJobsChanged()
 {
     ++m_scheduledRev;
     updateElapsedLabel();
-    settleLingerRow(); // a Monitor watch expired or was stopped
+    releaseWorkHeldFold(); // a Monitor watch expired or was stopped
 }
 
 void AcpSessionView::updateElapsedLabel()

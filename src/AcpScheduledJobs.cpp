@@ -74,8 +74,15 @@ bool ScheduledJobTracker::apply(const QJsonObject &update, qint64 nowMs)
     const QString kind = update.value(QStringLiteral("sessionUpdate")).toString();
     if (kind != QLatin1String("tool_call") && kind != QLatin1String("tool_call_update"))
         return false;
-    const QString tool = toolNameOf(update);
     const QString id = update.value(QStringLiteral("toolCallId")).toString();
+    QString tool = toolNameOf(update);
+    // With the AIR capability on (as NotepadAI declares it), only the first
+    // frame of a call names the tool: later updates carry no `_meta`.
+    if (tool.isEmpty()) {
+        const auto known = m_pending.constFind(id);
+        if (known != m_pending.constEnd())
+            tool = known->tool;
+    }
     if (id.isEmpty() || !isScheduleTool(tool))
         return false;
 

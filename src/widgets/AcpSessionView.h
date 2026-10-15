@@ -217,8 +217,8 @@ private:
     // Background tasks or Monitor watches the agent started are still alive:
     // they will wake it again, so the conversation is not over.
     bool agentWorkPending() const;
-    // Stop the lingering row's clock once that work is over (or `force`).
-    void settleLingerRow(bool force = false);
+    // Fold the turn held open by that work once it is over (or `force`).
+    void releaseWorkHeldFold(bool force = false);
     void setTurnExpanded(int turnBegin, bool expanded);
     // Materializes one time-boxed slice of an expanding turn; true when nothing
     // is left (done, collapsed, or the turn is gone).
@@ -463,10 +463,11 @@ private:
     // The live row is a folded turn's row gone live again: a wake-up turn
     // (background task result, no new prompt) continues the newest turn.
     bool m_liveRowReopened = false;
-    // The newest turn folded while its background work still runs: its row
-    // stays live (ticking, but expandable) until agentWorkPending() clears,
-    // a wake-up reopens it, or a new prompt starts a newer turn.
-    QPointer<AcpTurnFoldRow> m_lingerRow;
+    // The newest turn ended while background work it started (tasks, Monitor
+    // watches) still runs: that work wakes the agent again, so the turn stays
+    // open, its row ticking and its cards untouched, until agentWorkPending()
+    // clears (releaseWorkHeldFold) or a new prompt folds it.
+    bool m_foldHeldByWork = false;
     QTimer *m_wakeFoldTimer = nullptr;  // single-shot: fold once a wake-up turn stays over
     qint64 m_wakeTurnEndedMs = 0;       // when that wait began (the turn's end)
     // The newest turn ended while a question form waited on the user: it stays
