@@ -27,7 +27,7 @@
 #include "AiAgentDock.h"
 #include "AiDockGroup.h"
 #include "ApplicationSettings.h"
-#include "AskUserMcp.h"
+#include "GrillMeMcp.h"
 #include "ProfileScope.h"
 #include "remote/ExecutionContext.h"
 
@@ -81,14 +81,13 @@ AcpAgentManager::~AcpAgentManager()
 
 namespace {
 
-// Interactive question forms: the notepadai `ask_user` MCP server plus ACP form
-// elicitation. Only for sessions with a chat view (never headless/judge).
+// Question forms: the grill_me MCP server. Only for sessions with a chat view
+// (never headless/judge).
 void configureInteractiveQuestions(AcpConnection *conn, bool enabled, bool remote)
 {
     if (!enabled)
         return;
-    conn->setMcpServers(QJsonArray{AskUserMcp::serverEntry(remote)});
-    conn->setElicitationEnabled(true);
+    conn->setMcpServers(QJsonArray{GrillMeMcp::serverEntry(remote)});
 }
 
 } // namespace

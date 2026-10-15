@@ -8,23 +8,23 @@
  * (at your option) any later version.
  */
 
-#ifndef ASK_USER_MCP_H
-#define ASK_USER_MCP_H
+#ifndef GRILL_ME_MCP_H
+#define GRILL_ME_MCP_H
 
 #include <QJsonObject>
 #include <QString>
 
-// The `notepadai` MCP server with one tool, `ask_user`. It only validates and
+// The `grill_me` MCP server with one tool, `ask`. It only validates and
 // returns: the chat builds the form from the tool call's rawInput and sends
 // the answers as the next user prompt, so the call never blocks.
-class AskUserMcp
+class GrillMeMcp
 {
 public:
-    static constexpr const char *kCliFlag = "--ask-user-mcp";
+    static constexpr const char *kCliFlag = "--grill-me-mcp";
     static constexpr const char *kShownGuide =
         "Form shown to the user. End your turn now: do not restate the questions as text, do "
         "not call another tool and do not continue the work. The answers arrive as the next "
-        "user message, beginning with [ask_user answers].";
+        "user message, beginning with [grill_me answers].";
 
     static int run();
     // One request or notification. Empty object = no response.
@@ -36,4 +36,4 @@ public:
     static QString nodeScript();
 };
 
-#endif // ASK_USER_MCP_H
+#endif // GRILL_ME_MCP_H

@@ -18,7 +18,7 @@
 
 #include "AcpSessionModel.h"
 
-#include "AskUserForm.h"
+#include "GrillMeForm.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -359,7 +359,7 @@ QJsonObject AcpSessionModel::toHistoryJson() const
             children != m_subagentChildren.constEnd() && !children->isEmpty()) {
             to.insert(QStringLiteral("subagentChildren"), QJsonArray::fromStringList(*children));
         }
-        if (AskUserForm::isAskUserToolCall(tc.name, tc.title, tc.rawInput)) {
+        if (GrillMeForm::isGrillMeToolCall(tc.name, tc.title, tc.rawInput)) {
             // Small (validated: <= 30 questions) and needed to restore the form.
             to.insert(QStringLiteral("rawInput"), tc.rawInput);
         } else if (!tc.rawInput.isEmpty()) {

@@ -37,8 +37,8 @@ qt_add_executable(NotepadAI
 	GoalPromptRenderer.h
 	GoalVerdictMcp.h
 	McpStdio.h
-	AskUserForm.h
-	AskUserMcp.h
+	GrillMeForm.h
+	GrillMeMcp.h
 	PiAcpJudgeConfig.h
 	BrowserProxyArgs.h
 	QuickBrowseUrl.h
@@ -163,8 +163,8 @@ qt_add_executable(NotepadAI
 	GoalPromptRenderer.cpp
 	GoalVerdictMcp.cpp
 	McpStdio.cpp
-	AskUserForm.cpp
-	AskUserMcp.cpp
+	GrillMeForm.cpp
+	GrillMeMcp.cpp
 	PiAcpJudgeConfig.cpp
 	BrowserProxyArgs.cpp
 	QuickBrowseUrl.cpp
@@ -482,9 +482,9 @@ qt_add_executable(NotepadAI
 	widgets/AcpPromptQueueStrip.cpp
 	widgets/AcpPromptQueueStrip.h
 	widgets/AcpSessionView.cpp
-	widgets/AskUserFormWidget.cpp
+	widgets/GrillMeFormWidget.cpp
 	widgets/AcpSessionView.h
-	widgets/AskUserFormWidget.h
+	widgets/GrillMeFormWidget.h
 	widgets/AcpToolCallCard.cpp
 	widgets/AcpToolCallCard.h
 	widgets/AcpTurnFoldRow.cpp

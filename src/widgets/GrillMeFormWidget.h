@@ -8,10 +8,10 @@
  * (at your option) any later version.
  */
 
-#ifndef ASK_USER_FORM_WIDGET_H
-#define ASK_USER_FORM_WIDGET_H
+#ifndef GRILL_ME_FORM_WIDGET_H
+#define GRILL_ME_FORM_WIDGET_H
 
-#include "AskUserForm.h"
+#include "GrillMeForm.h"
 
 #include <QFrame>
 #include <QVector>
@@ -28,11 +28,11 @@ class QPushButton;
 class QToolButton;
 class QVBoxLayout;
 
-// An interactive question form in the chat transcript (ask_user tool call or
-// ACP form elicitation). Pending until the user submits or dismisses; every
+// An interactive question form in the chat transcript (a grill_me ask tool
+// call). Pending until the user submits or dismisses; every
 // other state is read-only and collapsed to its status line, expandable to
 // show what was chosen. Clarify is a per-question toggle sent with Submit.
-class AskUserFormWidget : public QFrame
+class GrillMeFormWidget : public QFrame
 {
     Q_OBJECT
 
@@ -49,17 +49,16 @@ public:
         Invalid,
     };
 
-    AskUserFormWidget(AskUserForm::Spec spec, const QVector<AskUserForm::Answer> &initial,
+    GrillMeFormWidget(GrillMeForm::Spec spec, const QVector<GrillMeForm::Answer> &initial,
                       QWidget *parent = nullptr);
 
-    const AskUserForm::Spec &spec() const { return m_spec; }
+    const GrillMeForm::Spec &spec() const { return m_spec; }
     State state() const { return m_state; }
     bool isPending() const { return m_state == State::Pending; }
     // `detail` overrides the default status text (e.g. the cancel reason).
     void setState(State state, const QString &detail = {});
-    QVector<AskUserForm::Answer> answers() const;
-    // The form-level note below the questions (trimmed; always empty for
-    // elicitation, whose answers are a fixed schema).
+    QVector<GrillMeForm::Answer> answers() const;
+    // The form-level note below the questions (trimmed).
     QString note() const;
     void setNote(const QString &note);
 
@@ -67,7 +66,7 @@ public:
     void focusFirstQuestion();
 
 signals:
-    void submitted(const QVector<AskUserForm::Answer> &answers);
+    void submitted(const QVector<GrillMeForm::Answer> &answers);
     void dismissed();
     // Esc inside the form: give focus back to the composer.
     void escapePressed();
@@ -99,8 +98,8 @@ private:
     void buildDropdown(int index, Row &row, QVBoxLayout *layout);
     void buildSegmented(int index, Row &row, QVBoxLayout *layout);
     void buildOther(Row &row, QVBoxLayout *layout, bool checkbox);
-    void applyAnswer(int index, const AskUserForm::Answer &answer);
-    AskUserForm::Answer answerAt(int index) const;
+    void applyAnswer(int index, const GrillMeForm::Answer &answer);
+    GrillMeForm::Answer answerAt(int index) const;
     // The control that answers question `index` (focus target).
     QWidget *inputOf(int index) const;
     void trySubmit();
@@ -115,7 +114,7 @@ private:
     QString statusText(const QString &detail) const;
     QLabel *mutedLabel(const QString &text, Qt::TextFormat format, QWidget *parent) const;
 
-    AskUserForm::Spec m_spec;
+    GrillMeForm::Spec m_spec;
     QVector<Row> m_rows;
     State m_state = State::Pending;
     bool m_building = true;
@@ -126,11 +125,11 @@ private:
     QLabel *m_statusLabel = nullptr;
     QToolButton *m_toggle = nullptr;
     QWidget *m_body = nullptr;
-    QPlainTextEdit *m_formNoteEdit = nullptr; // ask_user only
+    QPlainTextEdit *m_formNoteEdit = nullptr;
     QWidget *m_footer = nullptr;
     QLabel *m_progressLabel = nullptr;
     QPushButton *m_submitButton = nullptr;
     QPushButton *m_dismissButton = nullptr;
 };
 
-#endif // ASK_USER_FORM_WIDGET_H
+#endif // GRILL_ME_FORM_WIDGET_H

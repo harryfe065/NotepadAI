@@ -19,7 +19,7 @@
 #include "AcpToolCallCard.h"
 
 #include "AcpDiffStat.h"
-#include "AskUserForm.h"
+#include "GrillMeForm.h"
 #include "MarkdownView.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -1215,9 +1215,9 @@ QString AcpToolCallCard::statusGlyph() const
 
 QString AcpToolCallCard::enrichedTitle(const AcpProtocol::AcpToolCall &tc)
 {
-    // notepadai's ask_user: name it by what it did, not mcp__notepadai__ask_user.
-    if (AskUserForm::isAskUserToolCall(tc.name, tc.title, tc.rawInput)) {
-        const QJsonObject askArgs = AskUserForm::askUserArguments(tc.rawInput, tc.rawOutput);
+    // grill_me's ask: name it by what it did, not mcp__grill_me__ask.
+    if (GrillMeForm::isGrillMeToolCall(tc.name, tc.title, tc.rawInput)) {
+        const QJsonObject askArgs = GrillMeForm::toolArguments(tc.rawInput, tc.rawOutput);
         const QString formTitle = askArgs.value(QStringLiteral("title")).toString().trimmed();
         if (!formTitle.isEmpty())
             return tr("Asked you: %1").arg(formTitle);

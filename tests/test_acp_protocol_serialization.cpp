@@ -366,7 +366,7 @@ void TestAcpProtocolSerialization::ensureDiffContentSynthesizesWriteAndDetails()
 
     // omp's xd:// device write is a tool call, not a file: no diff.
     QJsonObject device;
-    device.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user"));
+    device.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__grill_me_ask"));
     device.insert(QStringLiteral("content"), QStringLiteral("{\"questions\":[]}"));
     QVERIFY(AcpProtocol::ensureDiffContent(QJsonArray(), device, QJsonObject()).isEmpty());
 

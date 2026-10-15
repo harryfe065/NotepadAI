@@ -8,16 +8,16 @@
  * (at your option) any later version.
  */
 
-#include "AskUserForm.h"
+#include "GrillMeForm.h"
 
-#include <QHash>
 #include <QJsonDocument>
 #include <QSet>
 #include <QStringList>
 
 #include <algorithm>
+#include <iterator>
 
-namespace AskUserForm {
+namespace GrillMeForm {
 
 namespace {
 
@@ -412,7 +412,7 @@ bool Question::isChoice() const
     return type == QuestionType::Single || type == QuestionType::Multi || type == QuestionType::Select;
 }
 
-std::optional<Spec> parseAskUserInput(const QJsonObject &args, QString *error)
+std::optional<Spec> parseToolInput(const QJsonObject &args, QString *error)
 {
     QJsonValue questionsValue = args.value(QStringLiteral("questions"));
     if (questionsValue.isString()) {
@@ -436,7 +436,6 @@ std::optional<Spec> parseAskUserInput(const QJsonObject &args, QString *error)
     }
 
     Spec spec;
-    spec.source = Source::AskUser;
     spec.title = args.value(QStringLiteral("title")).toString().trimmed();
     spec.questions.reserve(questions.size());
     QSet<QString> ids;
@@ -456,7 +455,7 @@ std::optional<Spec> parseAskUserInput(const QJsonObject &args, QString *error)
 
 namespace {
 
-// "<anything><sep>notepadai<sep>ask_user", sep one of the joiners agents use.
+// "<anything><sep>grill_me<sep>ask", sep one of the joiners agents use.
 bool nameMatches(const QString &raw)
 {
     static const QLatin1String kJoiners[] = {
@@ -470,7 +469,8 @@ bool nameMatches(const QString &raw)
         return tails;
     }();
     const QStringView s = QStringView(raw).trimmed();
-    if (s.size() < 18) // strlen("notepadai_ask_user")
+    // Shortest tail: "grill_me_ask".
+    if (s.size() < qsizetype(sizeof(kServerName) + sizeof(kToolName) - 1))
         return false;
     for (const QString &tail : kTails) {
         if (!s.endsWith(tail, Qt::CaseInsensitive))
@@ -485,9 +485,9 @@ bool nameMatches(const QString &raw)
 constexpr QLatin1String kDevicePrefix("xd://");
 
 // omp mounts MCP tools as devices and calls them through its `write` tool:
-// rawInput = {path: "xd://mcp__notepadai_ask_user", content: "<args JSON>"}.
+// rawInput = {path: "xd://mcp__grill_me_ask", content: "<args JSON>"}.
 // A `read` of the same path (the device's schema) has no content: not a call.
-bool isAskUserDevice(const QJsonObject &rawInput)
+bool isGrillMeDevice(const QJsonObject &rawInput)
 {
     if (!rawInput.contains(QStringLiteral("content")))
         return false;
@@ -509,11 +509,11 @@ QJsonObject objectFrom(const QJsonValue &v)
 
 } // namespace
 
-QJsonObject askUserArguments(const QJsonObject &rawInput, const QJsonObject &rawOutput)
+QJsonObject toolArguments(const QJsonObject &rawInput, const QJsonObject &rawOutput)
 {
     if (rawInput.contains(QStringLiteral("questions")))
         return rawInput;
-    if (isAskUserDevice(rawInput)) {
+    if (isGrillMeDevice(rawInput)) {
         QJsonObject args = objectFrom(rawInput.value(QStringLiteral("content")));
         if (args.isEmpty()) {
             // Completion: omp echoes the parsed arguments.
@@ -625,31 +625,74 @@ QJsonObject toolDefinition()
     return QJsonObject{
         {QStringLiteral("name"), QLatin1String(kToolName)},
         {QStringLiteral("description"), QStringLiteral(
-             "Ask the user questions as an interactive form (clickable choices and text boxes) shown in the "
-             "chat UI. This is how every question round reaches the user: when a skill or instruction (grill-me, "
-             "grilling, brainstorming, a spec interview, a plan review) tells you to ask numbered questions in a "
-             "text format such as \"❓ **Q1** - ... ➡️ recommended answer\", that format describes the round's "
-             "content, not its delivery, so put the round in one ask_user call instead of writing it as text, "
-             "even for a single question such as what to grill. One entry per question, your suggested answer in "
-             "`recommended` (always set it on choice questions: the option value), its reasoning in "
-             "`recommendation`; prefer this over AskUserQuestion. One call per round, in the user's language, "
-             "then END YOUR TURN: it returns at once without answers, so never call it twice in one turn and do "
-             "not repeat the questions as text. Answers arrive as the next user message starting "
-             "`[ask_user answers]`; `no answer` = skipped, re-ask later; `needs clarification` = explain and "
+             "Put a question round to the user as an interactive form (clickable choices and text boxes) shown "
+             "in the chat UI. Use it only when a skill, command or instruction tells you to interview the user "
+             "in rounds (grill-me, grilling, brainstorming, a spec interview, a plan review): when it says to ask "
+             "numbered questions in a text format such as \"❓ **Q1** - ... ➡️ recommended answer\", that format "
+             "describes the round's content, not its delivery, so put the round in one call instead of writing "
+             "it as text, even for a single question such as what to grill. Outside such rounds do not call it: "
+             "decide from the code, the plan and sensible defaults, and ask in plain text only when you are truly "
+             "blocked. One entry per question, your suggested answer in `recommended` (always set it on choice "
+             "questions: the option value), its reasoning in `recommendation`. One call per round, in the user's "
+             "language, then END YOUR TURN: it returns at once without answers, so never call it twice in one "
+             "turn and do not repeat the questions as text. Answers arrive as the next user message starting "
+             "`[grill_me answers]`; `no answer` = skipped, re-ask later; `needs clarification` = explain and "
              "re-ask only those questions (same ids), the other answers are final. A chat reply replaces the "
-             "form. Do not use it once the plan is settled or the user said to implement: decide from the plan "
-             "and sensible defaults, and never ask how or whether to proceed or offer invented next-step "
-             "menus.")},
+             "form. Once the plan is settled or the user said to implement, stop asking: never ask how or "
+             "whether to proceed or offer invented next-step menus.")},
         {QStringLiteral("inputSchema"), schema},
     };
 }
 
-bool isAskUserToolCall(const QString &name, const QString &title, const QJsonObject &rawInput)
+bool isGrillMeToolCall(const QString &name, const QString &title, const QJsonObject &rawInput)
 {
-    if (nameMatches(name) || nameMatches(title) || isAskUserDevice(rawInput))
+    if (nameMatches(name) || nameMatches(title) || isGrillMeDevice(rawInput))
         return true;
     return rawInput.value(QStringLiteral("server")).toString() == QLatin1String(kServerName)
         && rawInput.value(QStringLiteral("tool")).toString() == QLatin1String(kToolName);
+}
+
+namespace {
+
+// Prefixes of command names (namespace stripped) that run question rounds.
+constexpr QLatin1String kQuestionRoundCommands[] = {
+    QLatin1String("grill"), QLatin1String("plan"), QLatin1String("brainstorm"), QLatin1String("interview"),
+};
+
+constexpr QLatin1String kQuestionRoundHint(
+    "[NotepadAI note, not part of the request] Deliver each question round of this command through the "
+    "`ask` tool of the `grill_me` MCP server (one call per round, then end your turn), never as plain text.");
+
+} // namespace
+
+QString withQuestionRoundHint(const QString &text)
+{
+    if (!text.startsWith(QLatin1Char('/')))
+        return text;
+    qsizetype nameEnd = 1;
+    while (nameEnd < text.size() && !text.at(nameEnd).isSpace())
+        ++nameEnd;
+    const QStringView command = QStringView(text).mid(1, nameEnd - 1);
+    const QStringView name = command.mid(command.lastIndexOf(QLatin1Char(':')) + 1);
+    const bool matches = std::any_of(std::begin(kQuestionRoundCommands), std::end(kQuestionRoundCommands),
+                                     [name](QLatin1String prefix) {
+                                         return name.startsWith(prefix, Qt::CaseInsensitive);
+                                     });
+    if (!matches)
+        return text;
+    const QStringView sent = QStringView(text).trimmed();
+    const bool bare = sent.size() == nameEnd;
+    // Only the agent's own /plan: a plugin's /x:plan is a skill like any other.
+    if (bare && command.compare(QLatin1String("plan"), Qt::CaseInsensitive) == 0)
+        return text;
+    QString out;
+    out.reserve(sent.size() + kQuestionRoundHint.size() + 3);
+    out += sent;
+    if (bare)
+        out += QLatin1Char(' ');
+    out += QLatin1String("\n\n");
+    out += kQuestionRoundHint;
+    return out;
 }
 
 namespace {
@@ -928,8 +971,8 @@ QString formatAnswers(const Spec &spec, const QVector<Answer> &answers, const QS
         out += userNoteLine(note) + QLatin1Char('\n');
     // No `": ` in this line: the summary and overview parsers skip it.
     if (!unclear.isEmpty()) {
-        out += QStringLiteral("To clarify: %1. Explain them in the user's language, then call ask_user again "
-                              "with only these questions, keeping their ids. The other answers are final.\n")
+        out += QStringLiteral("To clarify: %1. Explain them in the user's language, then call grill_me ask "
+                              "again with only these questions, keeping their ids. The other answers are final.\n")
                    .arg(unclear.join(QStringLiteral(", ")));
     }
     return out;
@@ -958,15 +1001,6 @@ QString answerSummary(const Spec &spec, const QVector<Answer> &answers, const QS
 
 QString summaryFromAnswersText(const QString &text)
 {
-    // Legacy one-question clarify prompt, still in older saved sessions.
-    if (text.startsWith(QLatin1String(kClarifyHeader))) {
-        static const QLatin1String kLead("does not understand question ");
-        const qsizetype from = text.indexOf(kLead);
-        const qsizetype to = text.indexOf(QLatin1String(". Explain"));
-        if (from >= 0 && to > from)
-            return QStringLiteral("Asked to clarify ") + text.mid(from + kLead.size(), to - from - kLead.size());
-        return QStringLiteral("Asked to clarify a question");
-    }
     if (text.contains(QLatin1String(kDismissedLine))) {
         const bool hasNote = text.contains(QString(QLatin1Char('\n')) + kUserNoteLead);
         return hasNote ? QStringLiteral("Dismissed the form · note") : QStringLiteral("Dismissed the form");
@@ -1000,226 +1034,6 @@ QString summaryFromAnswersText(const QString &text)
             ++changed;
     }
     return summaryText(answered, total, changed, clarify, hasNote);
-}
-
-namespace {
-
-// "question_2" < "question_10": digit runs compare by value.
-bool naturalLess(const QString &a, const QString &b)
-{
-    int i = 0;
-    int j = 0;
-    while (i < a.size() && j < b.size()) {
-        if (a.at(i).isDigit() && b.at(j).isDigit()) {
-            int ei = i;
-            int ej = j;
-            while (ei < a.size() && a.at(ei).isDigit())
-                ++ei;
-            while (ej < b.size() && b.at(ej).isDigit())
-                ++ej;
-            const qulonglong na = a.mid(i, ei - i).toULongLong();
-            const qulonglong nb = b.mid(j, ej - j).toULongLong();
-            if (na != nb)
-                return na < nb;
-            i = ei;
-            j = ej;
-            continue;
-        }
-        if (a.at(i) != b.at(j))
-            return a.at(i) < b.at(j);
-        ++i;
-        ++j;
-    }
-    return a.size() - i < b.size() - j;
-}
-
-// Options from `oneOf` / `anyOf` ([{const,title,description}]) or `enum`.
-QVector<Option> enumOptions(const QJsonObject &schema)
-{
-    QVector<Option> out;
-    QJsonArray titled = schema.value(QStringLiteral("oneOf")).toArray();
-    if (titled.isEmpty())
-        titled = schema.value(QStringLiteral("anyOf")).toArray();
-    for (const auto &v : std::as_const(titled)) {
-        const QJsonObject o = v.toObject();
-        Option opt;
-        opt.value = scalarToString(o.value(QStringLiteral("const")));
-        opt.label = o.value(QStringLiteral("title")).toString();
-        opt.description = o.value(QStringLiteral("description")).toString();
-        if (opt.label.isEmpty())
-            opt.label = opt.value;
-        if (!opt.value.isEmpty())
-            out.append(opt);
-    }
-    if (!out.isEmpty())
-        return out;
-    const QJsonArray plain = schema.value(QStringLiteral("enum")).toArray();
-    const QJsonArray names = schema.value(QStringLiteral("enumNames")).toArray();
-    for (int i = 0; i < plain.size(); ++i) {
-        Option opt;
-        opt.value = scalarToString(plain.at(i));
-        opt.label = i < names.size() ? names.at(i).toString() : opt.value;
-        if (!opt.value.isEmpty())
-            out.append(opt);
-    }
-    return out;
-}
-
-constexpr int kTextareaMinLength = 500;
-
-Question questionFromProperty(const QString &key, const QJsonObject &p)
-{
-    Question q;
-    q.id = key;
-    q.fieldKey = key;
-    q.title = p.value(QStringLiteral("title")).toString().trimmed();
-    q.body = p.value(QStringLiteral("description")).toString();
-    if (q.title.isEmpty())
-        q.title = key;
-    const QString type = p.value(QStringLiteral("type")).toString();
-    const QJsonValue def = p.value(QStringLiteral("default"));
-    if (type == QLatin1String("array")) {
-        q.type = QuestionType::Multi;
-        q.options = enumOptions(p.value(QStringLiteral("items")).toObject());
-        if (def.isArray())
-            q.recommended = def;
-    } else if (type == QLatin1String("boolean")) {
-        q.type = QuestionType::Confirm;
-        if (def.isBool())
-            q.recommended = def;
-    } else if (type == QLatin1String("number") || type == QLatin1String("integer")) {
-        q.type = QuestionType::Number;
-        q.integer = type == QLatin1String("integer");
-        if (const auto mn = numberOf(p.value(QStringLiteral("minimum"))))
-            q.min = *mn;
-        if (const auto mx = numberOf(p.value(QStringLiteral("maximum"))))
-            q.max = *mx;
-        if (def.isDouble())
-            q.recommended = def;
-    } else {
-        q.options = enumOptions(p);
-        if (!q.options.isEmpty()) {
-            q.type = QuestionType::Single;
-        } else {
-            const bool multiline = p.value(QStringLiteral("_meta")).toObject()
-                                       .value(QStringLiteral("notepadai/multiline")).toBool(false)
-                || p.value(QStringLiteral("maxLength")).toInt(0) >= kTextareaMinLength;
-            q.type = multiline ? QuestionType::Textarea : QuestionType::Text;
-        }
-        if (def.isString())
-            q.recommended = def;
-    }
-    if (q.isChoice() && !q.recommended.isUndefined())
-        q.recommended = fitToQuestion(q, q.recommended);
-    return q;
-}
-
-} // namespace
-
-Spec fromElicitation(const QString &message, const QJsonObject &requestedSchema)
-{
-    Spec spec;
-    spec.source = Source::Elicitation;
-    spec.title = message.trimmed();
-
-    const QJsonObject props = requestedSchema.value(QStringLiteral("properties")).toObject();
-    QSet<QString> required;
-    QStringList order;
-    const QJsonArray requiredKeys = requestedSchema.value(QStringLiteral("required")).toArray();
-    for (const auto &v : requiredKeys) {
-        const QString key = v.toString();
-        if (props.contains(key) && !required.contains(key)) {
-            required.insert(key);
-            order.append(key);
-        }
-    }
-    QStringList rest;
-    for (auto it = props.constBegin(); it != props.constEnd(); ++it) {
-        if (!required.contains(it.key()))
-            rest.append(it.key());
-    }
-    std::sort(rest.begin(), rest.end(), naturalLess);
-    order += rest;
-
-    // A companion belongs to its base field only when that base exists.
-    auto companionBase = [&props](const QString &key, QLatin1String suffix) -> QString {
-        if (!key.endsWith(suffix))
-            return {};
-        const QString base = key.left(key.size() - suffix.size());
-        return props.contains(base) ? base : QString();
-    };
-
-    QHash<QString, int> indexByKey;
-    for (const QString &key : std::as_const(order)) {
-        if (!companionBase(key, QLatin1String("_custom")).isEmpty()
-            || !companionBase(key, QLatin1String("_note")).isEmpty()) {
-            continue;
-        }
-        Question q = questionFromProperty(key, props.value(key).toObject());
-        q.required = required.contains(key);
-        indexByKey.insert(key, static_cast<int>(spec.questions.size()));
-        spec.questions.append(std::move(q));
-    }
-    for (const QString &key : std::as_const(order)) {
-        const QString customBase = companionBase(key, QLatin1String("_custom"));
-        const QString noteBase = companionBase(key, QLatin1String("_note"));
-        const QString base = customBase.isEmpty() ? noteBase : customBase;
-        const auto it = indexByKey.constFind(base);
-        if (it == indexByKey.constEnd())
-            continue;
-        Question &q = spec.questions[it.value()];
-        if (!customBase.isEmpty()) {
-            q.otherFieldKey = key;
-            q.allowOther = true;
-        } else {
-            q.noteFieldKey = key;
-        }
-    }
-    return spec;
-}
-
-QJsonObject elicitationContent(const Spec &spec, const QVector<Answer> &answers)
-{
-    QJsonObject content;
-    for (const Question &q : spec.questions) {
-        const Answer *a = findAnswer(answers, q.id);
-        if (!a)
-            continue;
-        if (!isEmptyValue(a->value)) {
-            if (q.type == QuestionType::Number && q.integer)
-                content.insert(q.fieldKey, qRound64(a->value.toDouble()));
-            else
-                content.insert(q.fieldKey, a->value);
-        }
-        QString other = a->other.trimmed();
-        QString note = a->note.trimmed();
-        // The value stays (codex-acp marks every question required); the
-        // request rides in the free-text companion and the agent re-asks.
-        if (a->clarify) {
-            const QString request = QStringLiteral(
-                "Needs clarification: the user does not understand this question. Explain it in the user's "
-                "language, then ask it again.");
-            note = note.isEmpty() ? request : request + QStringLiteral(" Note: ") + note;
-        }
-        // No dedicated note field: the note rides along in the Other box.
-        if (q.noteFieldKey.isEmpty() && !q.otherFieldKey.isEmpty() && !note.isEmpty()) {
-            other = other.isEmpty() ? note : other + QStringLiteral("; ") + note;
-            note.clear();
-        }
-        if (!q.otherFieldKey.isEmpty() && !other.isEmpty())
-            content.insert(q.otherFieldKey, other);
-        if (!q.noteFieldKey.isEmpty()) {
-            // Without an Other field, the Other text shares the note field.
-            QStringList parts;
-            if (q.otherFieldKey.isEmpty() && !other.isEmpty())
-                parts.append(other);
-            if (!note.isEmpty())
-                parts.append(note);
-            if (!parts.isEmpty())
-                content.insert(q.noteFieldKey, parts.join(QStringLiteral("; ")));
-        }
-    }
-    return content;
 }
 
 namespace {
@@ -1319,13 +1133,13 @@ QString noHumanPrompt(bool goalAgent)
     if (goalAgent) {
         return QStringLiteral(
             "A goal agent is driving this session and no human will answer forms. Do not call "
-            "ask_user or AskUserQuestion. If you need a decision, ask it as plain text in your "
-            "reply; the goal agent will answer it.");
+            "grill_me ask. If you need a decision, ask it as plain text in your reply; the goal "
+            "agent will answer it.");
     }
     return QStringLiteral(
         "This session runs unattended (scheduled task) and no human will answer forms. Do not "
-        "call ask_user or AskUserQuestion. If you need a decision, pick the most reasonable "
-        "option yourself, say which one you picked and why, and continue.");
+        "call grill_me ask. If you need a decision, pick the most reasonable option yourself, "
+        "say which one you picked and why, and continue.");
 }
 
-} // namespace AskUserForm
+} // namespace GrillMeForm

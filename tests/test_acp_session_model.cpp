@@ -34,7 +34,7 @@ class TestAcpSessionModel : public QObject
 private slots:
     void initTestCase();
     void emptySessionDoesNotPersist();
-    void askUserRawInputSurvivesHistory();
+    void grillMeRawInputSurvivesHistory();
     void streamingConcatenation();
     void messageIdChange_startsNewBubble();
     void promptEndedClosesStreaming();
@@ -86,7 +86,7 @@ void TestAcpSessionModel::initTestCase()
     DataPaths::init(QDir::tempPath(), DataPaths::Source::Default);
 }
 
-void TestAcpSessionModel::askUserRawInputSurvivesHistory()
+void TestAcpSessionModel::grillMeRawInputSurvivesHistory()
 {
     QTemporaryDir tmp;
     QVERIFY(tmp.isValid());
@@ -94,7 +94,7 @@ void TestAcpSessionModel::askUserRawInputSurvivesHistory()
     model.appendUserMessage(QStringLiteral("grill me"), {});
     AcpProtocol::AcpToolCall ask;
     ask.id = QStringLiteral("t-ask");
-    ask.title = QStringLiteral("mcp__notepadai__ask_user");
+    ask.title = QStringLiteral("mcp__grill_me__ask");
     ask.status = QStringLiteral("completed");
     ask.rawInput = QJsonObject{{QStringLiteral("questions"), QJsonArray{QJsonObject{
         {QStringLiteral("id"), QStringLiteral("Q1")}, {QStringLiteral("title"), QStringLiteral("What?")},
@@ -118,7 +118,7 @@ void TestAcpSessionModel::askUserRawInputSurvivesHistory()
         else
             writeJson = o;
     }
-    // ask_user keeps its arguments (the form is rebuilt from them)...
+    // grill_me ask keeps its arguments (the form is rebuilt from them)...
     QCOMPARE(askJson.value(QStringLiteral("rawInput")).toObject(), ask.rawInput);
     // ...other tools stay slim.
     QVERIFY(!writeJson.value(QStringLiteral("rawInput")).toObject().contains(QStringLiteral("content")));

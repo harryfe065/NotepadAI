@@ -60,8 +60,8 @@ constexpr const char *kMethodSessionRequestPermission = "session/request_permiss
 constexpr const char *kMethodRequestPermission   = "request_permission";
 constexpr const char *kMethodSessionUpdate       = "session/update";
 constexpr const char *kMethodExtMethod           = "ext_method";
+// Never advertised: rejected as method-not-found (questions use grill_me).
 constexpr const char *kMethodElicitationCreate   = "elicitation/create";
-constexpr const char *kMethodCancelRequest       = "$/cancel_request";
 // claude-agent-acp AIR extension: stop one background (async) task.
 constexpr const char *kMethodAsyncTaskStop       = "_session/async_task/stop";
 
@@ -183,16 +183,6 @@ struct AcpPermissionRequest
     QString title;
     QString description;
     QList<AcpPermissionOption> options;
-};
-
-// Inbound `elicitation/create` in form mode. `requestId` is the JSON-RPC id
-// (stringified) used to answer via AcpConnection::respondToElicitation.
-struct AcpElicitationRequest
-{
-    QString requestId;
-    QString toolCallId;
-    QString message;
-    QJsonObject requestedSchema;
 };
 
 struct AcpModeInfo

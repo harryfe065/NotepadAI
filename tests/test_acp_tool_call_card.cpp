@@ -25,7 +25,7 @@ class TestAcpToolCallCard : public QObject
     Q_OBJECT
 
 private slots:
-    void ask_user_card_title_names_the_questions();
+    void grill_me_card_title_names_the_questions();
     void collapsed_card_defers_body_render_until_expanded();
     void expanded_card_coalesces_running_updates();
     void diff_card_auto_expands_at_terminal_status();
@@ -114,7 +114,7 @@ QString titleOf(AcpToolCallCard &card)
 
 } // namespace
 
-void TestAcpToolCallCard::ask_user_card_title_names_the_questions()
+void TestAcpToolCallCard::grill_me_card_title_names_the_questions()
 {
     auto titleOf = [](const AcpProtocol::AcpToolCall &tc) {
         AcpToolCallCard card(tc);
@@ -128,7 +128,7 @@ void TestAcpToolCallCard::ask_user_card_title_names_the_questions()
     };
     AcpProtocol::AcpToolCall tc;
     tc.id = QStringLiteral("ask1");
-    tc.title = QStringLiteral("mcp__notepadai__ask_user");
+    tc.title = QStringLiteral("mcp__grill_me__ask");
     tc.status = QStringLiteral("completed");
     QJsonArray questions;
     for (int i = 0; i < 3; ++i)

@@ -2591,7 +2591,7 @@ void TestGoalAgent::goalJudge_waitsWhileHostFollowUpQueued()
     model.appendUserMessage(QStringLiteral("do the work"), {});
     model.onPromptStarted();
     goal.setTargetSession(&target, &model);
-    // The view queued "ask in plain text" after cancelling an ask_user form.
+    // The view queued "ask in plain text" after cancelling a question form.
     bool held = true;
     goal.setTargetHoldProbe([&held]() { return held; });
 

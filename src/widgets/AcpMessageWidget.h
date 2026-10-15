@@ -84,7 +84,7 @@ public:
 
     // User role: show a clickable `summary` line plus one `overview` line per
     // answer instead of the content (set after setContent); clicking toggles
-    // the full text. Used for ask_user answer prompts.
+    // the full text. Used for grill_me answer prompts.
     void setCollapsedSummary(const QString &summary, const QStringList &overview = {});
 
     bool isCollapsed() const { return m_collapsed; }

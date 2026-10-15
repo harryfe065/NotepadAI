@@ -86,9 +86,9 @@
 
 namespace {
 
-// An ask_user call rejected by the server (the agent sees why and retries) or
+// A grill_me ask call rejected by the server (the agent sees why and retries) or
 // cancelled: no form.
-bool askUserCallDropped(const QString &status)
+bool grillMeCallDropped(const QString &status)
 {
     return AcpProtocol::toolCallStatusIsTerminal(status) && status != QLatin1String("completed");
 }
@@ -875,10 +875,6 @@ void AcpSessionView::wireSignals()
     if (m_connection) {
         connect(m_connection, &AcpConnection::permissionRequested,
                 this, &AcpSessionView::onPermissionRequested);
-        connect(m_connection, &AcpConnection::elicitationRequested,
-                this, &AcpSessionView::onElicitationRequested);
-        connect(m_connection, &AcpConnection::elicitationClosed,
-                this, &AcpSessionView::onElicitationClosed);
         connect(m_connection, &AcpConnection::requestFailed,
                 this, &AcpSessionView::onRequestFailed);
         connect(m_connection, &AcpConnection::scheduledJobsChanged,
@@ -1089,9 +1085,8 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     }
     // Form widgets went with the layout; the old connection answers nothing.
     m_pendingForm.clear();
-    m_pendingFormKey.clear();
-    m_askUserCandidates.clear();
-    m_askUserShown.clear();
+    m_grillMeCandidates.clear();
+    m_grillMeShown.clear();
     m_carryAnswers.clear();
     m_carryNote.clear();
 
@@ -1396,7 +1391,7 @@ void AcpSessionView::resetLiveDiff()
     m_liveDiffCounted.clear();
 }
 
-// The newest turn is over: fold it like every other, unless an ask-user form
+// The newest turn is over: fold it like every other, unless a question form
 // waits on the user. Then its row only stops ticking (nothing under it yet, so
 // no chevron; makeFoldRow restores it) and the turn folds once the form
 // settles (releaseFormHeldFold) or the answer's prompt arrives.
@@ -2015,7 +2010,7 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
     auto it = m_model->toolCalls().find(toolCallId);
     if (it == m_model->toolCalls().end()) return;
     const AcpProtocol::AcpToolCall &tc = it.value();
-    trackAskUserToolCall(tc);
+    trackGrillMeToolCall(tc);
     noteLiveEdit(tc);
 
     if (!tc.parentToolCallId.isEmpty()) {
@@ -2383,13 +2378,13 @@ void AcpSessionView::onTurnEnded(int groupId)
 {
     Q_UNUSED(groupId);
     // An adapter that never reports completion: the turn end is the signal.
-    if (!m_askUserCandidates.isEmpty() && m_model) {
-        const QSet<QString> candidates = std::exchange(m_askUserCandidates, {});
+    if (!m_grillMeCandidates.isEmpty() && m_model) {
+        const QSet<QString> candidates = std::exchange(m_grillMeCandidates, {});
         for (const QString &id : candidates) {
             const auto tc = m_model->toolCalls().constFind(id);
             if (tc != m_model->toolCalls().constEnd()
-                && !askUserCallDropped(tc->status)) {
-                showAskUserToolCallForm(tc.value());
+                && !grillMeCallDropped(tc->status)) {
+                showGrillMeToolCallForm(tc.value());
             }
         }
     }
@@ -2455,60 +2450,47 @@ void AcpSessionView::onPermissionRequested(const AcpProtocol::AcpPermissionReque
 
 // ---------- Interactive question forms -------------------------------
 
-void AcpSessionView::trackAskUserToolCall(const AcpProtocol::AcpToolCall &tc)
+void AcpSessionView::trackGrillMeToolCall(const AcpProtocol::AcpToolCall &tc)
 {
-    if (m_askUserShown.contains(tc.id) || isGoalJudgeToolId(tc.id))
+    if (m_grillMeShown.contains(tc.id) || isGoalJudgeToolId(tc.id))
         return;
-    if (!m_askUserCandidates.contains(tc.id)
-        && !AskUserForm::isAskUserToolCall(tc.name, tc.title, tc.rawInput)) {
+    if (!m_grillMeCandidates.contains(tc.id)
+        && !GrillMeForm::isGrillMeToolCall(tc.name, tc.title, tc.rawInput)) {
         return;
     }
-    if (askUserCallDropped(tc.status)) {
-        m_askUserCandidates.remove(tc.id);
-        m_askUserShown.insert(tc.id);
+    if (grillMeCallDropped(tc.status)) {
+        m_grillMeCandidates.remove(tc.id);
+        m_grillMeShown.insert(tc.id);
         return;
     }
     if (tc.status == QLatin1String("completed")) {
-        showAskUserToolCallForm(tc);
+        showGrillMeToolCallForm(tc);
         return;
     }
-    m_askUserCandidates.insert(tc.id);
+    m_grillMeCandidates.insert(tc.id);
 }
 
-void AcpSessionView::showAskUserToolCallForm(const AcpProtocol::AcpToolCall &tc)
+void AcpSessionView::showGrillMeToolCallForm(const AcpProtocol::AcpToolCall &tc)
 {
-    m_askUserCandidates.remove(tc.id);
-    if (m_askUserShown.contains(tc.id))
+    m_grillMeCandidates.remove(tc.id);
+    if (m_grillMeShown.contains(tc.id))
         return;
-    m_askUserShown.insert(tc.id);
+    m_grillMeShown.insert(tc.id);
     QString error;
-    const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc.rawInput, tc.rawOutput), &error);
+    const auto spec = GrillMeForm::parseToolInput(GrillMeForm::toolArguments(tc.rawInput, tc.rawOutput), &error);
     if (!spec) {
         // A form is already waiting on the user: a stray, unparseable call must
         // not start another turn (the agent would run on without the answers).
         if (m_pendingForm)
             return;
         // The agent believes the form is on screen and waits: tell it.
-        sendHostPrompt(QLatin1String(AskUserForm::kAnswersHeader)
+        sendHostPrompt(QLatin1String(GrillMeForm::kAnswersHeader)
                            + QStringLiteral("\nThe form could not be shown: %1. Fix the input and call "
-                                            "ask_user again.").arg(error),
+                                            "grill_me ask again.").arg(error),
                        {});
         return;
     }
-    presentForm(*spec, FormSource::ToolCall, tc.id);
-}
-
-void AcpSessionView::onElicitationRequested(const AcpProtocol::AcpElicitationRequest &req)
-{
-    resetElapsed();
-    presentForm(AskUserForm::fromElicitation(req.message, req.requestedSchema),
-                FormSource::Elicitation, req.requestId);
-}
-
-void AcpSessionView::onElicitationClosed(const QString &requestId)
-{
-    if (m_pendingForm && m_pendingFormSource == FormSource::Elicitation && m_pendingFormKey == requestId)
-        settlePendingForm(AskUserFormWidget::State::Cancelled, tr("Cancelled by the agent"));
+    presentForm(*spec);
 }
 
 bool AcpSessionView::isUnattended() const
@@ -2518,36 +2500,34 @@ bool AcpSessionView::isUnattended() const
 
 bool AcpSessionView::holdsGoalEvaluation() const
 {
-    return m_promptQueue.containsMarker(QLatin1String(AskUserForm::kMarkerNoHuman));
+    return m_promptQueue.containsMarker(QLatin1String(GrillMeForm::kMarkerNoHuman));
 }
 
-void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource source, const QString &key)
+void AcpSessionView::presentForm(const GrillMeForm::Spec &spec)
 {
     if (m_pendingForm) {
         m_carryAnswers = m_pendingForm->answers();
         m_carryNote = m_pendingForm->note();
-        settlePendingForm(AskUserFormWidget::State::Superseded, {}, QStringLiteral("decline"));
+        settlePendingForm(GrillMeFormWidget::State::Superseded);
     }
-    // Revised ask_user rounds keep what the user already chose (same ids).
-    const QVector<AskUserForm::Answer> initial = source == FormSource::ToolCall && !m_carryAnswers.isEmpty()
-        ? AskUserForm::carryOver(spec, m_carryAnswers)
-        : AskUserForm::defaultAnswers(spec);
+    // Revised rounds keep what the user already chose (same ids).
+    const QVector<GrillMeForm::Answer> initial = m_carryAnswers.isEmpty()
+        ? GrillMeForm::defaultAnswers(spec)
+        : GrillMeForm::carryOver(spec, m_carryAnswers);
     m_carryAnswers.clear();
     const QString carriedNote = std::exchange(m_carryNote, QString());
 
-    auto *form = new AskUserFormWidget(spec, initial, m_transcriptHost);
+    auto *form = new GrillMeFormWidget(spec, initial, m_transcriptHost);
     form->setChatFont(chatFont());
     insertTimelineWidget(form);
 
     if (isUnattended()) {
         scrollToBottomDeferred();
         const bool goal = m_goalRunning;
-        form->setState(AskUserFormWidget::State::Cancelled,
+        form->setState(GrillMeFormWidget::State::Cancelled,
                        goal ? tr("Cancelled — goal agent active") : tr("Cancelled — unattended session"));
-        if (source == FormSource::Elicitation && m_connection)
-            m_connection->respondToElicitation(key, QStringLiteral("decline"));
         if (!holdsGoalEvaluation()) {
-            sendHostPrompt(AskUserForm::noHumanPrompt(goal), QLatin1String(AskUserForm::kMarkerNoHuman),
+            sendHostPrompt(GrillMeForm::noHumanPrompt(goal), QLatin1String(GrillMeForm::kMarkerNoHuman),
                            {}, goal);
         }
         return;
@@ -2555,11 +2535,9 @@ void AcpSessionView::presentForm(const AskUserForm::Spec &spec, FormSource sourc
 
     form->setNote(carriedNote);
     m_pendingForm = form;
-    m_pendingFormSource = source;
-    m_pendingFormKey = key;
-    connect(form, &AskUserFormWidget::submitted, this, &AcpSessionView::onFormSubmitted);
-    connect(form, &AskUserFormWidget::dismissed, this, &AcpSessionView::onFormDismissed);
-    connect(form, &AskUserFormWidget::escapePressed, this, [this]() {
+    connect(form, &GrillMeFormWidget::submitted, this, &AcpSessionView::onFormSubmitted);
+    connect(form, &GrillMeFormWidget::dismissed, this, &AcpSessionView::onFormDismissed);
+    connect(form, &GrillMeFormWidget::escapePressed, this, [this]() {
         if (m_input)
             m_input->setFocus();
     });
@@ -2594,44 +2572,28 @@ void AcpSessionView::scrollToFormTop(QWidget *form)
     QTimer::singleShot(kFormScrollSettleMs, this, apply);
 }
 
-void AcpSessionView::settlePendingForm(AskUserFormWidget::State state, const QString &detail,
-                                       const QString &elicitationAction)
+void AcpSessionView::settlePendingForm(GrillMeFormWidget::State state, const QString &detail)
 {
-    if (m_pendingForm && m_pendingFormSource == FormSource::Elicitation && m_connection
-        && !elicitationAction.isEmpty()) {
-        m_connection->respondToElicitation(m_pendingFormKey, elicitationAction);
-    }
     if (m_pendingForm)
         m_pendingForm->setState(state, detail);
     m_pendingForm.clear();
-    m_pendingFormKey.clear();
     releaseFormHeldFold();
 }
 
-void AcpSessionView::onFormSubmitted(const QVector<AskUserForm::Answer> &answers)
+void AcpSessionView::onFormSubmitted(const QVector<GrillMeForm::Answer> &answers)
 {
     if (!m_pendingForm)
         return;
-    const AskUserForm::Spec spec = m_pendingForm->spec();
-    const FormSource source = m_pendingFormSource;
-    const QString key = m_pendingFormKey;
+    const GrillMeForm::Spec spec = m_pendingForm->spec();
     const QString note = m_pendingForm->note();
     const bool clarify = std::any_of(answers.cbegin(), answers.cend(),
-                                     [](const AskUserForm::Answer &a) { return a.clarify; });
-    settlePendingForm(clarify ? AskUserFormWidget::State::ClarifyRequested : AskUserFormWidget::State::Answered,
-                      AskUserForm::answerSummary(spec, answers, note));
-    if (source == FormSource::Elicitation) {
-        if (m_connection) {
-            m_connection->respondToElicitation(key, QStringLiteral("accept"),
-                                               AskUserForm::elicitationContent(spec, answers));
-        }
-    } else {
-        // The agent re-asks the flagged questions: keep what the user chose.
-        if (clarify)
-            m_carryAnswers = answers;
-        sendHostPrompt(AskUserForm::formatAnswers(spec, answers, note),
-                       QLatin1String(AskUserForm::kMarkerAnswers));
-    }
+                                     [](const GrillMeForm::Answer &a) { return a.clarify; });
+    settlePendingForm(clarify ? GrillMeFormWidget::State::ClarifyRequested : GrillMeFormWidget::State::Answered,
+                      GrillMeForm::answerSummary(spec, answers, note));
+    // The agent re-asks the flagged questions: keep what the user chose.
+    if (clarify)
+        m_carryAnswers = answers;
+    sendHostPrompt(GrillMeForm::formatAnswers(spec, answers, note), QLatin1String(GrillMeForm::kMarkerAnswers));
     if (m_input)
         m_input->setFocus();
 }
@@ -2640,16 +2602,9 @@ void AcpSessionView::onFormDismissed()
 {
     if (!m_pendingForm)
         return;
-    const FormSource source = m_pendingFormSource;
-    const QString key = m_pendingFormKey;
     const QString note = m_pendingForm->note();
-    settlePendingForm(AskUserFormWidget::State::Dismissed);
-    if (source == FormSource::Elicitation) {
-        if (m_connection)
-            m_connection->respondToElicitation(key, QStringLiteral("decline"));
-    } else {
-        sendHostPrompt(AskUserForm::dismissPrompt(note), QLatin1String(AskUserForm::kMarkerAnswers));
-    }
+    settlePendingForm(GrillMeFormWidget::State::Dismissed);
+    sendHostPrompt(GrillMeForm::dismissPrompt(note), QLatin1String(GrillMeForm::kMarkerAnswers));
 }
 
 void AcpSessionView::sendHostPrompt(const QString &text, const QString &marker, const QString &wireText,
@@ -2674,14 +2629,14 @@ void AcpSessionView::applyMessageMarker(AcpMessageWidget *w, int messageIndex)
 {
     if (!m_model || messageIndex < 0 || messageIndex >= m_model->messages().size())
         return;
-    if (m_model->messages().at(messageIndex).marker == QLatin1String(AskUserForm::kMarkerAnswers))
-        w->setCollapsedSummary(AskUserForm::summaryFromAnswersText(w->plainText()),
-                               AskUserForm::answerOverview(w->plainText()));
+    if (m_model->messages().at(messageIndex).marker == QLatin1String(GrillMeForm::kMarkerAnswers))
+        w->setCollapsedSummary(GrillMeForm::summaryFromAnswersText(w->plainText()),
+                               GrillMeForm::answerOverview(w->plainText()));
 }
 
 void AcpSessionView::restoreExpiredForm()
 {
-    // Restored history: the newest ask_user call with no reply after it was
+    // Restored history: the newest grill_me ask call with no reply after it was
     // never answered; its session is gone, so show it read-only.
     if (!m_model)
         return;
@@ -2699,18 +2654,18 @@ void AcpSessionView::restoreExpiredForm()
         }
         const auto tc = toolCalls.constFind(entry.toolCallId);
         if (tc == toolCalls.constEnd() || isGoalJudgeToolId(tc->id)
-            || !AskUserForm::isAskUserToolCall(tc->name, tc->title, tc->rawInput)) {
+            || !GrillMeForm::isGrillMeToolCall(tc->name, tc->title, tc->rawInput)) {
             continue;
         }
-        m_askUserShown.insert(tc->id);
-        if (askUserCallDropped(tc->status))
+        m_grillMeShown.insert(tc->id);
+        if (grillMeCallDropped(tc->status))
             return;
-        const auto spec = AskUserForm::parseAskUserInput(AskUserForm::askUserArguments(tc->rawInput, tc->rawOutput));
+        const auto spec = GrillMeForm::parseToolInput(GrillMeForm::toolArguments(tc->rawInput, tc->rawOutput));
         if (!spec)
             return;
-        auto *form = new AskUserFormWidget(*spec, AskUserForm::defaultAnswers(*spec), m_transcriptHost);
+        auto *form = new GrillMeFormWidget(*spec, GrillMeForm::defaultAnswers(*spec), m_transcriptHost);
         form->setChatFont(chatFont());
-        form->setState(AskUserFormWidget::State::Expired);
+        form->setState(GrillMeFormWidget::State::Expired);
         insertTimelineWidget(form, false);
         return;
     }
@@ -2806,8 +2761,7 @@ void AcpSessionView::setGoalActive(int criterionIndex, int totalCriteria, int it
     m_goalRunning = true;
     if (m_pendingForm) {
         // The goal drives the session from now on; nobody answers this form.
-        settlePendingForm(AskUserFormWidget::State::Cancelled, tr("Cancelled — goal agent active"),
-                          QStringLiteral("decline"));
+        settlePendingForm(GrillMeFormWidget::State::Cancelled, tr("Cancelled — goal agent active"));
     }
     refreshBusyPlaceholder();
     QString text;
@@ -3006,11 +2960,16 @@ void AcpSessionView::onSendClicked()
         m_scheduledUnattended = false;
         if (m_pendingForm && kind != AcpPromptQueue::SendKind::SidePrompt) {
             // A composer reply while a form is open replaces it and goes out as
-            // typed, so slash commands still expand. An elicitation blocks the
-            // turn: decline it and let the text queue.
-            settlePendingForm(AskUserFormWidget::State::AnsweredInChat, {}, QStringLiteral("decline"));
+            // typed, so slash commands still expand.
+            settlePendingForm(GrillMeFormWidget::State::AnsweredInChat);
         }
     }
+
+    // A question-round command (/grill-me, /brainstorm ...) carries a hint to
+    // use the grill_me tool; only the agent sees it, never the bubble.
+    const QString wireText = m_connection->hasMcpServer(QLatin1String(GrillMeForm::kServerName))
+        ? GrillMeForm::withQuestionRoundHint(text)
+        : QString();
 
     switch (kind) {
     case AcpPromptQueue::SendKind::Ignore:
@@ -3019,7 +2978,9 @@ void AcpSessionView::onSendClicked()
         QVector<QPair<QByteArray, QString>> images =
             m_attachmentList ? m_attachmentList->takeAll()
                              : QVector<QPair<QByteArray, QString>>{};
-        m_promptQueue.enqueue(AcpPromptQueue::Item{text, std::move(images)});
+        AcpPromptQueue::Item item{text, std::move(images)};
+        item.wireText = wireText;
+        m_promptQueue.enqueue(std::move(item));
         m_input->clear();
         updateSendButton();
         refreshQueueStrip();
@@ -3041,7 +3002,7 @@ void AcpSessionView::onSendClicked()
                              : QVector<QPair<QByteArray, QString>>{};
         m_input->clear();
         updateSendButton();
-        dispatchPrompt(text, images, false);
+        dispatchPrompt(text, images, false, {}, wireText);
         return;
     }
     default:
@@ -3051,8 +3012,6 @@ void AcpSessionView::onSendClicked()
 
 void AcpSessionView::onCancelClicked()
 {
-    if (m_pendingForm && m_pendingFormSource == FormSource::Elicitation)
-        settlePendingForm(AskUserFormWidget::State::Cancelled, {}, QStringLiteral("cancel"));
     if (m_connection) m_connection->cancelPrompt();
     // Let the owning dock stop any GoalAgent running on this session. Cancel
     // means "stop everything", not just the current ACP turn — otherwise the

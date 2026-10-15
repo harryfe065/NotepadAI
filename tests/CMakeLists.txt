@@ -573,8 +573,8 @@ target_sources(test_acp_session_model PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
@@ -591,8 +591,8 @@ target_sources(test_acp_transcript_truncation PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.h
@@ -614,8 +614,8 @@ target_sources(test_acp_session_model_persistence_integration PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
@@ -635,8 +635,8 @@ target_sources(test_goal_draft_generator PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
@@ -793,14 +793,14 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.h
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.h
     ${CMAKE_SOURCE_DIR}/src/McpStdio.cpp
     ${CMAKE_SOURCE_DIR}/src/McpStdio.h
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
@@ -831,8 +831,8 @@ target_sources(test_acp_agent_manager PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
     ${ACP_SESSION_VIEW_DEPS}
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.h
@@ -905,14 +905,14 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.h
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.h
     ${CMAKE_SOURCE_DIR}/src/McpStdio.cpp
     ${CMAKE_SOURCE_DIR}/src/McpStdio.h
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
@@ -943,8 +943,8 @@ target_sources(test_acp_agent_exit_restart PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPlanWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
     ${ACP_SESSION_VIEW_DEPS}
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.h
@@ -1017,8 +1017,8 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.cpp
     ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
@@ -1048,15 +1048,15 @@ target_sources(test_acp_dock_close_event PRIVATE
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentManager.h
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.h
     ${CMAKE_SOURCE_DIR}/src/McpStdio.cpp
     ${CMAKE_SOURCE_DIR}/src/McpStdio.h
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
     ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
     ${ACP_SESSION_VIEW_DEPS}
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpSessionView.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.cpp
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpTurnFoldRow.h
@@ -1240,8 +1240,8 @@ target_sources(test_acp_tool_call_card PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpToolCallCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpToolCallCard.h
     ${MARKDOWN_RENDER_SOURCES}
 )
@@ -2053,8 +2053,8 @@ target_sources(test_acp_remote_transport PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/FakeSshTransport.h
     ${CMAKE_SOURCE_DIR}/src/AcpAgentDefinition.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
@@ -2253,8 +2253,8 @@ target_sources(test_goal_agent PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpAgentRegistry.h
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
@@ -2495,8 +2495,8 @@ target_sources(test_acp_turn_folding PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpTranscriptTruncation.h
@@ -2533,8 +2533,8 @@ target_sources(test_acp_conversation_copy PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/AcpSessionModel.h
     ${CMAKE_SOURCE_DIR}/src/DataPaths.cpp
     ${CMAKE_SOURCE_DIR}/src/DataPaths.h
@@ -2641,51 +2641,51 @@ target_include_directories(test_markdown_preview_support PRIVATE ${CMAKE_SOURCE_
 target_link_libraries(test_markdown_preview_support PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME MarkdownPreviewSupport COMMAND test_markdown_preview_support)
 
-# --- AskUserForm: ask_user parsing, elicitation mapping, answer formatting ---
-qt_add_executable(test_ask_user_form test_ask_user_form.cpp)
-target_include_directories(test_ask_user_form PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_ask_user_form PRIVATE Qt6::Core Qt6::Test)
-target_sources(test_ask_user_form PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+# --- GrillMeForm: tool input parsing, answer formatting, question-round hint ---
+qt_add_executable(test_grill_me_form test_grill_me_form.cpp)
+target_include_directories(test_grill_me_form PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_grill_me_form PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_grill_me_form PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
 )
-add_test(NAME AskUserForm COMMAND test_ask_user_form)
+add_test(NAME GrillMeForm COMMAND test_grill_me_form)
 
-# --- AskUserFormWidget: layout in a narrow transcript (long agent text) ---
-qt_add_executable(test_ask_user_form_widget test_ask_user_form_widget.cpp)
-target_include_directories(test_ask_user_form_widget PRIVATE
+# --- GrillMeFormWidget: layout in a narrow transcript (long agent text) ---
+qt_add_executable(test_grill_me_form_widget test_grill_me_form_widget.cpp)
+target_include_directories(test_grill_me_form_widget PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/widgets
 )
-target_link_libraries(test_ask_user_form_widget PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
-target_sources(test_ask_user_form_widget PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.cpp
-    ${CMAKE_SOURCE_DIR}/src/widgets/AskUserFormWidget.h
+target_link_libraries(test_grill_me_form_widget PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_grill_me_form_widget PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/GrillMeFormWidget.h
 )
-add_test(NAME AskUserFormWidget COMMAND test_ask_user_form_widget)
-set_tests_properties(AskUserFormWidget PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_test(NAME GrillMeFormWidget COMMAND test_grill_me_form_widget)
+set_tests_properties(GrillMeFormWidget PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-# --- AskUserMcp: notepadai MCP server (C++ and the remote Node script) ---
-qt_add_executable(test_ask_user_mcp test_ask_user_mcp.cpp)
-target_include_directories(test_ask_user_mcp PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_ask_user_mcp PRIVATE Qt6::Core Qt6::Test)
-target_sources(test_ask_user_mcp PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserMcp.h
+# --- GrillMeMcp: grill_me MCP server (C++ and the remote Node script) ---
+qt_add_executable(test_grill_me_mcp test_grill_me_mcp.cpp)
+target_include_directories(test_grill_me_mcp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_grill_me_mcp PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_grill_me_mcp PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeMcp.h
     ${CMAKE_SOURCE_DIR}/src/McpStdio.cpp
     ${CMAKE_SOURCE_DIR}/src/McpStdio.h
 )
-add_test(NAME AskUserMcp COMMAND test_ask_user_mcp)
+add_test(NAME GrillMeMcp COMMAND test_grill_me_mcp)
 
-# --- AcpConnection: form elicitation, $/cancel_request, ask_user auto-allow ---
-qt_add_executable(test_acp_elicitation test_acp_elicitation.cpp)
-target_include_directories(test_acp_elicitation PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_acp_elicitation PRIVATE Qt6::Core Qt6::Test)
-target_sources(test_acp_elicitation PRIVATE
+# --- AcpConnection: no form elicitation, grill_me auto-allow ---
+qt_add_executable(test_acp_grill_me_permission test_acp_grill_me_permission.cpp)
+target_include_directories(test_acp_grill_me_permission PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_grill_me_permission PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_grill_me_permission PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpConnection.h
     ${CMAKE_SOURCE_DIR}/src/AcpErrorClassifier.cpp
@@ -2694,10 +2694,10 @@ target_sources(test_acp_elicitation PRIVATE
     ${CMAKE_SOURCE_DIR}/src/AcpProtocol.h
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpScheduledJobs.h
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.cpp
-    ${CMAKE_SOURCE_DIR}/src/AskUserForm.h
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrillMeForm.h
     ${CMAKE_SOURCE_DIR}/src/IAcpProcessChannel.h
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.cpp
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.h
 )
-add_test(NAME AcpElicitation COMMAND test_acp_elicitation)
+add_test(NAME AcpGrillMePermission COMMAND test_acp_grill_me_permission)

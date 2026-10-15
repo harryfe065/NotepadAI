@@ -38,7 +38,7 @@
 #include "AcpProtocol.h"
 #include "AcpTranscriptTruncation.h"
 #include "AcpTurnFolding.h"
-#include "AskUserFormWidget.h"
+#include "GrillMeFormWidget.h"
 
 class AcpAgentRegistry;
 class AcpConnection;
@@ -273,19 +273,14 @@ private:
                         const QString &marker = {},
                         const QString &wireText = {});
 
-    // Interactive question forms (ask_user tool calls and form elicitation).
-    enum class FormSource : std::uint8_t { ToolCall, Elicitation };
-    void trackAskUserToolCall(const AcpProtocol::AcpToolCall &tc);
-    void showAskUserToolCallForm(const AcpProtocol::AcpToolCall &tc);
-    void onElicitationRequested(const AcpProtocol::AcpElicitationRequest &req);
-    void onElicitationClosed(const QString &requestId);
-    void presentForm(const AskUserForm::Spec &spec, FormSource source, const QString &key);
-    void onFormSubmitted(const QVector<AskUserForm::Answer> &answers);
+    // Question forms (grill_me ask tool calls).
+    void trackGrillMeToolCall(const AcpProtocol::AcpToolCall &tc);
+    void showGrillMeToolCallForm(const AcpProtocol::AcpToolCall &tc);
+    void presentForm(const GrillMeForm::Spec &spec);
+    void onFormSubmitted(const QVector<GrillMeForm::Answer> &answers);
     void onFormDismissed();
-    // Leave the pending form in `state` (read-only) and forget it. A pending
-    // elicitation is answered with `elicitationAction` when one is given.
-    void settlePendingForm(AskUserFormWidget::State state, const QString &detail = {},
-                           const QString &elicitationAction = {});
+    // Leave the pending form in `state` (read-only) and forget it.
+    void settlePendingForm(GrillMeFormWidget::State state, const QString &detail = {});
     // Send (or queue behind the running turn) a host-built prompt.
     void sendHostPrompt(const QString &text, const QString &marker, const QString &wireText = {},
                         bool fromGoalAgent = false);
@@ -474,7 +469,7 @@ private:
     QPointer<AcpTurnFoldRow> m_lingerRow;
     QTimer *m_wakeFoldTimer = nullptr;  // single-shot: fold once a wake-up turn stays over
     qint64 m_wakeTurnEndedMs = 0;       // when that wait began (the turn's end)
-    // The newest turn ended while an ask-user form waited on the user: it stays
+    // The newest turn ended while a question form waited on the user: it stays
     // unfolded (its text is what the questions are about) under a frozen row
     // until the form settles or the next prompt folds it.
     bool m_foldHeldByForm = false;
@@ -484,14 +479,12 @@ private:
 
     // At most one pending form per session; settled forms stay in the
     // transcript as standalone widgets (never model entries).
-    QPointer<AskUserFormWidget> m_pendingForm;
-    FormSource m_pendingFormSource = FormSource::ToolCall;
-    QString m_pendingFormKey; // tool-call id or elicitation request id
-    // ask_user calls seen but not yet shown (waiting for completion / turn end).
-    QSet<QString> m_askUserCandidates;
-    QSet<QString> m_askUserShown;
+    QPointer<GrillMeFormWidget> m_pendingForm;
+    // grill_me ask calls seen but not yet shown (waiting for completion / turn end).
+    QSet<QString> m_grillMeCandidates;
+    QSet<QString> m_grillMeShown;
     // Answers of a form that was superseded or sent for clarification.
-    QVector<AskUserForm::Answer> m_carryAnswers;
+    QVector<GrillMeForm::Answer> m_carryAnswers;
     // Form note of a superseded form (never sent). A sent note is not carried.
     QString m_carryNote;
     bool m_scheduledUnattended = false;

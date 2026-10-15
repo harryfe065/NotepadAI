@@ -37,8 +37,7 @@ struct AcpAgentDefinition
     QMap<QString, QString> env;
     QString icon;
     bool builtin = false;
-    // Interactive question forms: the `ask_user` MCP tool and ACP form
-    // elicitation (AskUserQuestion). Off = the agent asks in plain text.
+    // Question forms: the grill_me MCP tool. Off = the agent asks in plain text.
     bool interactiveQuestions = true;
 };
 

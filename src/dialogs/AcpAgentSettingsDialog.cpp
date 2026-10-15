@@ -282,10 +282,10 @@ public:
         m_form->addRow(tr("&Arguments:"), m_argsEdit);
         m_form->addRow(tr("&Environment:"), m_envEdit);
 
-        m_interactiveCheck = new QCheckBox(tr("Interactive questions"), this);
+        m_interactiveCheck = new QCheckBox(tr("Question forms (grill_me)"), this);
         m_interactiveCheck->setChecked(def->interactiveQuestions);
-        m_interactiveCheck->setToolTip(tr("Let the agent ask questions as forms in the chat "
-                                          "(ask_user tool and AskUserQuestion). Applies to new sessions."));
+        m_interactiveCheck->setToolTip(tr("Let the agent put question rounds (grilling, brainstorming, plan reviews) to you as forms "
+                                          "in the chat through the grill_me tool. Applies to new sessions."));
         m_form->addRow(QString(), m_interactiveCheck);
 
         auto *buttons = new QDialogButtonBox(

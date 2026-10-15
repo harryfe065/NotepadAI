@@ -15,8 +15,8 @@
 #include <QProcess>
 #include <QStandardPaths>
 
-#include "AskUserForm.h"
-#include "AskUserMcp.h"
+#include "GrillMeForm.h"
+#include "GrillMeMcp.h"
 
 namespace {
 
@@ -30,7 +30,7 @@ QJsonObject request(int id, const char *method, const QJsonObject &params = {})
 
 QJsonObject callParams(const char *argsJson)
 {
-    return QJsonObject{{QStringLiteral("name"), QStringLiteral("ask_user")},
+    return QJsonObject{{QStringLiteral("name"), QStringLiteral("ask")},
                        {QStringLiteral("arguments"),
                         QJsonDocument::fromJson(QByteArray(argsJson)).object()}};
 }
@@ -52,12 +52,12 @@ bool resultIsError(const QJsonObject &reply)
 
 } // namespace
 
-class TestAskUserMcp : public QObject
+class TestGrillMeMcp : public QObject
 {
     Q_OBJECT
 
 private slots:
-    void listsAskUserTool();
+    void listsGrillMeTool();
     void validCallReturnsAtOnce();
     void invalidCallNamesTheProblem();
     void notificationsGetNoReply();
@@ -65,23 +65,25 @@ private slots:
     void nodeScriptServesTheSameProtocol();
 };
 
-void TestAskUserMcp::listsAskUserTool()
+void TestGrillMeMcp::listsGrillMeTool()
 {
-    const QJsonObject init = AskUserMcp::handle(request(1, "initialize",
+    const QJsonObject init = GrillMeMcp::handle(request(1, "initialize",
         {{QStringLiteral("protocolVersion"), QStringLiteral("2025-06-18")}}));
     QCOMPARE(init.value(QStringLiteral("result")).toObject().value(QStringLiteral("protocolVersion")).toString(),
              QStringLiteral("2025-06-18"));
     QCOMPARE(init.value(QStringLiteral("result")).toObject().value(QStringLiteral("serverInfo")).toObject()
                  .value(QStringLiteral("name")).toString(),
-             QStringLiteral("notepadai"));
+             QStringLiteral("grill_me"));
 
-    const QJsonObject list = AskUserMcp::handle(request(2, "tools/list"));
+    const QJsonObject list = GrillMeMcp::handle(request(2, "tools/list"));
     const QJsonArray tools = list.value(QStringLiteral("result")).toObject().value(QStringLiteral("tools")).toArray();
     QCOMPARE(tools.size(), 1);
     const QJsonObject tool = tools.at(0).toObject();
-    QCOMPARE(tool.value(QStringLiteral("name")).toString(), QStringLiteral("ask_user"));
+    QCOMPARE(tool.value(QStringLiteral("name")).toString(), QStringLiteral("ask"));
     const QString description = tool.value(QStringLiteral("description")).toString();
-    QVERIFY(description.contains(QLatin1String("AskUserQuestion")));
+    QVERIFY(!description.contains(QLatin1String("AskUserQuestion")));
+    // Question rounds only: outside them the agent decides or asks in text.
+    QVERIFY(description.contains(QLatin1String("Outside such rounds do not call it")));
     QVERIFY(description.contains(QLatin1String("grill")));
     // A skill's plain-text question format must map onto the tool (probed: without
     // this, Haiku answered /grill-me with "Q1" text every time).
@@ -89,7 +91,7 @@ void TestAskUserMcp::listsAskUserTool()
     QVERIFY(description.contains(QLatin1String("never call it twice in one turn")));
     QVERIFY(description.contains(QLatin1String("plan is settled")));
     QVERIFY(description.contains(QLatin1String("how or whether to proceed")));
-    QVERIFY(description.contains(QLatin1String("[ask_user answers]")));
+    QVERIFY(description.contains(QLatin1String("[grill_me answers]")));
     QVERIFY(description.contains(QLatin1String("needs clarification")));
     QVERIFY(description.contains(QLatin1String("no answer")));
     QVERIFY(description.contains(QLatin1String("`recommended`")));
@@ -99,58 +101,58 @@ void TestAskUserMcp::listsAskUserTool()
     QCOMPARE(schema.value(QStringLiteral("required")).toArray(), QJsonArray{QStringLiteral("questions")});
 }
 
-void TestAskUserMcp::validCallReturnsAtOnce()
+void TestGrillMeMcp::validCallReturnsAtOnce()
 {
-    const QJsonObject reply = AskUserMcp::handle(request(3, "tools/call", callParams(kValidArgs)));
+    const QJsonObject reply = GrillMeMcp::handle(request(3, "tools/call", callParams(kValidArgs)));
     QCOMPARE(reply.value(QStringLiteral("id")).toInt(), 3);
     QVERIFY(!resultIsError(reply));
     QVERIFY(resultText(reply).contains(QLatin1String("End your turn")));
 }
 
-void TestAskUserMcp::invalidCallNamesTheProblem()
+void TestGrillMeMcp::invalidCallNamesTheProblem()
 {
-    const QJsonObject reply = AskUserMcp::handle(request(4, "tools/call", callParams(kInvalidArgs)));
+    const QJsonObject reply = GrillMeMcp::handle(request(4, "tools/call", callParams(kInvalidArgs)));
     QVERIFY(resultIsError(reply));
     QVERIFY2(resultText(reply).contains(QLatin1String("options")), qPrintable(resultText(reply)));
 
     QJsonObject wrongTool = callParams(kValidArgs);
     wrongTool.insert(QStringLiteral("name"), QStringLiteral("other"));
-    QVERIFY(resultIsError(AskUserMcp::handle(request(5, "tools/call", wrongTool))));
+    QVERIFY(resultIsError(GrillMeMcp::handle(request(5, "tools/call", wrongTool))));
 }
 
-void TestAskUserMcp::notificationsGetNoReply()
+void TestGrillMeMcp::notificationsGetNoReply()
 {
     QJsonObject note{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                      {QStringLiteral("method"), QStringLiteral("notifications/initialized")}};
-    QVERIFY(AskUserMcp::handle(note).isEmpty());
-    const QJsonObject unknown = AskUserMcp::handle(request(6, "resources/list"));
+    QVERIFY(GrillMeMcp::handle(note).isEmpty());
+    const QJsonObject unknown = GrillMeMcp::handle(request(6, "resources/list"));
     QCOMPARE(unknown.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32601);
 }
 
-void TestAskUserMcp::serverEntryForLocalAndRemote()
+void TestGrillMeMcp::serverEntryForLocalAndRemote()
 {
-    const QJsonObject local = AskUserMcp::serverEntry(false);
-    QCOMPARE(local.value(QStringLiteral("name")).toString(), QStringLiteral("notepadai"));
+    const QJsonObject local = GrillMeMcp::serverEntry(false);
+    QCOMPARE(local.value(QStringLiteral("name")).toString(), QStringLiteral("grill_me"));
     QCOMPARE(local.value(QStringLiteral("command")).toString(), QCoreApplication::applicationFilePath());
-    QCOMPARE(local.value(QStringLiteral("args")).toArray(), QJsonArray{QStringLiteral("--ask-user-mcp")});
+    QCOMPARE(local.value(QStringLiteral("args")).toArray(), QJsonArray{QStringLiteral("--grill-me-mcp")});
     QVERIFY(local.value(QStringLiteral("env")).isArray()); // array, or strict agents reject session/new
 
-    const QJsonObject remote = AskUserMcp::serverEntry(true);
+    const QJsonObject remote = GrillMeMcp::serverEntry(true);
     QCOMPARE(remote.value(QStringLiteral("command")).toString(), QStringLiteral("/bin/sh"));
     const QJsonArray args = remote.value(QStringLiteral("args")).toArray();
     QCOMPARE(args.size(), 3);
     QCOMPARE(args.at(0).toString(), QStringLiteral("-c"));
     QVERIFY(args.at(1).toString().contains(QLatin1String("command -v node")));
-    QCOMPARE(args.at(2).toString(), AskUserMcp::nodeScript());
+    QCOMPARE(args.at(2).toString(), GrillMeMcp::nodeScript());
 }
 
-void TestAskUserMcp::nodeScriptServesTheSameProtocol()
+void TestGrillMeMcp::nodeScriptServesTheSameProtocol()
 {
     const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
     if (node.isEmpty())
         QSKIP("node is not on PATH");
     QProcess proc;
-    proc.start(node, {QStringLiteral("-e"), AskUserMcp::nodeScript()});
+    proc.start(node, {QStringLiteral("-e"), GrillMeMcp::nodeScript()});
     QVERIFY(proc.waitForStarted(10000));
     const QList<QJsonObject> requests{
         request(1, "initialize", {{QStringLiteral("protocolVersion"), QStringLiteral("2025-06-18")}}),
@@ -170,11 +172,11 @@ void TestAskUserMcp::nodeScriptServesTheSameProtocol()
         replies.insert(o.value(QStringLiteral("id")).toInt(), o);
     }
     QCOMPARE(replies.value(2).value(QStringLiteral("result")).toObject().value(QStringLiteral("tools")),
-             QJsonValue(QJsonArray{AskUserForm::toolDefinition()}));
+             QJsonValue(QJsonArray{GrillMeForm::toolDefinition()}));
     QVERIFY(!resultIsError(replies.value(3)));
-    QCOMPARE(resultText(replies.value(3)), QString::fromLatin1(AskUserMcp::kShownGuide));
+    QCOMPARE(resultText(replies.value(3)), QString::fromLatin1(GrillMeMcp::kShownGuide));
     QVERIFY(resultIsError(replies.value(4)));
 }
 
-QTEST_GUILESS_MAIN(TestAskUserMcp)
-#include "test_ask_user_mcp.moc"
+QTEST_GUILESS_MAIN(TestGrillMeMcp)
+#include "test_grill_me_mcp.moc"

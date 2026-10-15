@@ -13,9 +13,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
-#include "AskUserForm.h"
+#include "GrillMeForm.h"
 
-using namespace AskUserForm;
+using namespace GrillMeForm;
 
 namespace {
 
@@ -26,7 +26,7 @@ QJsonObject obj(const char *json)
 
 } // namespace
 
-class TestAskUserForm : public QObject
+class TestGrillMeForm : public QObject
 {
     Q_OBJECT
 
@@ -40,18 +40,16 @@ private slots:
     void reportsQuestionsToClarify();
     void changedAnswerShowsRecommendedLabels();
     void carriesAnswersOverById();
-    void mapsClaudeAskUserQuestion();
-    void mapsCodexRequestUserInput();
-    void mapsPrimitiveFields();
-    void recognisesAskUserToolCalls();
+    void recognisesGrillMeToolCalls();
     void unwrapsNestedArguments();
     void recognisesOmpDeviceWrite();
     void infersRecommendedFromRecommendation();
     void overviewListsEachAnswer();
     void formNoteFollowsTheAnswers();
+    void hintsQuestionRoundCommands();
 };
 
-void TestAskUserForm::parsesGrillRound()
+void TestGrillMeForm::parsesGrillRound()
 {
     const QJsonObject args = obj(R"({"questions":[
         {"id":"Q1","title":"Architecture","body":"Pick **one**.","type":"single",
@@ -68,7 +66,7 @@ void TestAskUserForm::parsesGrillRound()
         {"id":"Q6","title":"Days","type":"number","min":0,"max":365,"recommended":30}
     ]})");
     QString error;
-    const auto spec = parseAskUserInput(args, &error);
+    const auto spec = parseToolInput(args, &error);
     QVERIFY2(spec.has_value(), qPrintable(error));
     QCOMPARE(spec->questions.size(), 6);
 
@@ -100,29 +98,29 @@ void TestAskUserForm::parsesGrillRound()
     QCOMPARE(spec->questions.at(5).recommended.toDouble(), 30.0);
 }
 
-void TestAskUserForm::rejectsInvalidInputWithReason()
+void TestGrillMeForm::rejectsInvalidInputWithReason()
 {
     QString error;
-    QVERIFY(!parseAskUserInput(obj(R"({"questions":[{"id":"Q7","title":"Pick","type":"single"}]})"), &error));
+    QVERIFY(!parseToolInput(obj(R"({"questions":[{"id":"Q7","title":"Pick","type":"single"}]})"), &error));
     QVERIFY2(error.contains(QLatin1String("Q7")) && error.contains(QLatin1String("options")), qPrintable(error));
 
-    QVERIFY(!parseAskUserInput(obj(R"({"questions":[]})"), &error));
-    QVERIFY(!parseAskUserInput(obj(R"({"questions":[{"id":"A","title":"x","type":"slider"}]})"), &error));
+    QVERIFY(!parseToolInput(obj(R"({"questions":[]})"), &error));
+    QVERIFY(!parseToolInput(obj(R"({"questions":[{"id":"A","title":"x","type":"slider"}]})"), &error));
     QVERIFY(error.contains(QLatin1String("slider")));
-    QVERIFY(!parseAskUserInput(obj(R"({"questions":[{"id":"A","title":"x","type":"single",
+    QVERIFY(!parseToolInput(obj(R"({"questions":[{"id":"A","title":"x","type":"single",
         "options":["a","b"],"recommended":"c"}]})"), &error));
     QVERIFY(error.contains(QLatin1String("\"c\"")));
-    QVERIFY(!parseAskUserInput(obj(R"({"questions":[{"id":"A","title":"x","type":"text"},
+    QVERIFY(!parseToolInput(obj(R"({"questions":[{"id":"A","title":"x","type":"text"},
         {"id":"A","title":"y","type":"text"}]})"), &error));
     QVERIFY(error.contains(QLatin1String("duplicate")));
 
     QJsonArray many;
     for (int i = 0; i < kMaxQuestions + 1; ++i)
         many.append(QJsonObject{{QStringLiteral("title"), QStringLiteral("t")}, {QStringLiteral("type"), QStringLiteral("text")}});
-    QVERIFY(!parseAskUserInput(QJsonObject{{QStringLiteral("questions"), many}}, &error));
+    QVERIFY(!parseToolInput(QJsonObject{{QStringLiteral("questions"), many}}, &error));
 }
 
-void TestAskUserForm::acceptsLenientShapes()
+void TestGrillMeForm::acceptsLenientShapes()
 {
     // questions as a JSON string, no ids, options as bare strings, lone string
     // for multi, numeric string for number, "yes" for confirm.
@@ -131,7 +129,7 @@ void TestAskUserForm::acceptsLenientShapes()
         {"title":"Count","type":"number","recommended":"12"},
         {"title":"Ok?","type":"confirm","recommended":"yes"}])")}};
     QString error;
-    const auto spec = parseAskUserInput(args, &error);
+    const auto spec = parseToolInput(args, &error);
     QVERIFY2(spec.has_value(), qPrintable(error));
     QCOMPARE(spec->questions.at(0).id, QStringLiteral("Q1"));
     QCOMPARE(spec->questions.at(2).id, QStringLiteral("Q3"));
@@ -141,10 +139,10 @@ void TestAskUserForm::acceptsLenientShapes()
 }
 
 // Agents name the pick in other ways than `recommended` set to a value.
-void TestAskUserForm::acceptsOtherWaysToNameThePick()
+void TestGrillMeForm::acceptsOtherWaysToNameThePick()
 {
     QString error;
-    const auto spec = parseAskUserInput(obj(R"({"questions":[
+    const auto spec = parseToolInput(obj(R"({"questions":[
         {"id":"Q1","title":"Alias","type":"single","options":["x","y"],"default":"y"},
         {"id":"Q2","title":"Flag","type":"single",
          "options":[{"value":"x"},{"value":"y","recommended":true}]},
@@ -164,7 +162,7 @@ void TestAskUserForm::acceptsOtherWaysToNameThePick()
     QCOMPARE(spec->questions.at(5).recommended.toString(), QStringLiteral("x"));
 
     // A value that names no option lists the ones that do.
-    QVERIFY(!parseAskUserInput(obj(R"({"questions":[{"id":"A","title":"x","type":"single",
+    QVERIFY(!parseToolInput(obj(R"({"questions":[{"id":"A","title":"x","type":"single",
         "options":["a","b"],"recommended":"c"}]})"), &error));
     QVERIFY2(error.contains(QLatin1String("use one of: \"a\", \"b\"")), qPrintable(error));
 }
@@ -173,7 +171,7 @@ namespace {
 
 Spec grillSpec()
 {
-    const auto spec = parseAskUserInput(obj(R"({"title":"Round 2","questions":[
+    const auto spec = parseToolInput(obj(R"({"title":"Round 2","questions":[
         {"id":"Q1","title":"Architecture","type":"single",
          "options":[{"value":"a","label":"Elicitation"},{"value":"b2","label":"No-op tool"}],
          "recommended":"b2"},
@@ -195,7 +193,7 @@ Answer answer(const char *id, const QJsonValue &value, const char *other = "", c
 
 } // namespace
 
-void TestAskUserForm::formatsAnswersForTheAgent()
+void TestGrillMeForm::formatsAnswersForTheAgent()
 {
     const Spec spec = grillSpec();
     const QVector<Answer> answers{
@@ -207,7 +205,7 @@ void TestAskUserForm::formatsAnswersForTheAgent()
         answer("Q6", 45.0),
     };
     const QString expected = QStringLiteral(
-        "[ask_user answers]\n"
+        "[grill_me answers]\n"
         "Form: Round 2\n"
         "Q1 \"Architecture\": b2 (No-op tool) (recommended)\n"
         "Q2 \"Controls\": radio, textarea, other: \"slider\" — changed (recommended: radio, checkbox)\n"
@@ -219,7 +217,7 @@ void TestAskUserForm::formatsAnswersForTheAgent()
     QCOMPARE(formatAnswers(spec, answers), expected);
 }
 
-void TestAskUserForm::summaryLine()
+void TestGrillMeForm::summaryLine()
 {
     const Spec spec = grillSpec();
     QVector<Answer> answers = defaultAnswers(spec);
@@ -235,17 +233,13 @@ void TestAskUserForm::summaryLine()
     QCOMPARE(summary, QStringLiteral("Answered 6 questions · 1 changed"));
     QCOMPARE(summaryFromAnswersText(formatAnswers(spec, answers)), summary);
 
-    // Dismiss and legacy clarify prompts share the collapsed bubble.
+    // Dismiss prompts share the collapsed bubble.
     QCOMPARE(summaryFromAnswersText(dismissPrompt(QString())), QStringLiteral("Dismissed the form"));
-    const QString legacyClarify = QStringLiteral(
-        "[ask_user clarify]\nThe user does not understand question Q2 \"Controls\". Explain it in the "
-        "user's language (the language the user writes in), then call ask_user again with the revised form.");
-    QCOMPARE(summaryFromAnswersText(legacyClarify), QStringLiteral("Asked to clarify Q2 \"Controls\""));
 }
 
 // A changed answer names the recommendation the way answers are named:
 // choices and yes/no with their labels.
-void TestAskUserForm::changedAnswerShowsRecommendedLabels()
+void TestGrillMeForm::changedAnswerShowsRecommendedLabels()
 {
     const Spec spec = grillSpec();
     const QVector<Answer> answers{
@@ -263,7 +257,7 @@ void TestAskUserForm::changedAnswerShowsRecommendedLabels()
              qPrintable(text));
 }
 
-void TestAskUserForm::reportsQuestionsToClarify()
+void TestGrillMeForm::reportsQuestionsToClarify()
 {
     const Spec spec = grillSpec();
     QVector<Answer> answers{
@@ -278,7 +272,7 @@ void TestAskUserForm::reportsQuestionsToClarify()
     answers[2].clarify = true;
     const QString text = formatAnswers(spec, answers);
     const QString expected = QStringLiteral(
-        "[ask_user answers]\n"
+        "[grill_me answers]\n"
         "Form: Round 2\n"
         "Q1 \"Architecture\": a (Elicitation) — changed (recommended: b2 (No-op tool))\n"
         "Q2 \"Controls\": needs clarification\n"
@@ -287,7 +281,7 @@ void TestAskUserForm::reportsQuestionsToClarify()
         "Q4 \"Scan inside?\": no (Skip) (recommended)\n"
         "Q5 \"Describe it\": \"free text\"\n"
         "Q6 \"Days\": 30 (recommended)\n"
-        "To clarify: Q2, Q3. Explain them in the user's language, then call ask_user again with only these "
+        "To clarify: Q2, Q3. Explain them in the user's language, then call grill_me ask again with only these "
         "questions, keeping their ids. The other answers are final.\n");
     QCOMPARE(text, expected);
 
@@ -309,7 +303,7 @@ void TestAskUserForm::reportsQuestionsToClarify()
     QVERIFY(!formatAnswers(spec, defaultAnswers(spec)).contains(QLatin1String("To clarify:")));
 }
 
-void TestAskUserForm::carriesAnswersOverById()
+void TestGrillMeForm::carriesAnswersOverById()
 {
     const Spec first = grillSpec();
     QVector<Answer> previous = defaultAnswers(first);
@@ -317,7 +311,7 @@ void TestAskUserForm::carriesAnswersOverById()
     previous[1].value = QJsonArray{QStringLiteral("textarea"), QStringLiteral("gone")};
 
     // Revised round: Q1 kept, Q2 lost an option, Q9 is new.
-    const auto next = parseAskUserInput(obj(R"({"questions":[
+    const auto next = parseToolInput(obj(R"({"questions":[
         {"id":"Q9","title":"New","type":"text","recommended":"x"},
         {"id":"Q2","title":"Controls","type":"multi","options":["radio","textarea"]},
         {"id":"Q1","title":"Architecture","type":"single",
@@ -329,179 +323,81 @@ void TestAskUserForm::carriesAnswersOverById()
     QCOMPARE(carried.at(2).value.toString(), QStringLiteral("a"));        // user's pick wins
 }
 
-void TestAskUserForm::mapsClaudeAskUserQuestion()
-{
-    // Shape produced by claude-agent-acp for two AskUserQuestion questions.
-    const QJsonObject schema = obj(R"({"type":"object","properties":{
-        "question_0":{"type":"string","title":"Scope","description":"What to delete?",
-            "oneOf":[{"const":"node","title":"node","description":"node_modules"},
-                     {"const":"rust","title":"rust"}]},
-        "question_0_custom":{"type":"string","title":"Other","description":"Free text"},
-        "question_1":{"type":"array","title":"Keys","description":"Which keys?",
-            "items":{"anyOf":[{"const":"a","title":"a"},{"const":"s","title":"s"}]}},
-        "question_1_custom":{"type":"string","title":"Other"}}})");
-    const Spec spec = fromElicitation(QStringLiteral("Please answer the following questions."), schema);
-    QCOMPARE(spec.source, Source::Elicitation);
-    QCOMPARE(spec.title, QStringLiteral("Please answer the following questions."));
-    QCOMPARE(spec.questions.size(), 2); // _custom fields merged, not questions
-
-    const Question &q0 = spec.questions.at(0);
-    QCOMPARE(q0.fieldKey, QStringLiteral("question_0"));
-    QCOMPARE(q0.title, QStringLiteral("Scope"));
-    QCOMPARE(q0.body, QStringLiteral("What to delete?"));
-    QCOMPARE(q0.type, QuestionType::Single);
-    QCOMPARE(q0.options.at(0).description, QStringLiteral("node_modules"));
-    QVERIFY(q0.allowOther);
-    QCOMPARE(q0.otherFieldKey, QStringLiteral("question_0_custom"));
-    QCOMPARE(spec.questions.at(1).type, QuestionType::Multi);
-
-    const QVector<Answer> answers{
-        Answer{q0.id, QStringLiteral("rust"), QStringLiteral("only release"), QString()},
-        Answer{spec.questions.at(1).id, QJsonArray{QStringLiteral("s")}, QString(), QString()},
-    };
-    const QJsonObject content = elicitationContent(spec, answers);
-    QCOMPARE(content.value(QStringLiteral("question_0")).toString(), QStringLiteral("rust"));
-    QCOMPARE(content.value(QStringLiteral("question_0_custom")).toString(), QStringLiteral("only release"));
-    QCOMPARE(content.value(QStringLiteral("question_1")).toArray(), QJsonArray{QStringLiteral("s")});
-    QVERIFY(!content.contains(QStringLiteral("question_1_custom"))); // empty Other is omitted
-}
-
-void TestAskUserForm::mapsCodexRequestUserInput()
-{
-    // codex-acp: `required` lists every question in the model's order; `_note`
-    // companions carry the free answer.
-    const QJsonObject schema = obj(R"({"type":"object","required":["zeta","alpha"],"properties":{
-        "alpha":{"type":"string","title":"Second?","oneOf":[{"const":"y","title":"Yes"}]},
-        "alpha_note":{"type":"string","title":"Additional answer or note"},
-        "zeta":{"type":"string","title":"First?","oneOf":[{"const":"n","title":"No"}]}}})");
-    const Spec spec = fromElicitation(QStringLiteral("Codex needs your input to continue."), schema);
-    QCOMPARE(spec.questions.size(), 2);
-    QCOMPARE(spec.questions.at(0).fieldKey, QStringLiteral("zeta"));
-    QCOMPARE(spec.questions.at(1).fieldKey, QStringLiteral("alpha"));
-    QVERIFY(spec.questions.at(0).required);
-    QCOMPARE(spec.questions.at(1).noteFieldKey, QStringLiteral("alpha_note"));
-    QVERIFY(!spec.questions.at(1).allowOther);
-
-    const QJsonObject content = elicitationContent(spec, {
-        Answer{spec.questions.at(0).id, QStringLiteral("n"), QString(), QString()},
-        Answer{spec.questions.at(1).id, QStringLiteral("y"), QString(), QStringLiteral("but later")}});
-    QCOMPARE(content.value(QStringLiteral("alpha_note")).toString(), QStringLiteral("but later"));
-
-    // Clarify keeps the required value and asks in the note field.
-    Answer unclear{spec.questions.at(1).id, QStringLiteral("y"), QString(), QStringLiteral("which branch?")};
-    unclear.clarify = true;
-    const QJsonObject asked = elicitationContent(spec, {unclear});
-    QCOMPARE(asked.value(QStringLiteral("alpha")).toString(), QStringLiteral("y"));
-    const QString note = asked.value(QStringLiteral("alpha_note")).toString();
-    QVERIFY2(note.startsWith(QLatin1String("Needs clarification: ")), qPrintable(note));
-    QVERIFY(note.endsWith(QLatin1String(" Note: which branch?")));
-}
-
-void TestAskUserForm::mapsPrimitiveFields()
-{
-    const QJsonObject schema = obj(R"({"type":"object","properties":{
-        "f10":{"type":"string","maxLength":2000,"title":"Long"},
-        "f2":{"type":"boolean","title":"Agree","default":true},
-        "f3":{"type":"integer","minimum":1,"maximum":9,"default":3},
-        "f4":{"type":"string","enum":["x","y"],"default":"y"},
-        "f5":{"type":"string","_meta":{"notepadai/multiline":true}}}})");
-    const Spec spec = fromElicitation(QString(), schema);
-    QCOMPARE(spec.questions.size(), 5);
-    // Natural order: f2 < f3 < f4 < f5 < f10.
-    QCOMPARE(spec.questions.at(0).type, QuestionType::Confirm);
-    QCOMPARE(spec.questions.at(0).recommended, QJsonValue(true));
-    QCOMPARE(spec.questions.at(1).type, QuestionType::Number);
-    QVERIFY(spec.questions.at(1).integer);
-    QCOMPARE(spec.questions.at(1).max.value_or(0), 9.0);
-    QCOMPARE(spec.questions.at(2).type, QuestionType::Single);
-    QCOMPARE(spec.questions.at(2).recommended.toString(), QStringLiteral("y"));
-    QCOMPARE(spec.questions.at(2).title, QStringLiteral("f4")); // key when untitled
-    QCOMPARE(spec.questions.at(3).type, QuestionType::Textarea);
-    QCOMPARE(spec.questions.at(4).type, QuestionType::Textarea);
-
-    const QJsonObject content = elicitationContent(spec, {
-        Answer{spec.questions.at(0).id, false, QString(), QString()},
-        Answer{spec.questions.at(1).id, 4.0, QString(), QString()},
-        Answer{spec.questions.at(2).id, QJsonValue(), QString(), QString()}});
-    QCOMPARE(content.value(QStringLiteral("f2")), QJsonValue(false));
-    QVERIFY(content.value(QStringLiteral("f3")).isDouble());
-    QCOMPARE(content.value(QStringLiteral("f3")).toInt(), 4);
-    QVERIFY(!content.contains(QStringLiteral("f4"))); // unanswered is omitted
-}
-
-void TestAskUserForm::recognisesAskUserToolCalls()
+void TestGrillMeForm::recognisesGrillMeToolCalls()
 {
     const QJsonObject none;
-    QVERIFY(isAskUserToolCall(QStringLiteral("mcp__notepadai__ask_user"), QString(), none));
-    QVERIFY(isAskUserToolCall(QString(), QStringLiteral("mcp__notepadai__ask_user"), none));
-    QVERIFY(isAskUserToolCall(QStringLiteral("notepadai_ask_user"), QString(), none));
-    QVERIFY(isAskUserToolCall(QString(), QStringLiteral("Tool: notepadai/ask_user"), none));
-    QVERIFY(isAskUserToolCall(QString(), QStringLiteral("notepadai.ask_user"), none));
-    QVERIFY(isAskUserToolCall(QString(), QStringLiteral("Some title"),
-        obj(R"({"server":"notepadai","tool":"ask_user","arguments":{}})")));
+    QVERIFY(isGrillMeToolCall(QStringLiteral("mcp__grill_me__ask"), QString(), none));
+    QVERIFY(isGrillMeToolCall(QString(), QStringLiteral("mcp__grill_me__ask"), none));
+    QVERIFY(isGrillMeToolCall(QStringLiteral("grill_me_ask"), QString(), none));
+    QVERIFY(isGrillMeToolCall(QString(), QStringLiteral("Tool: grill_me/ask"), none));
+    QVERIFY(isGrillMeToolCall(QString(), QStringLiteral("grill_me.ask"), none));
+    QVERIFY(isGrillMeToolCall(QString(), QStringLiteral("Some title"),
+        obj(R"({"server":"grill_me","tool":"ask","arguments":{}})")));
 
-    QVERIFY(!isAskUserToolCall(QStringLiteral("ask_user"), QString(), none)); // other server's tool
-    QVERIFY(!isAskUserToolCall(QStringLiteral("mcp__other__ask_user"), QString(), none));
-    QVERIFY(!isAskUserToolCall(QStringLiteral("mcp__notepadai__ask_user_v2"), QString(), none));
-    QVERIFY(!isAskUserToolCall(QStringLiteral("Read"), QStringLiteral("Read notepadai/ask_user.md"), none));
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("ask"), QString(), none)); // other server's tool
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("mcp__other__ask"), QString(), none));
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("mcp__grill_me__ask_v2"), QString(), none));
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("Read"), QStringLiteral("Read grill_me/ask.md"), none));
+    // The old name is gone, restored sessions included.
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("mcp__notepadai__ask_user"), QString(), none));
 }
 
-void TestAskUserForm::unwrapsNestedArguments()
+void TestGrillMeForm::unwrapsNestedArguments()
 {
     const QJsonObject direct = obj(R"({"questions":[]})");
-    QCOMPARE(askUserArguments(direct), direct);
-    QCOMPARE(askUserArguments(obj(R"({"server":"notepadai","tool":"ask_user","arguments":{"questions":[]}})")),
+    QCOMPARE(toolArguments(direct), direct);
+    QCOMPARE(toolArguments(obj(R"({"server":"grill_me","tool":"ask","arguments":{"questions":[]}})")),
              direct);
-    const QJsonObject stringified{{QStringLiteral("server"), QStringLiteral("notepadai")},
-                                  {QStringLiteral("tool"), QStringLiteral("ask_user")},
+    const QJsonObject stringified{{QStringLiteral("server"), QStringLiteral("grill_me")},
+                                  {QStringLiteral("tool"), QStringLiteral("ask")},
                                   {QStringLiteral("arguments"), QStringLiteral("{\"questions\":[]}")}};
-    QCOMPARE(askUserArguments(stringified), direct);
+    QCOMPARE(toolArguments(stringified), direct);
 }
 
-void TestAskUserForm::recognisesOmpDeviceWrite()
+void TestGrillMeForm::recognisesOmpDeviceWrite()
 {
     // omp mounts MCP tools as xd:// devices and calls them through its `write`
     // tool: the title is the model's intent, the arguments a JSON string.
     const QString argsJson = QStringLiteral("{\"title\":\"Round 1\",\"questions\":[{\"id\":\"Q1\","
                                             "\"title\":\"What?\",\"type\":\"textarea\"}]}");
-    const QJsonObject raw{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")},
+    const QJsonObject raw{{QStringLiteral("path"), QStringLiteral("xd://mcp__grill_me_ask")},
                           {QStringLiteral("content"), argsJson}};
     const QString intent = QStringLiteral("Asking grill-me topic for round 1");
-    QVERIFY(isAskUserToolCall(QString(), intent, raw));
+    QVERIFY(isGrillMeToolCall(QString(), intent, raw));
     QJsonObject doubleUnderscore = raw;
-    doubleUnderscore.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai__ask_user"));
-    QVERIFY(isAskUserToolCall(QString(), intent, doubleUnderscore));
+    doubleUnderscore.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__grill_me__ask"));
+    QVERIFY(isGrillMeToolCall(QString(), intent, doubleUnderscore));
     QJsonObject otherDevice = raw;
-    otherDevice.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__other_ask_user"));
-    QVERIFY(!isAskUserToolCall(QString(), intent, otherDevice));
+    otherDevice.insert(QStringLiteral("path"), QStringLiteral("xd://mcp__other_ask"));
+    QVERIFY(!isGrillMeToolCall(QString(), intent, otherDevice));
     // Reading the device (its schema/help) is not a call: no `content`.
-    const QJsonObject read{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")}};
-    QVERIFY(!isAskUserToolCall(QStringLiteral("read"), QStringLiteral("Read the ask_user device"), read));
+    const QJsonObject read{{QStringLiteral("path"), QStringLiteral("xd://mcp__grill_me_ask")}};
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("read"), QStringLiteral("Read the ask device"), read));
     QJsonObject file = raw;
-    file.insert(QStringLiteral("path"), QStringLiteral("notepadai_ask_user.json"));
-    QVERIFY(!isAskUserToolCall(QStringLiteral("write"), intent, file));
+    file.insert(QStringLiteral("path"), QStringLiteral("grill_me_ask.json"));
+    QVERIFY(!isGrillMeToolCall(QStringLiteral("write"), intent, file));
 
-    const QJsonObject args = askUserArguments(raw);
+    const QJsonObject args = toolArguments(raw);
     QCOMPARE(args.value(QStringLiteral("title")).toString(), QStringLiteral("Round 1"));
-    const auto spec = parseAskUserInput(args);
+    const auto spec = parseToolInput(args);
     QVERIFY(spec.has_value());
     QCOMPARE(spec->questions.size(), 1);
 
     // Completion carries the parsed arguments in rawOutput.details.xdev.
-    const QJsonObject noContent{{QStringLiteral("path"), QStringLiteral("xd://mcp__notepadai_ask_user")},
+    const QJsonObject noContent{{QStringLiteral("path"), QStringLiteral("xd://mcp__grill_me_ask")},
                                 {QStringLiteral("content"), QStringLiteral("not json")}};
     const QJsonObject rawOutput{{QStringLiteral("details"), QJsonObject{{QStringLiteral("xdev"), QJsonObject{
-        {QStringLiteral("tool"), QStringLiteral("mcp__notepadai_ask_user")},
+        {QStringLiteral("tool"), QStringLiteral("mcp__grill_me_ask")},
         {QStringLiteral("args"), QJsonDocument::fromJson(argsJson.toUtf8()).object()}}}}}};
-    QCOMPARE(askUserArguments(noContent, rawOutput).value(QStringLiteral("title")).toString(),
+    QCOMPARE(toolArguments(noContent, rawOutput).value(QStringLiteral("title")).toString(),
              QStringLiteral("Round 1"));
 }
 
-void TestAskUserForm::infersRecommendedFromRecommendation()
+void TestGrillMeForm::infersRecommendedFromRecommendation()
 {
     // The agent explained its pick but left `recommended` out.
     QString error;
-    auto spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"State?","type":"single",
+    auto spec = parseToolInput(obj(R"({"questions":[{"id":"Q1","title":"State?","type":"single",
         "options":[{"value":"review","label":"Review the code"},{"value":"redesign","label":"Reopen the design"},
                    {"value":"archive","label":"Archive now"}],
         "recommendation":"Chọn **review**. Code đã có, nên kiểm chứng trước khi archive."}]})"), &error);
@@ -510,14 +406,14 @@ void TestAskUserForm::infersRecommendedFromRecommendation()
     QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("review"));
 
     // The pick leads; the reason names another option ("a" is also an article).
-    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Cache?","type":"single",
+    spec = parseToolInput(obj(R"({"questions":[{"id":"Q1","title":"Cache?","type":"single",
         "options":["a","b","c"],
         "recommendation":"b — a separate cache adds a second source of truth, c is too slow."}]})"), &error);
     QVERIFY2(spec.has_value(), qPrintable(error));
     QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("b"));
 
     // Multi: the options named in bold.
-    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Controls","type":"multi",
+    spec = parseToolInput(obj(R"({"questions":[{"id":"Q1","title":"Controls","type":"multi",
         "options":["radio","checkbox","textarea"],
         "recommendation":"**radio** and **checkbox**; a textarea is overkill."}]})"), &error);
     QVERIFY2(spec.has_value(), qPrintable(error));
@@ -525,7 +421,7 @@ void TestAskUserForm::infersRecommendedFromRecommendation()
              QJsonArray({QStringLiteral("radio"), QStringLiteral("checkbox")}));
 
     // No way to tell: the error shows the fix and the values to use.
-    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"State?","type":"single",
+    spec = parseToolInput(obj(R"({"questions":[{"id":"Q1","title":"State?","type":"single",
         "options":["review","archive"],
         "recommendation":"Either review or archive works here."}]})"), &error);
     QVERIFY(!spec.has_value());
@@ -533,20 +429,20 @@ void TestAskUserForm::infersRecommendedFromRecommendation()
                  && error.contains(QLatin1String("\"review\", \"archive\"")),
              qPrintable(error));
 
-    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Size gate?","type":"single",
+    spec = parseToolInput(obj(R"({"questions":[{"id":"Q1","title":"Size gate?","type":"single",
         "options":[{"value":"accept","label":"Accept for v1"},{"value":"now","label":"Support big files now"}],
         "recommendation":"Accept for v1. Note it as a follow-up."}]})"), &error);
     QVERIFY2(spec.has_value(), qPrintable(error));
     QCOMPARE(spec->questions.at(0).recommended.toString(), QStringLiteral("accept"));
 
     // No reasoning, no recommendation: nothing to preselect, still valid.
-    spec = parseAskUserInput(obj(R"({"questions":[{"id":"Q1","title":"Pick","type":"single",
+    spec = parseToolInput(obj(R"({"questions":[{"id":"Q1","title":"Pick","type":"single",
         "options":["a","b"]}]})"), &error);
     QVERIFY(spec.has_value());
     QVERIFY(spec->questions.at(0).recommended.isNull());
 }
 
-void TestAskUserForm::overviewListsEachAnswer()
+void TestGrillMeForm::overviewListsEachAnswer()
 {
     const Spec spec = grillSpec();
     const QVector<Answer> answers{
@@ -575,7 +471,7 @@ void TestAskUserForm::overviewListsEachAnswer()
 
 // The form-level note the user adds at the end: after the answers, before the
 // clarify instruction, continuation lines indented.
-void TestAskUserForm::formNoteFollowsTheAnswers()
+void TestGrillMeForm::formNoteFollowsTheAnswers()
 {
     const Spec spec = grillSpec();
     QVector<Answer> answers{
@@ -590,7 +486,7 @@ void TestAskUserForm::formNoteFollowsTheAnswers()
     const QString note = QStringLiteral("  also: keep the old API\nuntil v3  \n");
     const QString text = formatAnswers(spec, answers, note);
     const QString expected = QStringLiteral(
-        "[ask_user answers]\n"
+        "[grill_me answers]\n"
         "Form: Round 2\n"
         "Q1 \"Architecture\": b2 (No-op tool) (recommended)\n"
         "Q2 \"Controls\": radio, checkbox (recommended)\n"
@@ -600,7 +496,7 @@ void TestAskUserForm::formNoteFollowsTheAnswers()
         "Q6 \"Days\": 30 (recommended)\n"
         "Note from the user: also: keep the old API\n"
         "  until v3\n"
-        "To clarify: Q3. Explain them in the user's language, then call ask_user again with only these "
+        "To clarify: Q3. Explain them in the user's language, then call grill_me ask again with only these "
         "questions, keeping their ids. The other answers are final.\n");
     QCOMPARE(text, expected);
 
@@ -627,11 +523,43 @@ void TestAskUserForm::formNoteFollowsTheAnswers()
 
     // Dismiss carries the note the same way.
     const QString dismissed = dismissPrompt(note);
-    QCOMPARE(dismissed, QStringLiteral("[ask_user answers]\nThe user dismissed the form without answering.\n"
+    QCOMPARE(dismissed, QStringLiteral("[grill_me answers]\nThe user dismissed the form without answering.\n"
                                        "Note from the user: also: keep the old API\n  until v3"));
     QCOMPARE(summaryFromAnswersText(dismissed), QStringLiteral("Dismissed the form · note"));
     QCOMPARE(answerOverview(dismissed), QStringList{QStringLiteral("Note → also: keep the old API until v3")});
 }
 
-QTEST_GUILESS_MAIN(TestAskUserForm)
-#include "test_ask_user_form.moc"
+// Question-round commands get the grill_me hint after a blank line; the rest
+// goes out as typed.
+void TestGrillMeForm::hintsQuestionRoundCommands()
+{
+    const QString hint = withQuestionRoundHint(QStringLiteral("/grill-me")).section(QStringLiteral("\n\n"), 1);
+    QVERIFY2(hint.startsWith(QLatin1String("[NotepadAI note, not part of the request]"))
+                 && hint.contains(QLatin1String("`ask` tool of the `grill_me` MCP server")),
+             qPrintable(hint));
+
+    // Bare command: a space keeps the name apart (Claude Code splits on " ").
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/grill-me")), QStringLiteral("/grill-me \n\n") + hint);
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/grill-with-docs rename it  \n")),
+             QStringLiteral("/grill-with-docs rename it\n\n") + hint);
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/brainstorm\nnew login flow")),
+             QStringLiteral("/brainstorm\nnew login flow\n\n") + hint);
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/superpowers:brainstorming x")),
+             QStringLiteral("/superpowers:brainstorming x\n\n") + hint);
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/Interview-User")), QStringLiteral("/Interview-User \n\n") + hint);
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/plan the cache")), QStringLiteral("/plan the cache\n\n") + hint);
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/planning")), QStringLiteral("/planning \n\n") + hint);
+
+    // A bare /plan may be the agent's own mode switch: the hint would be its task.
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/plan")), QStringLiteral("/plan"));
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/plan  ")), QStringLiteral("/plan  "));
+    QCOMPARE(withQuestionRoundHint(QStringLiteral("/kit:plan")), QStringLiteral("/kit:plan \n\n") + hint);
+
+    for (const char *plain : {"grill me on this", "/compact", "/goal plan it", "/spec x", "/", "", " /grill-me"}) {
+        const QString text = QString::fromUtf8(plain);
+        QCOMPARE(withQuestionRoundHint(text), text);
+    }
+}
+
+QTEST_GUILESS_MAIN(TestGrillMeForm)
+#include "test_grill_me_form.moc"

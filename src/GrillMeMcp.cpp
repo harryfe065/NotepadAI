@@ -8,9 +8,9 @@
  * (at your option) any later version.
  */
 
-#include "AskUserMcp.h"
+#include "GrillMeMcp.h"
 
-#include "AskUserForm.h"
+#include "GrillMeForm.h"
 #include "McpStdio.h"
 
 #include <QCoreApplication>
@@ -21,28 +21,28 @@ namespace {
 
 QJsonArray tools()
 {
-    return QJsonArray{AskUserForm::toolDefinition()};
+    return QJsonArray{GrillMeForm::toolDefinition()};
 }
 
 QString invalidInputText(const QString &reason)
 {
-    return QStringLiteral("Invalid ask_user input: %1. Fix it and call ask_user again.").arg(reason);
+    return QStringLiteral("Invalid grill_me ask input: %1. Fix it and call grill_me ask again.").arg(reason);
 }
 
 QJsonObject call(const QJsonObject &params)
 {
     const QString name = params.value(QStringLiteral("name")).toString();
-    if (name != QLatin1String(AskUserForm::kToolName))
+    if (name != QLatin1String(GrillMeForm::kToolName))
         return McpStdio::textResult(QStringLiteral("Unknown tool: %1").arg(name), true);
     QString error;
-    if (!AskUserForm::parseAskUserInput(params.value(QStringLiteral("arguments")).toObject(), &error))
+    if (!GrillMeForm::parseToolInput(params.value(QStringLiteral("arguments")).toObject(), &error))
         return McpStdio::textResult(invalidInputText(error), true);
-    return McpStdio::textResult(QLatin1String(AskUserMcp::kShownGuide), false);
+    return McpStdio::textResult(QLatin1String(GrillMeMcp::kShownGuide), false);
 }
 
-const McpStdio::Server kServer{AskUserForm::kServerName, &tools, &call};
+const McpStdio::Server kServer{GrillMeForm::kServerName, &tools, &call};
 
-// Structural check only; the chat re-validates with parseAskUserInput.
+// Structural check only; the chat re-validates with parseToolInput.
 constexpr char kNodeBody[] = R"JS(
 const TYPES = ["single","multi","select","proposal","confirm","text","textarea","number"];
 const CHOICE = ["single","multi","select"];
@@ -77,7 +77,7 @@ function handle(m) {
   case "tools/call": {
     if (p.name !== CFG.tool.name) return reply(id, text("Unknown tool: " + p.name, true));
     const err = check(p.arguments);
-    return reply(id, err ? text("Invalid ask_user input: " + err + ". Fix it and call ask_user again.", true)
+    return reply(id, err ? text("Invalid grill_me ask input: " + err + ". Fix it and call grill_me ask again.", true)
                          : text(CFG.guide, false));
   }
   case "ping": return reply(id, {});
@@ -104,33 +104,33 @@ process.stdin.on("data", function (chunk) {
 
 } // namespace
 
-QJsonObject AskUserMcp::handle(const QJsonObject &msg)
+QJsonObject GrillMeMcp::handle(const QJsonObject &msg)
 {
     return McpStdio::dispatch(kServer, msg);
 }
 
-int AskUserMcp::run()
+int GrillMeMcp::run()
 {
     return McpStdio::run(kServer);
 }
 
-QString AskUserMcp::nodeScript()
+QString GrillMeMcp::nodeScript()
 {
     const QJsonObject cfg{
-        {QStringLiteral("name"), QLatin1String(AskUserForm::kServerName)},
-        {QStringLiteral("tool"), AskUserForm::toolDefinition()},
+        {QStringLiteral("name"), QLatin1String(GrillMeForm::kServerName)},
+        {QStringLiteral("tool"), GrillMeForm::toolDefinition()},
         {QStringLiteral("guide"), QLatin1String(kShownGuide)},
-        {QStringLiteral("max"), AskUserForm::kMaxQuestions},
+        {QStringLiteral("max"), GrillMeForm::kMaxQuestions},
     };
     return QStringLiteral("\"use strict\";\nconst CFG = ")
         + QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact))
         + QStringLiteral(";") + QString::fromUtf8(kNodeBody);
 }
 
-QJsonObject AskUserMcp::serverEntry(bool remote)
+QJsonObject GrillMeMcp::serverEntry(bool remote)
 {
     QJsonObject entry{
-        {QStringLiteral("name"), QLatin1String(AskUserForm::kServerName)},
+        {QStringLiteral("name"), QLatin1String(GrillMeForm::kServerName)},
         // ACP requires an array here; strict agents reject a missing env.
         {QStringLiteral("env"), QJsonArray{}},
     };

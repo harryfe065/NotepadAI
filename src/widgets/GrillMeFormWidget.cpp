@@ -8,7 +8,7 @@
  * (at your option) any later version.
  */
 
-#include "AskUserFormWidget.h"
+#include "GrillMeFormWidget.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QButtonGroup>
@@ -42,9 +42,9 @@
 #include <cmath>
 #include <utility>
 
-using AskUserForm::Answer;
-using AskUserForm::Question;
-using AskUserForm::QuestionType;
+using GrillMeForm::Answer;
+using GrillMeForm::Question;
+using GrillMeForm::QuestionType;
 
 namespace {
 
@@ -99,7 +99,7 @@ QString glyphImage(const char *name, const char *pathData, const QColor &color)
     QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     if (dir.isEmpty() || !QDir().mkpath(dir))
         dir = QDir::tempPath();
-    const QString path = dir + QStringLiteral("/ask-user-%1-%2.svg").arg(QLatin1String(name), color.name().mid(1));
+    const QString path = dir + QStringLiteral("/grill-me-%1-%2.svg").arg(QLatin1String(name), color.name().mid(1));
     if (!QFileInfo::exists(path)) {
         QSaveFile file(path);
         if (file.open(QIODevice::WriteOnly)) {
@@ -221,7 +221,7 @@ QString recommendedText(const Question &q)
 {
     const QJsonValue &rec = q.recommended;
     auto labelOf = [&q](const QString &value) {
-        for (const AskUserForm::Option &opt : q.options) {
+        for (const GrillMeForm::Option &opt : q.options) {
             if (opt.value == value)
                 return opt.label;
         }
@@ -242,11 +242,11 @@ QString recommendedText(const Question &q)
         if (!rec.isBool())
             return {};
         if (rec.toBool())
-            return q.yesLabel.isEmpty() ? AskUserFormWidget::tr("Yes") : q.yesLabel;
-        return q.noLabel.isEmpty() ? AskUserFormWidget::tr("No") : q.noLabel;
+            return q.yesLabel.isEmpty() ? GrillMeFormWidget::tr("Yes") : q.yesLabel;
+        return q.noLabel.isEmpty() ? GrillMeFormWidget::tr("No") : q.noLabel;
     case QuestionType::Proposal:
-        return rec.toString() == QLatin1String("change") ? AskUserFormWidget::tr("Change")
-                                                         : AskUserFormWidget::tr("Accept");
+        return rec.toString() == QLatin1String("change") ? GrillMeFormWidget::tr("Change")
+                                                         : GrillMeFormWidget::tr("Accept");
     case QuestionType::Text:
     case QuestionType::Textarea:
         return rec.toString().trimmed().isEmpty() ? QString() : QStringLiteral("\u201c%1\u201d").arg(rec.toString());
@@ -274,12 +274,12 @@ QString withMark(const QString &label, bool recommended)
 
 } // namespace
 
-AskUserFormWidget::AskUserFormWidget(AskUserForm::Spec spec, const QVector<Answer> &initial,
+GrillMeFormWidget::GrillMeFormWidget(GrillMeForm::Spec spec, const QVector<Answer> &initial,
                                      QWidget *parent)
     : QFrame(parent)
     , m_spec(std::move(spec))
 {
-    setObjectName(QStringLiteral("askUserForm"));
+    setObjectName(QStringLiteral("grillMeForm"));
     setProperty("pending", true);
     buildUi();
     for (int i = 0; i < m_spec.questions.size(); ++i) {
@@ -296,7 +296,7 @@ AskUserFormWidget::AskUserFormWidget(AskUserForm::Spec spec, const QVector<Answe
     updateProgress();
 }
 
-QLabel *AskUserFormWidget::mutedLabel(const QString &text, Qt::TextFormat format, QWidget *parent) const
+QLabel *GrillMeFormWidget::mutedLabel(const QString &text, Qt::TextFormat format, QWidget *parent) const
 {
     auto *label = new QLabel(parent);
     label->setObjectName(QStringLiteral("auMuted"));
@@ -308,7 +308,7 @@ QLabel *AskUserFormWidget::mutedLabel(const QString &text, Qt::TextFormat format
     return label;
 }
 
-void AskUserFormWidget::applyTheme()
+void GrillMeFormWidget::applyTheme()
 {
     // Computed from the live palette (light and dark), refreshed on
     // PaletteChange: no single palette() role contrasts in both themes.
@@ -333,11 +333,11 @@ void AskUserFormWidget::applyTheme()
     const QColor accentHover = mix(accent, text, 0.12);
 
     QString sheet = QStringLiteral(
-        "QFrame#askUserForm { background: %BASE%; border: 1px solid %BORDER%; border-radius: 8px; }"
-        "QFrame#askUserForm[pending=\"true\"] { border-color: %ACCENTLINE%; }"
+        "QFrame#grillMeForm { background: %BASE%; border: 1px solid %BORDER%; border-radius: 8px; }"
+        "QFrame#grillMeForm[pending=\"true\"] { border-color: %ACCENTLINE%; }"
         "QLabel#auBadge { background: %ACCENT%; color: %ONACCENT%; border-radius: 9px;"
         " min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px; font-weight: 600; }"
-        "QFrame#askUserForm[pending=\"false\"] QLabel#auBadge { background: %HOVER%; color: %MUTED%; }"
+        "QFrame#grillMeForm[pending=\"false\"] QLabel#auBadge { background: %HOVER%; color: %MUTED%; }"
         "QLabel#auNumber { background: %ACCENTTINT%; color: %ACCENTTEXT%; border-radius: 4px;"
         " padding: 0px 6px; font-weight: 600; }"
         "QLabel#auMuted, QLabel#auStatus { color: %MUTED%; }"
@@ -372,22 +372,22 @@ void AskUserFormWidget::applyTheme()
         "QToolButton#auLink:hover, QToolButton#auLink:checked { background: %HOVER%; color: %ACCENTTEXT%; }"
         "QToolButton#auToggle { background: transparent; color: %MUTED%; border: none; padding: 0px 4px; }"
         "QToolButton#auToggle:hover { color: %TEXT%; }"
-        "QFrame#askUserForm QLineEdit, QFrame#askUserForm QPlainTextEdit { background: %INPUT%;"
+        "QFrame#grillMeForm QLineEdit, QFrame#grillMeForm QPlainTextEdit { background: %INPUT%;"
         " color: %TEXT%; border: 1px solid %BORDER%; border-radius: 6px; padding: 4px 6px; }"
-        "QFrame#askUserForm QLineEdit:focus, QFrame#askUserForm QPlainTextEdit:focus { border-color: %ACCENT%; }"
-        "QFrame#askUserForm QComboBox { background: %INPUT%; color: %TEXT%; border: 1px solid %BORDER%;"
+        "QFrame#grillMeForm QLineEdit:focus, QFrame#grillMeForm QPlainTextEdit:focus { border-color: %ACCENT%; }"
+        "QFrame#grillMeForm QComboBox { background: %INPUT%; color: %TEXT%; border: 1px solid %BORDER%;"
         " border-radius: 6px; padding: 5px 28px 5px 8px; }"
-        "QFrame#askUserForm QComboBox:hover { border-color: %BORDERSTRONG%; }"
-        "QFrame#askUserForm QComboBox:focus, QFrame#askUserForm QComboBox:on { border-color: %ACCENT%; }"
-        "QFrame#askUserForm QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right;"
+        "QFrame#grillMeForm QComboBox:hover { border-color: %BORDERSTRONG%; }"
+        "QFrame#grillMeForm QComboBox:focus, QFrame#grillMeForm QComboBox:on { border-color: %ACCENT%; }"
+        "QFrame#grillMeForm QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right;"
         " width: 24px; border: none; background: transparent; }"
-        "QFrame#askUserForm QComboBox::down-arrow { image: url(\"%CHEVRON%\"); width: 12px; height: 12px; }"
-        "QFrame#askUserForm QComboBox QAbstractItemView { background: %BASE%; color: %TEXT%;"
+        "QFrame#grillMeForm QComboBox::down-arrow { image: url(\"%CHEVRON%\"); width: 12px; height: 12px; }"
+        "QFrame#grillMeForm QComboBox QAbstractItemView { background: %BASE%; color: %TEXT%;"
         " border: 1px solid %BORDER%; padding: 4px; outline: 0; }"
-        "QFrame#askUserForm QComboBox QAbstractItemView::item { min-height: 26px; padding: 0px 8px;"
+        "QFrame#grillMeForm QComboBox QAbstractItemView::item { min-height: 26px; padding: 0px 8px;"
         " border-radius: 4px; }"
-        "QFrame#askUserForm QComboBox QAbstractItemView::item:hover,"
-        " QFrame#askUserForm QComboBox QAbstractItemView::item:selected { background: %ACCENTTINT%;"
+        "QFrame#grillMeForm QComboBox QAbstractItemView::item:hover,"
+        " QFrame#grillMeForm QComboBox QAbstractItemView::item:selected { background: %ACCENTTINT%;"
         " color: %TEXT%; }");
     const std::pair<const char *, QColor> vars[] = {
         {"%BASE%", base},           {"%BORDERSTRONG%", borderStrong}, {"%BORDER%", border},
@@ -403,14 +403,14 @@ void AskUserFormWidget::applyTheme()
     setStyleSheet(sheet);
 }
 
-void AskUserFormWidget::changeEvent(QEvent *event)
+void GrillMeFormWidget::changeEvent(QEvent *event)
 {
     QFrame::changeEvent(event);
     if (event->type() == QEvent::PaletteChange && !m_building)
         applyTheme();
 }
 
-void AskUserFormWidget::buildUi()
+void GrillMeFormWidget::buildUi()
 {
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(12, 10, 12, 12);
@@ -450,7 +450,7 @@ void AskUserFormWidget::buildUi()
     m_toggle->setToolTip(tr("Show or hide the questions"));
     m_toggle->setCursor(Qt::PointingHandCursor);
     m_toggle->hide(); // only settled forms collapse
-    connect(m_toggle, &QToolButton::toggled, this, &AskUserFormWidget::setExpanded);
+    connect(m_toggle, &QToolButton::toggled, this, &GrillMeFormWidget::setExpanded);
     header->addWidget(m_toggle);
     root->addLayout(header);
 
@@ -461,19 +461,16 @@ void AskUserFormWidget::buildUi()
     m_rows.resize(m_spec.questions.size());
     for (int i = 0; i < m_spec.questions.size(); ++i)
         bodyLayout->addWidget(buildQuestion(i));
-    // Anything the user remembers that no question asked. Elicitation answers
-    // are a fixed schema with no place for it.
-    if (m_spec.source == AskUserForm::Source::AskUser) {
-        m_formNoteEdit = new QPlainTextEdit(m_body);
-        m_formNoteEdit->setPlaceholderText(tr("Anything else the agent should know? (optional)"));
-        m_formNoteEdit->setTabChangesFocus(true);
-        m_formNoteEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        bodyLayout->addWidget(m_formNoteEdit);
-        watch(m_formNoteEdit);
-        connect(m_formNoteEdit->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
-                this, &AskUserFormWidget::fitNote);
-        fitNote();
-    }
+    // Anything the user remembers that no question asked.
+    m_formNoteEdit = new QPlainTextEdit(m_body);
+    m_formNoteEdit->setPlaceholderText(tr("Anything else the agent should know? (optional)"));
+    m_formNoteEdit->setTabChangesFocus(true);
+    m_formNoteEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    bodyLayout->addWidget(m_formNoteEdit);
+    watch(m_formNoteEdit);
+    connect(m_formNoteEdit->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
+            this, &GrillMeFormWidget::fitNote);
+    fitNote();
     root->addWidget(m_body);
 
     m_footer = new QWidget(this);
@@ -499,12 +496,12 @@ void AskUserFormWidget::buildUi()
     m_submitButton->setAutoDefault(false);
     m_submitButton->setCursor(Qt::PointingHandCursor);
     m_submitButton->setToolTip(tr("Enter submits · Shift+Enter adds a new line"));
-    connect(m_submitButton, &QPushButton::clicked, this, &AskUserFormWidget::trySubmit);
+    connect(m_submitButton, &QPushButton::clicked, this, &GrillMeFormWidget::trySubmit);
     footer->addWidget(m_submitButton);
     root->addWidget(m_footer);
 }
 
-QWidget *AskUserFormWidget::buildQuestion(int index)
+QWidget *GrillMeFormWidget::buildQuestion(int index)
 {
     const Question &q = m_spec.questions.at(index);
     Row &row = m_rows[index];
@@ -517,14 +514,9 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     // Title row: number chip, title, Required, Note, Clarify.
     auto *titleRow = new QHBoxLayout;
     titleRow->setSpacing(8);
-    const bool numbered = m_spec.source == AskUserForm::Source::AskUser || m_spec.questions.size() > 1;
-    if (numbered) {
-        const QString label = m_spec.source == AskUserForm::Source::AskUser
-            ? q.id : QStringLiteral("Q%1").arg(index + 1);
-        auto *number = new QLabel(label, row.container);
-        number->setObjectName(QStringLiteral("auNumber"));
-        titleRow->addWidget(number, 0, Qt::AlignVCenter);
-    }
+    auto *number = new QLabel(q.id, row.container);
+    number->setObjectName(QStringLiteral("auNumber"));
+    titleRow->addWidget(number, 0, Qt::AlignVCenter);
     auto *title = new QLabel(q.title, row.container);
     title->setWordWrap(true);
     allowShrink(title);
@@ -545,27 +537,18 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     row.noteButton->setText(tr("+ Note"));
     row.noteButton->setToolTip(tr("Add a note to this answer"));
     row.noteButton->setCursor(Qt::PointingHandCursor);
-    // Elicitation without a free-text field cannot carry a note.
-    const bool canNote = m_spec.source == AskUserForm::Source::AskUser
-        || !q.noteFieldKey.isEmpty() || !q.otherFieldKey.isEmpty();
-    row.noteButton->setVisible(canNote);
     titleRow->addWidget(row.noteButton, 0, Qt::AlignVCenter);
 
-    // Elicitation carries the request in a free-text companion field.
-    const bool canClarify = m_spec.source == AskUserForm::Source::AskUser
-        || !q.otherFieldKey.isEmpty() || !q.noteFieldKey.isEmpty();
-    if (canClarify) {
-        row.clarifyButton = new QToolButton(row.container);
-        row.clarifyButton->setObjectName(QStringLiteral("auLink"));
-        row.clarifyButton->setCheckable(true);
-        row.clarifyButton->setText(tr("Clarify"));
-        row.clarifyButton->setToolTip(tr("Mark as unclear: the agent explains it after you submit"));
-        row.clarifyButton->setCursor(Qt::PointingHandCursor);
-        connect(row.clarifyButton, &QToolButton::toggled, this, [this, index](bool on) {
-            setClarify(index, on);
-        });
-        titleRow->addWidget(row.clarifyButton, 0, Qt::AlignVCenter);
-    }
+    row.clarifyButton = new QToolButton(row.container);
+    row.clarifyButton->setObjectName(QStringLiteral("auLink"));
+    row.clarifyButton->setCheckable(true);
+    row.clarifyButton->setText(tr("Clarify"));
+    row.clarifyButton->setToolTip(tr("Mark as unclear: the agent explains it after you submit"));
+    row.clarifyButton->setCursor(Qt::PointingHandCursor);
+    connect(row.clarifyButton, &QToolButton::toggled, this, [this, index](bool on) {
+        setClarify(index, on);
+    });
+    titleRow->addWidget(row.clarifyButton, 0, Qt::AlignVCenter);
     layout->addLayout(titleRow);
 
     if (!q.body.trimmed().isEmpty()) {
@@ -634,8 +617,6 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
                 validator->setBottom(*q.min);
             if (q.max)
                 validator->setTop(*q.max);
-            if (q.integer)
-                validator->setDecimals(0);
             row.lineEdit->setValidator(validator);
             if (q.placeholder.isEmpty() && (q.min || q.max)) {
                 row.lineEdit->setPlaceholderText(
@@ -645,7 +626,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         }
         answerLayout->addWidget(row.lineEdit);
         watch(row.lineEdit);
-        connect(row.lineEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
+        connect(row.lineEdit, &QLineEdit::textChanged, this, &GrillMeFormWidget::updateProgress);
         break;
     }
     case QuestionType::Textarea:
@@ -655,7 +636,7 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
         fitLines(row.textEdit, kTextareaLines);
         answerLayout->addWidget(row.textEdit);
         watch(row.textEdit);
-        connect(row.textEdit, &QPlainTextEdit::textChanged, this, &AskUserFormWidget::updateProgress);
+        connect(row.textEdit, &QPlainTextEdit::textChanged, this, &GrillMeFormWidget::updateProgress);
         break;
     }
 
@@ -668,23 +649,23 @@ QWidget *AskUserFormWidget::buildQuestion(int index)
     QToolButton *noteButton = row.noteButton;
     connect(row.noteButton, &QToolButton::toggled, this, [noteEdit, noteButton](bool on) {
         noteEdit->setVisible(on);
-        noteButton->setText(on ? AskUserFormWidget::tr("− Note") : AskUserFormWidget::tr("+ Note"));
+        noteButton->setText(on ? GrillMeFormWidget::tr("− Note") : GrillMeFormWidget::tr("+ Note"));
         if (on)
             noteEdit->setFocus();
     });
     return row.container;
 }
 
-void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
+void GrillMeFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
 {
     const Question &q = m_spec.questions.at(index);
     const bool multi = q.type == QuestionType::Multi;
     if (!multi) {
         row.group = new QButtonGroup(row.container);
-        connect(row.group, &QButtonGroup::idToggled, this, &AskUserFormWidget::updateProgress);
+        connect(row.group, &QButtonGroup::idToggled, this, &GrillMeFormWidget::updateProgress);
     }
     for (int i = 0; i < q.options.size(); ++i) {
-        const AskUserForm::Option &opt = q.options.at(i);
+        const GrillMeForm::Option &opt = q.options.at(i);
         const bool recommended = multi ? q.recommended.toArray().contains(opt.value)
                                        : q.recommended.toString() == opt.value;
         QAbstractButton *button = multi ? static_cast<QAbstractButton *>(new QCheckBox)
@@ -704,7 +685,7 @@ void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
         if (row.group)
             row.group->addButton(button, i);
         else
-            connect(button, &QAbstractButton::toggled, this, &AskUserFormWidget::updateProgress);
+            connect(button, &QAbstractButton::toggled, this, &GrillMeFormWidget::updateProgress);
         row.optionButtons.append(button);
         layout->addWidget(option);
         watch(button);
@@ -713,14 +694,14 @@ void AskUserFormWidget::buildChoice(int index, Row &row, QVBoxLayout *layout)
         buildOther(row, layout, multi);
 }
 
-void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
+void GrillMeFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
 {
     const Question &q = m_spec.questions.at(index);
     row.combo = new NoWheelComboBox(row.container);
     // Item rules in the style sheet apply only with a styled delegate.
     row.combo->setItemDelegate(new QStyledItemDelegate(row.combo));
     row.combo->addItem(tr("Choose…"), QString()); // index 0 = no answer
-    for (const AskUserForm::Option &opt : q.options) {
+    for (const GrillMeForm::Option &opt : q.options) {
         const bool recommended = q.recommended.toString() == opt.value;
         row.combo->addItem(withMark(opt.label, recommended), opt.value);
         if (!opt.description.isEmpty())
@@ -731,14 +712,14 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
     allowShrink(row.combo);
     layout->addWidget(row.combo);
     watch(row.combo);
-    connect(row.combo, &QComboBox::currentIndexChanged, this, &AskUserFormWidget::updateProgress);
+    connect(row.combo, &QComboBox::currentIndexChanged, this, &GrillMeFormWidget::updateProgress);
     if (q.allowOther) {
         row.otherEdit = new QLineEdit(row.container);
         row.otherEdit->setPlaceholderText(tr("Type your own answer"));
         row.otherEdit->hide();
         layout->addWidget(row.otherEdit);
         watch(row.otherEdit);
-        connect(row.otherEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
+        connect(row.otherEdit, &QLineEdit::textChanged, this, &GrillMeFormWidget::updateProgress);
         QComboBox *combo = row.combo;
         QLineEdit *other = row.otherEdit;
         connect(combo, &QComboBox::currentIndexChanged, this, [combo, other](int i) {
@@ -750,7 +731,7 @@ void AskUserFormWidget::buildDropdown(int index, Row &row, QVBoxLayout *layout)
     }
 }
 
-void AskUserFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
+void GrillMeFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
 {
     const Question &q = m_spec.questions.at(index);
     const bool proposal = q.type == QuestionType::Proposal;
@@ -779,7 +760,7 @@ void AskUserFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
     }
     buttons->addStretch(1);
     layout->addLayout(buttons);
-    connect(row.group, &QButtonGroup::idToggled, this, &AskUserFormWidget::updateProgress);
+    connect(row.group, &QButtonGroup::idToggled, this, &GrillMeFormWidget::updateProgress);
     if (proposal) {
         row.textEdit = new QPlainTextEdit(row.container);
         row.textEdit->setPlaceholderText(tr("What should change?"));
@@ -788,14 +769,14 @@ void AskUserFormWidget::buildSegmented(int index, Row &row, QVBoxLayout *layout)
         row.textEdit->hide();
         layout->addWidget(row.textEdit);
         watch(row.textEdit);
-        connect(row.textEdit, &QPlainTextEdit::textChanged, this, &AskUserFormWidget::updateProgress);
+        connect(row.textEdit, &QPlainTextEdit::textChanged, this, &GrillMeFormWidget::updateProgress);
         connect(row.group, &QButtonGroup::idToggled, this, [this, index](int, bool) {
             updateProposalEditor(index);
         });
     }
 }
 
-void AskUserFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
+void GrillMeFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
 {
     row.otherButton = checkbox ? static_cast<QAbstractButton *>(new QCheckBox(tr("Other")))
                                : static_cast<QAbstractButton *>(new QRadioButton(tr("Other")));
@@ -806,7 +787,7 @@ void AskUserFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
     if (row.group)
         row.group->addButton(row.otherButton, kOtherButtonId);
     else
-        connect(row.otherButton, &QAbstractButton::toggled, this, &AskUserFormWidget::updateProgress);
+        connect(row.otherButton, &QAbstractButton::toggled, this, &GrillMeFormWidget::updateProgress);
     layout->addWidget(option);
     watch(row.otherButton);
     watch(row.otherEdit);
@@ -816,15 +797,15 @@ void AskUserFormWidget::buildOther(Row &row, QVBoxLayout *layout, bool checkbox)
         if (!text.isEmpty())
             button->setChecked(true);
     });
-    connect(row.otherEdit, &QLineEdit::textChanged, this, &AskUserFormWidget::updateProgress);
+    connect(row.otherEdit, &QLineEdit::textChanged, this, &GrillMeFormWidget::updateProgress);
 }
 
-void AskUserFormWidget::watch(QWidget *w)
+void GrillMeFormWidget::watch(QWidget *w)
 {
     w->installEventFilter(this);
 }
 
-void AskUserFormWidget::updateProposalEditor(int index)
+void GrillMeFormWidget::updateProposalEditor(int index)
 {
     Row &row = m_rows[index];
     if (!row.textEdit || row.optionButtons.size() < 2)
@@ -835,7 +816,7 @@ void AskUserFormWidget::updateProposalEditor(int index)
         row.textEdit->setFocus();
 }
 
-void AskUserFormWidget::setClarify(int index, bool on)
+void GrillMeFormWidget::setClarify(int index, bool on)
 {
     Row &row = m_rows[index];
     // The effect renders offscreen: only flagged rows carry an enabled one.
@@ -857,7 +838,7 @@ void AskUserFormWidget::setClarify(int index, bool on)
     updateProgress();
 }
 
-void AskUserFormWidget::fitNote()
+void GrillMeFormWidget::fitNote()
 {
     if (!m_formNoteEdit)
         return;
@@ -870,18 +851,18 @@ void AskUserFormWidget::fitNote()
     fitLines(m_formNoteEdit, std::clamp(lines, 1, kNoteMaxLines));
 }
 
-QString AskUserFormWidget::note() const
+QString GrillMeFormWidget::note() const
 {
     return m_formNoteEdit ? m_formNoteEdit->toPlainText().trimmed() : QString();
 }
 
-void AskUserFormWidget::setNote(const QString &note)
+void GrillMeFormWidget::setNote(const QString &note)
 {
     if (m_formNoteEdit)
         m_formNoteEdit->setPlainText(note);
 }
 
-void AskUserFormWidget::updateProgress()
+void GrillMeFormWidget::updateProgress()
 {
     if (m_building || !m_progressLabel)
         return;
@@ -891,7 +872,7 @@ void AskUserFormWidget::updateProgress()
         const Answer a = answerAt(i);
         if (a.clarify)
             ++clarify;
-        else if (AskUserForm::hasAnswer(m_spec.questions.at(i), a))
+        else if (GrillMeForm::hasAnswer(m_spec.questions.at(i), a))
             ++answered;
     }
     const qsizetype total = m_spec.questions.size();
@@ -904,7 +885,7 @@ void AskUserFormWidget::updateProgress()
     m_progressLabel->setText(parts.join(QStringLiteral(" · ")));
 }
 
-void AskUserFormWidget::applyAnswer(int index, const Answer &a)
+void GrillMeFormWidget::applyAnswer(int index, const Answer &a)
 {
     const Question &q = m_spec.questions.at(index);
     Row &row = m_rows[index];
@@ -958,7 +939,7 @@ void AskUserFormWidget::applyAnswer(int index, const Answer &a)
         row.clarifyButton->setChecked(a.clarify);
 }
 
-Answer AskUserFormWidget::answerAt(int index) const
+Answer GrillMeFormWidget::answerAt(int index) const
 {
     const Question &q = m_spec.questions.at(index);
     const Row &row = m_rows.at(index);
@@ -1030,7 +1011,7 @@ Answer AskUserFormWidget::answerAt(int index) const
     return a;
 }
 
-QVector<Answer> AskUserFormWidget::answers() const
+QVector<Answer> GrillMeFormWidget::answers() const
 {
     QVector<Answer> out;
     out.reserve(m_spec.questions.size());
@@ -1039,7 +1020,7 @@ QVector<Answer> AskUserFormWidget::answers() const
     return out;
 }
 
-void AskUserFormWidget::trySubmit()
+void GrillMeFormWidget::trySubmit()
 {
     if (!isPending())
         return;
@@ -1053,7 +1034,7 @@ void AskUserFormWidget::trySubmit()
         // for clarification needs no answer.
         const bool missingChange = !a.clarify && q.type == QuestionType::Proposal
             && a.value.toString() == QLatin1String("change") && a.other.isEmpty();
-        const bool missing = missingChange || (!a.clarify && q.required && !AskUserForm::hasAnswer(q, a));
+        const bool missing = missingChange || (!a.clarify && q.required && !GrillMeForm::hasAnswer(q, a));
         row.requiredLabel->setText(missingChange ? tr("Describe the change") : tr("Required"));
         row.requiredLabel->setVisible(q.required || missingChange);
         row.container->setProperty("invalid", missing);
@@ -1070,7 +1051,7 @@ void AskUserFormWidget::trySubmit()
     emit submitted(current);
 }
 
-bool AskUserFormWidget::eventFilter(QObject *watched, QEvent *event)
+bool GrillMeFormWidget::eventFilter(QObject *watched, QEvent *event)
 {
     // The style sheet's frame width applies after the first fit (at polish).
     if (watched == m_formNoteEdit && (event->type() == QEvent::Polish || event->type() == QEvent::StyleChange))
@@ -1096,14 +1077,14 @@ bool AskUserFormWidget::eventFilter(QObject *watched, QEvent *event)
     return true;
 }
 
-void AskUserFormWidget::setExpanded(bool expanded)
+void GrillMeFormWidget::setExpanded(bool expanded)
 {
     m_toggle->setText(expanded ? QStringLiteral("▾") : QStringLiteral("▸"));
     m_body->setVisible(expanded);
     m_footer->setVisible(expanded && isPending());
 }
 
-QString AskUserFormWidget::statusText(const QString &detail) const
+QString GrillMeFormWidget::statusText(const QString &detail) const
 {
     if (!detail.isEmpty())
         return detail;
@@ -1121,7 +1102,7 @@ QString AskUserFormWidget::statusText(const QString &detail) const
     return {};
 }
 
-void AskUserFormWidget::setState(State state, const QString &detail)
+void GrillMeFormWidget::setState(State state, const QString &detail)
 {
     m_state = state;
     const bool pending = state == State::Pending;
@@ -1147,7 +1128,7 @@ void AskUserFormWidget::setState(State state, const QString &detail)
     setExpanded(pending);
 }
 
-void AskUserFormWidget::setChatFont(const QFont &font)
+void GrillMeFormWidget::setChatFont(const QFont &font)
 {
     // Content follows the chat font; chrome (buttons) keeps the system font.
     const QList<QWidget *> children = m_body->findChildren<QWidget *>();
@@ -1170,7 +1151,7 @@ void AskUserFormWidget::setChatFont(const QFont &font)
     fitNote();
 }
 
-QWidget *AskUserFormWidget::inputOf(int index) const
+QWidget *GrillMeFormWidget::inputOf(int index) const
 {
     const Row &row = m_rows.at(index);
     // A requested change is answered in its text box.
@@ -1187,7 +1168,7 @@ QWidget *AskUserFormWidget::inputOf(int index) const
     return row.textEdit;
 }
 
-void AskUserFormWidget::focusFirstQuestion()
+void GrillMeFormWidget::focusFirstQuestion()
 {
     if (m_rows.isEmpty())
         return;

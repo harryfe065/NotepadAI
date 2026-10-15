@@ -8,8 +8,8 @@
  * (at your option) any later version.
  */
 
-#ifndef ASK_USER_FORM_H
-#define ASK_USER_FORM_H
+#ifndef GRILL_ME_FORM_H
+#define GRILL_ME_FORM_H
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -21,20 +21,18 @@
 #include <cstdint>
 #include <optional>
 
-// Interactive question forms shown in the chat. Two sources share one model:
-// the `ask_user` MCP tool (rawInput of its tool call) and ACP form elicitation
-// (`elicitation/create` requestedSchema). Pure data + functions, no widgets.
-namespace AskUserForm {
+// Question forms shown in the chat, built from the `ask` tool of the
+// `grill_me` MCP server (rawInput of its tool call). Pure data + functions,
+// no widgets.
+namespace GrillMeForm {
 
-inline constexpr char kServerName[] = "notepadai";
-inline constexpr char kToolName[] = "ask_user";
-inline constexpr char kAnswersHeader[] = "[ask_user answers]";
-// Legacy: the one-question clarify prompt of earlier builds (restored history).
-inline constexpr char kClarifyHeader[] = "[ask_user clarify]";
+inline constexpr char kServerName[] = "grill_me";
+inline constexpr char kToolName[] = "ask";
+inline constexpr char kAnswersHeader[] = "[grill_me answers]";
 inline constexpr char kDismissedLine[] = "The user dismissed the form without answering.";
 // AcpMessage::marker / AcpPromptQueue::Item::marker values.
-inline constexpr char kMarkerAnswers[] = "ask-user-answers";
-inline constexpr char kMarkerNoHuman[] = "ask-user-no-human";
+inline constexpr char kMarkerAnswers[] = "grill-me-answers";
+inline constexpr char kMarkerNoHuman[] = "grill-me-no-human";
 
 inline constexpr int kMaxQuestions = 30;
 inline constexpr int kMaxOptions = 50;
@@ -78,23 +76,14 @@ struct Question
     QString placeholder;
     std::optional<double> min;
     std::optional<double> max;
-    bool integer = false; // number: elicitation `integer`
-
-    // Elicitation only: the content keys this question answers into.
-    QString fieldKey;
-    QString otherFieldKey; // `<key>_custom` (Claude AskUserQuestion)
-    QString noteFieldKey;  // `<key>_note` (Codex request_user_input)
 
     // Rendered as a dropdown (select, or single with many options).
     bool isDropdown() const;
     bool isChoice() const;
 };
 
-enum class Source : std::uint8_t { AskUser, Elicitation };
-
 struct Spec
 {
-    Source source = Source::AskUser;
     QString title;
     QVector<Question> questions;
 };
@@ -107,40 +96,42 @@ struct Answer
     QString other; // free text in the Other box; for proposal "change": the requested change
     QString note;
     // The user does not understand the question: the agent explains it and
-    // asks again. The value is not reported (elicitation still sends it).
+    // asks again. The value is not reported.
     bool clarify = false;
 };
 
-// --- ask_user ---------------------------------------------------------------
+// --- tool call --------------------------------------------------------------
 
-// Validate and normalise ask_user arguments. Lenient where harmless: missing
+// Validate and normalise the tool's arguments. Lenient where harmless: missing
 // id -> "Q<n>", `questions` given as a JSON string, a lone string for multi,
 // numeric strings for number, "yes"/"no" for confirm. On failure returns
 // nullopt and sets `error` to a one-line reason naming the question.
-std::optional<Spec> parseAskUserInput(const QJsonObject &args, QString *error = nullptr);
+std::optional<Spec> parseToolInput(const QJsonObject &args, QString *error = nullptr);
 
 // Unwrap a tool call's rawInput into the tool arguments. Some adapters nest
 // them as {server, tool, arguments} with arguments possibly a JSON string;
-// omp sends {path: "xd://mcp__notepadai_ask_user", content: "<JSON>"} and
-// echoes the parsed arguments in rawOutput.details.xdev.args on completion.
-QJsonObject askUserArguments(const QJsonObject &rawInput, const QJsonObject &rawOutput = {});
+// omp sends {path: "xd://mcp__grill_me_ask", content: "<JSON>"} and echoes
+// the parsed arguments in rawOutput.details.xdev.args on completion.
+QJsonObject toolArguments(const QJsonObject &rawInput, const QJsonObject &rawOutput = {});
 
-// True when the tool call is notepadai's ask_user, whatever prefix the agent
-// adds (mcp__notepadai__ask_user, notepadai_ask_user, notepadai/ask_user, ...),
-// including omp's device write to xd://mcp__notepadai_ask_user.
-bool isAskUserToolCall(const QString &name, const QString &title, const QJsonObject &rawInput);
+// True when the tool call is grill_me's ask, whatever prefix the agent adds
+// (mcp__grill_me__ask, grill_me_ask, grill_me/ask, grill_me.ask, ...),
+// including omp's device write to xd://mcp__grill_me_ask.
+bool isGrillMeToolCall(const QString &name, const QString &title, const QJsonObject &rawInput);
 
 // MCP tools/list entry (name, description, inputSchema).
 QJsonObject toolDefinition();
 
-// --- elicitation ------------------------------------------------------------
+// --- question-round commands ------------------------------------------------
 
-// Map an elicitation/create form request to a Spec. `message` becomes the
-// title. Companion fields `<k>_custom` / `<k>_note` merge into question `k`.
-Spec fromElicitation(const QString &message, const QJsonObject &requestedSchema);
-
-// `accept` content for an elicitation form.
-QJsonObject elicitationContent(const Spec &spec, const QVector<Answer> &answers);
+// The hint appended to a user prompt that starts a question-round command
+// (/grill-…, /plan …, /brainstorm…, /interview…, also namespaced like
+// /plugin:brainstorming), so the agent sends its rounds through the tool.
+// Returns the text to send: `text` itself when it is no such command, else
+// `text` plus a blank line and the hint, with a space after a bare command
+// name (Claude Code reads the name up to the first space). A bare `/plan` is
+// left alone: as an agent built-in, the hint would become its task.
+QString withQuestionRoundHint(const QString &text);
 
 // --- answers ----------------------------------------------------------------
 
@@ -160,8 +151,7 @@ QString answerSummary(const Spec &spec, const QVector<Answer> &answers, const QS
 QString summaryFromAnswersText(const QString &text);
 // One line per question from the prompt text: "Q1 Title → answer[ · changed]",
 // then "Note → text" for the form note; answers and the note cut to
-// `maxAnswerChars`. Legacy clarify prompts have none; a dismiss prompt has
-// only its note line, if any.
+// `maxAnswerChars`. A dismiss prompt has only its note line, if any.
 QStringList answerOverview(const QString &text, int maxAnswerChars = 90);
 
 QString dismissPrompt(const QString &note);
@@ -173,6 +163,6 @@ QVector<Answer> carryOver(const Spec &next, const QVector<Answer> &previous);
 // Initial answers: the recommendations.
 QVector<Answer> defaultAnswers(const Spec &spec);
 
-} // namespace AskUserForm
+} // namespace GrillMeForm
 
-#endif // ASK_USER_FORM_H
+#endif // GRILL_ME_FORM_H

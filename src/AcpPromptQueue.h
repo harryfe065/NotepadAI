@@ -43,11 +43,11 @@ public:
         // Flushed as a goal-agent message so the badge and judge handshake match
         // a side-prompt that was deferred onto this queue.
         bool fromGoalAgent = false;
-        // AcpMessage::marker of the bubble (ask_user answers, no-human notice).
+        // AcpMessage::marker of the bubble (grill_me answers, no-human notice).
         QString marker;
         // What the agent receives when it differs from `text` (the bubble).
         QString wireText;
-        // Host-built reply (ask_user answers / dismiss / no-human notice): goes
+        // Host-built reply (grill_me answers / dismiss / no-human notice): goes
         // ahead of every user prompt (FIFO among host items), never shown in
         // the queue strip, never removable by the user.
         bool host = false;

@@ -16,8 +16,8 @@
 #include <QScrollArea>
 #include <QVBoxLayout>
 
-#include "AskUserForm.h"
-#include "AskUserFormWidget.h"
+#include "GrillMeForm.h"
+#include "GrillMeFormWidget.h"
 
 namespace {
 
@@ -51,10 +51,10 @@ const char *kShortForm = R"({"title":"Round 2","questions":[
  {"id":"Q13","title":"Xóa?","type":"confirm","yesLabel":"Xóa","noLabel":"Giữ"}
 ]})";
 
-AskUserForm::Spec parseSpec(const char *json)
+GrillMeForm::Spec parseSpec(const char *json)
 {
     QString error;
-    const auto spec = AskUserForm::parseAskUserInput(QJsonDocument::fromJson(json).object(), &error);
+    const auto spec = GrillMeForm::parseToolInput(QJsonDocument::fromJson(json).object(), &error);
     if (!spec)
         qFatal("bad fixture: %s", qPrintable(error));
     return *spec;
@@ -68,15 +68,15 @@ const QFont &chatFont()
 
 int minimumWidth(const char *json)
 {
-    const AskUserForm::Spec spec = parseSpec(json);
-    AskUserFormWidget form(spec, AskUserForm::defaultAnswers(spec));
+    const GrillMeForm::Spec spec = parseSpec(json);
+    GrillMeFormWidget form(spec, GrillMeForm::defaultAnswers(spec));
     form.setChatFont(chatFont());
     return form.minimumSizeHint().width();
 }
 
 } // namespace
 
-class TestAskUserFormWidget : public QObject
+class TestGrillMeFormWidget : public QObject
 {
     Q_OBJECT
 
@@ -87,14 +87,14 @@ private slots:
 
 // A minimum width above the transcript's makes QBoxLayout lay the form out for
 // the minimum width: rows come out squashed, the slack collects underneath.
-void TestAskUserFormWidget::agentTextDoesNotWidenTheForm()
+void TestGrillMeFormWidget::agentTextDoesNotWidenTheForm()
 {
     QCOMPARE(minimumWidth(kLongForm), minimumWidth(kShortForm));
 }
 
 // The transcript as AcpSessionView builds it: a resizable scroll area whose
 // host has a fixed width, a vertical layout and a trailing stretch.
-void TestAskUserFormWidget::fillsNarrowTranscriptWithoutClipping()
+void TestGrillMeFormWidget::fillsNarrowTranscriptWithoutClipping()
 {
     QScrollArea scroll;
     scroll.setWidgetResizable(true);
@@ -108,8 +108,8 @@ void TestAskUserFormWidget::fillsNarrowTranscriptWithoutClipping()
     scroll.show();
     QVERIFY(QTest::qWaitForWindowExposed(&scroll));
 
-    const AskUserForm::Spec spec = parseSpec(kLongForm);
-    auto *form = new AskUserFormWidget(spec, AskUserForm::defaultAnswers(spec), host);
+    const GrillMeForm::Spec spec = parseSpec(kLongForm);
+    auto *form = new GrillMeFormWidget(spec, GrillMeForm::defaultAnswers(spec), host);
     form->setChatFont(chatFont());
     layout->insertWidget(0, form);
 
@@ -137,5 +137,5 @@ void TestAskUserFormWidget::fillsNarrowTranscriptWithoutClipping()
     }
 }
 
-QTEST_MAIN(TestAskUserFormWidget)
-#include "test_ask_user_form_widget.moc"
+QTEST_MAIN(TestGrillMeFormWidget)
+#include "test_grill_me_form_widget.moc"

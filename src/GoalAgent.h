@@ -162,7 +162,7 @@ public:
     // `/compact` is never decorated — it is a system command.
     void setTargetPromptDecorator(std::function<QString(const QString &)> fn);
     // True while the target has a host-queued follow-up that will start another
-    // turn (the "ask in plain text" notice after a cancelled ask_user form).
+    // turn (the "ask in plain text" notice after a cancelled question form).
     // Judging waits for that turn instead of the one that just ended.
     void setTargetHoldProbe(std::function<bool()> probe);
 

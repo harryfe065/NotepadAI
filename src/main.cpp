@@ -31,7 +31,7 @@
 
 #include <sentry.h>
 
-#include "AskUserMcp.h"
+#include "GrillMeMcp.h"
 #include "CrashHandler.h"
 #include "DataPaths.h"
 #include "GoalVerdictMcp.h"
@@ -53,8 +53,8 @@ try
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], GoalVerdictMcp::kCliFlag) == 0)
             return GoalVerdictMcp::run();
-        if (std::strcmp(argv[i], AskUserMcp::kCliFlag) == 0)
-            return AskUserMcp::run();
+        if (std::strcmp(argv[i], GrillMeMcp::kCliFlag) == 0)
+            return GrillMeMcp::run();
         const char *prefix = "--__trigger-crash=";
         if (std::strncmp(argv[i], prefix, std::strlen(prefix)) == 0) {
             CrashHandler::triggerCrashForTest(argv[i] + std::strlen(prefix));
