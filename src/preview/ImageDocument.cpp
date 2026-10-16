@@ -41,6 +41,15 @@ void forRows(int rows, qint64 pixels, Fn fn)
     QtConcurrent::blockingMap(ranges, [&fn](const std::pair<int, int> &r) { fn(r.first, r.second); });
 }
 
+} // namespace
+
+void parallelRows(int rows, qint64 pixels, const std::function<void(int, int)> &fn)
+{
+    forRows(rows, pixels, fn);
+}
+
+namespace {
+
 // Linear [0,1] -> sRGB byte, 4096 steps (error < 0.5 LSB after rounding).
 const std::array<quint8, 4096> &srgbLut()
 {

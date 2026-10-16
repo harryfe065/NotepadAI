@@ -9,6 +9,7 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -35,7 +36,7 @@ struct ImageDocument
     bool isAnimation = false;     // layers are frames
     QVector<int> frameDelaysMs;   // per layer, when isAnimation
     QStringList faceNames;        // per face, when faceCount > 1
-    QStringList layerNames;       // optional (Aseprite tags/frames, array slices)
+    QStringList layerNames;       // optional: array/volume slice names; for animations the frame's tags
 
     // Vector source (SVG): surfaces[0] is a raster at rasterScale × the
     // intrinsic size; the canvas re-rasterises the visible part when zoomed
@@ -77,6 +78,11 @@ struct ViewParams {
     Channel channel = Channel::Rgba;
     float exposure = 0.0f; // EV stops, HDR only
 };
+
+// Runs fn(y0, y1) over [0, rows) split across the global pool when `pixels`
+// is large (>= 1M), else inline. The caller takes part, so it is safe to call
+// from a pool thread. For decoders that fill rows independently.
+void parallelRows(int rows, qint64 pixels, const std::function<void(int, int)> &fn);
 
 // Box-filter halving of an ARGB32 (straight) or RGBA16FPx4 image.
 QImage halve(const QImage &src);

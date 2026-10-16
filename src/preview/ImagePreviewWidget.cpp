@@ -24,6 +24,15 @@ QString zoomText(double zoom)
     return QStringLiteral("%1%").arg(pct, 0, 'f', 1);
 }
 
+// "3 / 12", plus the frame's tags (Aseprite) when it has any.
+QString frameText(const ImageDocument &doc, int frame)
+{
+    QString text = QStringLiteral("%1 / %2").arg(frame + 1).arg(doc.layerCount);
+    if (frame < doc.layerNames.size() && !doc.layerNames[frame].isEmpty())
+        text += QStringLiteral("  ") + doc.layerNames[frame];
+    return text;
+}
+
 } // namespace
 
 ImagePreviewWidget::ImagePreviewWidget(const QString &typeId, const QString &displayName, QWidget *parent)
@@ -127,7 +136,7 @@ ImagePreviewWidget::ImagePreviewWidget(const QString &typeId, const QString &dis
         const ImageDocumentPtr doc = m_canvas->document();
         if (!doc) return;
         if (doc->isAnimation)
-            m_frameLabel->setText(tr("%1 / %2").arg(layer + 1).arg(doc->layerCount));
+            m_frameLabel->setText(frameText(*doc, layer));
         else if (m_layer->count() > layer && m_layer->currentIndex() != layer)
             m_layer->setCurrentIndex(layer);
     });
@@ -264,7 +273,7 @@ void ImagePreviewWidget::syncSurfaceControls()
     m_frameLabel->setVisible(anim);
     if (anim) {
         m_play->setText(m_canvas->isPlaying() ? tr("Pause") : tr("Play"));
-        m_frameLabel->setText(tr("%1 / %2").arg(m_canvas->layer() + 1).arg(doc->layerCount));
+        m_frameLabel->setText(frameText(*doc, m_canvas->layer()));
     }
 }
 

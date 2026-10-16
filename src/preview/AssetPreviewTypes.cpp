@@ -1,6 +1,9 @@
 #include "AssetPreviewTypes.h"
 
+#include "AsepriteDecoder.h"
+#include "DdsDecoder.h"
 #include "ImagePreviewWidget.h"
+#include "RasterDecoders.h"
 #include "LuaState.h"
 #include "NotepadNextApplication.h"
 #include "PreviewTabManager.h"
@@ -81,6 +84,13 @@ bool isSvg(QByteArrayView h)
     return false;
 }
 
+// The two-byte file magic alone is weak; also require the first frame's.
+bool isAseprite(QByteArrayView h)
+{
+    return AsepriteDecoder::looksLikeAseprite(h) && h.size() >= 134
+           && static_cast<unsigned char>(h[132]) == 0xFA && static_cast<unsigned char>(h[133]) == 0xF1;
+}
+
 PreviewTabManager::TypeRegistration imageRegistration(const QString &typeId, const QString &displayName,
                                                       QStringList extensions)
 {
@@ -107,8 +117,13 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
          QStringLiteral("jfif"), QStringLiteral("gif"), QStringLiteral("bmp"), QStringLiteral("dib"),
          QStringLiteral("webp"), QStringLiteral("ico"), QStringLiteral("cur"), QStringLiteral("tif"),
          QStringLiteral("tiff"), QStringLiteral("tga"), QStringLiteral("pbm"), QStringLiteral("pgm"),
-         QStringLiteral("ppm"), QStringLiteral("xbm"), QStringLiteral("xpm")});
-    image.sniffers = {isPng, isJpeg, isGif, isWebp, isBmp};
+         QStringLiteral("ppm"), QStringLiteral("xbm"), QStringLiteral("xpm"),
+         // Game textures and authoring formats (add-game-texture-preview).
+         QStringLiteral("dds"), QStringLiteral("hdr"), QStringLiteral("rgbe"), QStringLiteral("exr"),
+         QStringLiteral("psd"), QStringLiteral("ase"), QStringLiteral("aseprite"), QStringLiteral("icb"),
+         QStringLiteral("vda"), QStringLiteral("vst")});
+    image.sniffers = {isPng, isJpeg, isGif, isWebp, isBmp, DdsDecoder::looksLikeDds, RasterDecoders::looksLikeExr,
+                      RasterDecoders::looksLikePsd, RasterDecoders::looksLikeRadiance, isAseprite};
     manager->registerType(QStringLiteral("image"), image);
 
     auto svg = imageRegistration(QStringLiteral("svg"), QStringLiteral("SVG"),

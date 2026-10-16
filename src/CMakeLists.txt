@@ -698,7 +698,7 @@ target_sources(NotepadAI PRIVATE
 target_link_libraries(NotepadAI PRIVATE miniz)
 
 # Asset preview tabs (add-asset-preview-framework): resolver, viewer base,
-# image/SVG viewer.
+# image/SVG viewer and texture decoders (DDS, TGA, PSD, HDR, EXR, Aseprite).
 target_sources(NotepadAI PRIVATE
     preview/FileKindResolver.cpp preview/FileKindResolver.h
     preview/AssetPreviewWidget.cpp preview/AssetPreviewWidget.h
@@ -706,10 +706,13 @@ target_sources(NotepadAI PRIVATE
     preview/ImageDocument.cpp preview/ImageDocument.h
     preview/ImageViewMath.h
     preview/ImageDecoder.cpp preview/ImageDecoder.h
+    preview/DdsDecoder.cpp preview/DdsDecoder.h
+    preview/RasterDecoders.cpp preview/RasterDecoders.h
+    preview/AsepriteDecoder.cpp preview/AsepriteDecoder.h
     preview/ImageCanvas.cpp preview/ImageCanvas.h
     preview/ImagePreviewWidget.cpp preview/ImagePreviewWidget.h
 )
-target_link_libraries(NotepadAI PRIVATE Qt6::Svg)
+target_link_libraries(NotepadAI PRIVATE Qt6::Svg stb_image bcdec tinyexr)
 
 # Platform-conditional CredentialStore backend + native API link.
 if(WIN32)

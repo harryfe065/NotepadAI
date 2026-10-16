@@ -52,6 +52,10 @@ add_subdirectory(xdiff)
 add_subdirectory(md4c)
 add_subdirectory(supertinycron)
 add_subdirectory(miniz)
+# Asset preview codecs (add-game-texture-preview).
+add_subdirectory(stb)
+add_subdirectory(bcdec)
+add_subdirectory(tinyexr)
 
 # SSH remote transport (vendored). mbedTLS MUST be added before libssh2 — the
 # libssh2 wrapper consumes NN_MBEDTLS_INCLUDE_DIR + the mbedcrypto target that

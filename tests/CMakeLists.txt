@@ -2743,3 +2743,17 @@ target_sources(test_image_view_math PRIVATE
     ${CMAKE_SOURCE_DIR}/src/preview/ImageViewMath.h
 )
 add_test(NAME ImageViewMath COMMAND test_image_view_math)
+
+# --- Texture decoders: DDS (legacy/DX10, BC, float), TGA via stb, Aseprite ---
+qt_add_executable(test_texture_decoders test_texture_decoders.cpp)
+target_include_directories(test_texture_decoders PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/preview)
+target_link_libraries(test_texture_decoders PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Svg Qt6::Concurrent Qt6::Test stb_image bcdec tinyexr miniz)
+target_sources(test_texture_decoders PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/DdsDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/RasterDecoders.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/AsepriteDecoder.cpp
+)
+add_test(NAME TextureDecoders COMMAND test_texture_decoders)

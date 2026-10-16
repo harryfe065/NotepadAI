@@ -1,6 +1,11 @@
 #include "ImageDecoder.h"
 
+#include "AsepriteDecoder.h"
+#include "DdsDecoder.h"
+#include "RasterDecoders.h"
+
 #include <QFile>
+#include <QHash>
 #include <QFileInfo>
 #include <QImageReader>
 #include <QLocale>
@@ -49,26 +54,73 @@ QString describeFormat(QImage::Format f)
     }
 }
 
-Result fail(const QString &error)
-{
-    Result r;
-    r.error = error;
-    return r;
-}
+Result fail(const QString &error) { return failed(error); }
 
-Result tooLarge(qint64 bytes)
-{
-    Result r;
-    r.tooLarge = true;
-    r.error = QObject::tr("This image needs %1 of memory to preview; the limit is %2.")
-                  .arg(formatBytes(bytes), formatBytes(kMaxDecodedBytes));
-    return r;
-}
+enum class Container : quint8 { Qt, Svg, Dds, Tga, Psd, Radiance, Exr, Aseprite };
 
 bool isSvgSuffix(const QString &suffix)
 {
     return suffix == QLatin1String("svg") || suffix == QLatin1String("svgz");
 }
+
+// Suffix first; files without a known one (sniffed by the resolver) by magic.
+Container containerFor(const QString &suffix, QByteArrayView head)
+{
+    static const QHash<QString, Container> bySuffix = {
+        {QStringLiteral("svg"), Container::Svg},       {QStringLiteral("svgz"), Container::Svg},
+        {QStringLiteral("dds"), Container::Dds},       {QStringLiteral("tga"), Container::Tga},
+        {QStringLiteral("icb"), Container::Tga},       {QStringLiteral("vda"), Container::Tga},
+        {QStringLiteral("vst"), Container::Tga},       {QStringLiteral("psd"), Container::Psd},
+        {QStringLiteral("hdr"), Container::Radiance},  {QStringLiteral("rgbe"), Container::Radiance},
+        {QStringLiteral("exr"), Container::Exr},       {QStringLiteral("ase"), Container::Aseprite},
+        {QStringLiteral("aseprite"), Container::Aseprite},
+    };
+    const auto it = bySuffix.constFind(suffix);
+    if (it != bySuffix.constEnd())
+        return it.value();
+    if (DdsDecoder::looksLikeDds(head)) return Container::Dds;
+    if (RasterDecoders::looksLikeExr(head)) return Container::Exr;
+    if (RasterDecoders::looksLikePsd(head)) return Container::Psd;
+    if (RasterDecoders::looksLikeRadiance(head)) return Container::Radiance;
+    if (AsepriteDecoder::looksLikeAseprite(head)) return Container::Aseprite;
+    return Container::Qt;
+}
+
+RasterDecoders::Kind rasterKind(Container c)
+{
+    switch (c) {
+    case Container::Tga: return RasterDecoders::Kind::Tga;
+    case Container::Psd: return RasterDecoders::Kind::Psd;
+    case Container::Radiance: return RasterDecoders::Kind::Radiance;
+    default: return RasterDecoders::Kind::Exr;
+    }
+}
+
+// The whole file as one read-only view: mapped (zero-copy) when possible,
+// read into memory otherwise. Valid while the object lives.
+struct FileBytes {
+    QFile file;
+    QByteArray copy;
+    QByteArrayView view;
+    QString error;
+
+    explicit FileBytes(const QString &path) : file(path)
+    {
+        if (!file.open(QIODevice::ReadOnly)) {
+            error = file.errorString();
+            return;
+        }
+        const qint64 size = file.size();
+        if (size <= 0)
+            return;
+        if (uchar *p = file.map(0, size)) {
+            view = QByteArrayView(reinterpret_cast<const char *>(p), size);
+            return;
+        }
+        copy = file.readAll();
+        view = QByteArrayView(copy);
+    }
+};
 
 Result decodeSvg(const QString &path, const std::atomic_bool &cancel)
 {
@@ -202,11 +254,46 @@ QString formatBytes(qint64 bytes)
     return QLocale::system().formattedDataSize(bytes, 1, QLocale::DataSizeTraditionalFormat);
 }
 
+Result failed(const QString &error)
+{
+    Result r;
+    r.error = error;
+    return r;
+}
+
+Result tooLarge(qint64 bytes)
+{
+    Result r;
+    r.tooLarge = true;
+    r.error = QObject::tr("This image needs %1 of memory to preview; the limit is %2.")
+                  .arg(formatBytes(bytes), formatBytes(kMaxDecodedBytes));
+    return r;
+}
+
+Result cancelled()
+{
+    Result r;
+    r.cancelled = true;
+    return r;
+}
+
 qint64 estimateDecodedBytes(const QString &path)
 {
     const QString suffix = QFileInfo(path).suffix().toLower();
     if (isSvgSuffix(suffix))
         return 16 << 20;
+    {
+        FileBytes bytes(path);
+        const Container c = containerFor(suffix, bytes.view.first(std::min<qsizetype>(bytes.view.size(), 256)));
+        switch (c) {
+        case Container::Svg: return 16 << 20;
+        case Container::Dds: return DdsDecoder::estimate(bytes.view);
+        case Container::Aseprite: return AsepriteDecoder::estimate(bytes.view);
+        case Container::Tga: case Container::Psd: case Container::Radiance: case Container::Exr:
+            return RasterDecoders::estimate(rasterKind(c), bytes.view);
+        case Container::Qt: break;
+        }
+    }
     QImageReader reader(path);
     const QSize size = reader.size();
     if (!size.isValid())
@@ -220,7 +307,29 @@ Result decode(const QString &path, const std::atomic_bool &cancel, bool vector)
     const QString suffix = QFileInfo(path).suffix().toLower();
     if (vector || isSvgSuffix(suffix))
         return decodeSvg(path, cancel);
-    return decodeQt(path, cancel);
+
+    Result r;
+    Container c = Container::Qt;
+    {
+        FileBytes bytes(path);
+        if (!bytes.error.isEmpty())
+            return failed(bytes.error);
+        c = containerFor(suffix, bytes.view.first(std::min<qsizetype>(bytes.view.size(), 256)));
+        switch (c) {
+        case Container::Svg: break;
+        case Container::Dds: r = DdsDecoder::decode(bytes.view, cancel); break;
+        case Container::Aseprite: r = AsepriteDecoder::decode(bytes.view, cancel); break;
+        case Container::Tga: case Container::Psd: case Container::Radiance: case Container::Exr:
+            r = RasterDecoders::decode(rasterKind(c), bytes.view, cancel);
+            break;
+        case Container::Qt: break;
+        }
+    }
+    if (c == Container::Svg)
+        return decodeSvg(path, cancel);
+    if (c == Container::Qt)
+        return decodeQt(path, cancel);
+    return r;
 }
 
 } // namespace ImageDecoder

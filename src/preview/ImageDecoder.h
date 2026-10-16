@@ -33,6 +33,11 @@ Result decode(const QString &path, const std::atomic_bool &cancel, bool vector =
 // Human label for a decoded size ("1.2 GB").
 QString formatBytes(qint64 bytes);
 
+// Result builders shared by the format decoders.
+Result failed(const QString &error);
+Result tooLarge(qint64 bytes);
+Result cancelled();
+
 } // namespace ImageDecoder
 
 #endif // IMAGEDECODER_H
