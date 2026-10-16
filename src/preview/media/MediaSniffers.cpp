@@ -29,6 +29,20 @@ bool isOggVideo(QByteArrayView h)
     return at(h, data, "\x80theora", 7) || at(h, data, "OVP80", 5) || at(h, data, "\x80" "daala", 6);
 }
 
+// Brands of MP4 / QuickTime / 3GP video. HEIF / AVIF images also start with
+// "ftyp" (brands heic, mif1, avif, ...) and must not be claimed as video.
+bool isVideoBrand(QByteArrayView h)
+{
+    static const char *const kBrands[] = {"isom", "iso2", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1", "qt  ",
+                                          "M4V ", "M4VH", "M4VP", "3gp4", "3gp5", "3gp6", "3g2a", "dash", "f4v ",
+                                          "mmp4", "MSNV", "XAVC"};
+    for (const char *brand : kBrands) {
+        if (at(h, 8, brand, 4))
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool isAudio(QByteArrayView h)
@@ -52,7 +66,7 @@ bool isAudio(QByteArrayView h)
 bool isVideo(QByteArrayView h)
 {
     if (isFtyp(h))
-        return !isAudioBrand(h);
+        return isVideoBrand(h);
     if (at(h, 0, "RIFF", 4))
         return at(h, 8, "AVI ", 4);
     // EBML (Matroska / WebM), ASF (WMV), FLV, MPEG program stream.

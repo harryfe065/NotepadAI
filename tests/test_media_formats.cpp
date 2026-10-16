@@ -479,6 +479,9 @@ private slots:
         QVERIFY(!MediaSniffers::isVideo(QByteArray("\0\0\0\x20" "ftypM4A \0\0\0\0", 16)));
         QVERIFY(MediaSniffers::isVideo(QByteArray("\0\0\0\x20" "ftypisom\0\0\0\0", 16)));
         QVERIFY(MediaSniffers::isVideo(QByteArray("\x1A\x45\xDF\xA3\x01\0\0\0", 8)));
+        // HEIF / AVIF images share the ftyp box but are not video.
+        QVERIFY(!MediaSniffers::isVideo(QByteArray("\0\0\0\x1C" "ftypavif\0\0\0\0", 16)));
+        QVERIFY(!MediaSniffers::isVideo(QByteArray("\0\0\0\x1C" "ftypheic\0\0\0\0", 16)));
         QVERIFY(MediaSniffers::isVideo(QByteArray("RIFF\0\0\0\0AVI LIST", 16)));
         QVERIFY(MediaSniffers::isPdf(QByteArray("%PDF-1.7\n")));
         QVERIFY(!MediaSniffers::isPdf(QByteArray("% PDF notes")));

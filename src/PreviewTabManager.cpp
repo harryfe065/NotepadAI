@@ -551,6 +551,7 @@ void PreviewTabManager::watchPath(const QString &path)
                 m_changeTimer.start();
             }
         });
+        connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &PreviewTabManager::onDirectoryChanged);
     }
     m_watcher->addPath(path);
 }
@@ -564,6 +565,45 @@ void PreviewTabManager::unwatchPath(const QString &path)
     m_changedPending.remove(path);
     if (m_watcher)
         m_watcher->removePath(path);
+    const QString dir = QFileInfo(path).absolutePath();
+    auto missing = m_missingByDir.find(dir);
+    if (missing != m_missingByDir.end() && missing->remove(path) && missing->isEmpty()) {
+        m_missingByDir.erase(missing);
+        if (m_watcher)
+            m_watcher->removePath(dir);
+    }
+}
+
+void PreviewTabManager::watchForReturn(const QString &path)
+{
+    if (!m_watcher)
+        return;
+    const QString dir = QFileInfo(path).absolutePath();
+    QSet<QString> &missing = m_missingByDir[dir];
+    if (missing.isEmpty() && !m_watcher->directories().contains(dir))
+        m_watcher->addPath(dir);
+    missing.insert(path);
+}
+
+void PreviewTabManager::onDirectoryChanged(const QString &dir)
+{
+    auto it = m_missingByDir.find(dir);
+    if (it == m_missingByDir.end())
+        return;
+    for (auto p = it->begin(); p != it->end();) {
+        if (QFileInfo::exists(*p)) {
+            // Back: the next flush re-arms the file watch and reloads.
+            m_changedPending.insert(*p, 0);
+            m_changeTimer.start();
+            p = it->erase(p);
+        } else {
+            ++p;
+        }
+    }
+    if (it->isEmpty()) {
+        m_missingByDir.erase(it);
+        m_watcher->removePath(dir);
+    }
 }
 
 void PreviewTabManager::flushChangedFiles()
@@ -579,9 +619,12 @@ void PreviewTabManager::flushChangedFiles()
             ++it;
             continue;
         }
-        // An atomic replace drops the watch on the old inode; re-arm it.
+        // An atomic replace drops the watch on the old inode; re-arm it. A file
+        // still missing is followed through its folder until it comes back.
         if (exists && m_watcher && !m_watcher->files().contains(path))
             m_watcher->addPath(path);
+        if (!exists)
+            watchForReturn(path);
         ready.append(path);
         it = m_changedPending.erase(it);
     }
@@ -608,7 +651,12 @@ QVector<PreviewTabManager::FilePreviewEntry> PreviewTabManager::pinnedFilePrevie
     QVector<FilePreviewEntry> out;
     for (const auto &dock : m_filePreviewOrder) {
         if (!dock || dock == m_transientPreviewTab) continue;
-        out.append({dock->property("nn_previewPath").toString(), dock->property("nn_previewType").toString()});
+        // Only asset tabs: they load on first show. CSV / Markdown / HTML
+        // previews read their file as soon as they are created.
+        const QString typeId = dock->property("nn_previewType").toString();
+        const auto reg = m_registry.constFind(typeId);
+        if (reg == m_registry.constEnd() || !reg->opensByDefault) continue;
+        out.append({dock->property("nn_previewPath").toString(), typeId});
     }
     return out;
 }

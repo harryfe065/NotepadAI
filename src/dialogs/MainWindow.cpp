@@ -5655,7 +5655,11 @@ void MainWindow::dropEvent(QDropEvent *event)
                     if (info.isDir()) {
                         QDirIterator it(url.toLocalFile(), QDir::Files, QDirIterator::FollowSymlinks| QDirIterator::Subdirectories);
                         while (it.hasNext()) {
-                            fileNames << it.next();
+                            // A dropped folder opens its documents and assets, not a hex tab
+                            // for every unrecognised binary in it (build outputs, caches).
+                            const QString file = it.next();
+                            if (assetPreviewTypeFor(file) != QLatin1String("hex"))
+                                fileNames << file;
                         }
                     }
                     else {

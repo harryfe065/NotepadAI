@@ -32,8 +32,13 @@ public:
     // Flushes the partial bucket at the end of the stream.
     void finish();
 
-    qsizetype size() const { return qsizetype(m_peaks.size()); }
+    // Buckets made so far, including those handed off by takePeaks().
+    qsizetype size() const { return m_taken + qsizetype(m_peaks.size()); }
+    // Buckets still held (all of them unless takePeaks() was called).
     const std::vector<Peak> &peaks() const { return m_peaks; }
+    // Hands the held buckets to the caller: a streaming producer keeps no
+    // second copy of what it already published.
+    std::vector<Peak> takePeaks();
     bool truncated() const { return m_truncated; }
     qint64 frames() const { return m_frames; }
     int sampleRate() const { return m_rate; }
@@ -42,7 +47,7 @@ public:
 
     static int bytesPerSample(Format format);
 
-    // Envelope over buckets [first, last) as -1..1; false when the range is empty.
+    // Envelope over held buckets [first, last) as -1..1; false when the range is empty.
     bool range(qsizetype first, qsizetype last, float *lo, float *hi) const;
     // The same fold over any bucket array (the waveform view keeps its own copy).
     static bool fold(const Peak *peaks, qsizetype count, qsizetype first, qsizetype last, qint8 *lo, qint8 *hi);
@@ -54,6 +59,7 @@ private:
     void flushBucket();
 
     std::vector<Peak> m_peaks;
+    qsizetype m_taken = 0;
     int m_rate = 0;
     int m_channels = 1;
     // First frame of bucket k is ceil(k * rate / 100): exact for any rate

@@ -468,10 +468,10 @@ void ImageCanvas::paintEvent(QPaintEvent *)
     const double sx = level->width() / logical.width();
     const double sy = level->height() / logical.height();
 
-    // Texel magnification on screen: below 2x bilinear looks right, above it
-    // nearest keeps pixel art and texel boundaries crisp.
+    // Texel magnification on screen: minified texels are filtered; magnified
+    // ones are nearest, so pixel art and texel boundaries stay crisp (spec).
     const double magnify = deviceScale / sx;
-    p.setRenderHint(QPainter::SmoothPixmapTransform, magnify < 2.0);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, magnify <= 1.0 + 1e-9);
 
     const QRectF imageView = m_math.imageRectInView();
     if (m_checker && m_doc->hasAlpha && m_params.channel == ImageOps::Channel::Rgba) {

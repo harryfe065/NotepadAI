@@ -7,6 +7,7 @@
 void WaveformPeaks::reset(int sampleRate, int channels)
 {
     m_peaks.clear();
+    m_taken = 0;
     m_rate = std::max(1, sampleRate);
     m_channels = std::max(1, channels);
     m_bucket = 0;
@@ -19,7 +20,7 @@ void WaveformPeaks::reset(int sampleRate, int channels)
 
 void WaveformPeaks::flushBucket()
 {
-    if (m_peaks.size() >= size_t(kMaxBuckets)) {
+    if (size() >= kMaxBuckets) {
         m_truncated = true;
     } else {
         Peak p;
@@ -132,6 +133,14 @@ void WaveformPeaks::finish()
         flushBucket();
 }
 
+std::vector<WaveformPeaks::Peak> WaveformPeaks::takePeaks()
+{
+    std::vector<Peak> out;
+    out.swap(m_peaks);
+    m_taken += qsizetype(out.size());
+    return out;
+}
+
 bool WaveformPeaks::fold(const Peak *peaks, qsizetype count, qsizetype first, qsizetype last, qint8 *lo,
                          qint8 *hi)
 {
@@ -152,7 +161,7 @@ bool WaveformPeaks::fold(const Peak *peaks, qsizetype count, qsizetype first, qs
 bool WaveformPeaks::range(qsizetype first, qsizetype last, float *lo, float *hi) const
 {
     qint8 mn = 0, mx = 0;
-    if (!fold(m_peaks.data(), size(), first, last, &mn, &mx))
+    if (!fold(m_peaks.data(), qsizetype(m_peaks.size()), first, last, &mn, &mx))
         return false;
     *lo = float(mn) / 127.0f;
     *hi = float(mx) / 127.0f;

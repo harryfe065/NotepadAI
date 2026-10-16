@@ -135,8 +135,12 @@ void HexView::ensureVisible(qint64 offset)
         newTop = row;
     else if (row >= top + rows)
         newTop = row - rows + 1;
-    if (newTop != top)
-        verticalScrollBar()->setValue(int(newTop / rowsPerStep()));
+    if (newTop == top)
+        return;
+    // Past INT_MAX rows a step spans several rows: round up when scrolling
+    // down, so the row lands inside the view rather than just below it.
+    const qint64 step = rowsPerStep();
+    verticalScrollBar()->setValue(int(newTop > top ? (newTop + step - 1) / step : newTop / step));
 }
 
 void HexView::setCursorOffset(qint64 offset, bool extend)

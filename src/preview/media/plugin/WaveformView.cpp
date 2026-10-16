@@ -67,6 +67,10 @@ void WaveformView::setDuration(double seconds)
     if (std::abs(seconds - m_duration) < 1e-6)
         return;
     m_duration = std::max(0.0, seconds);
+    // One allocation for the whole envelope (2 bytes per 10 ms).
+    const auto expected = qsizetype(std::min(m_duration * kBuckets + 1.0, double(WaveformPeaks::kMaxBuckets)));
+    if (expected > qsizetype(m_peaks.capacity()))
+        m_peaks.reserve(size_t(expected));
     update();
     emit viewChanged();
 }

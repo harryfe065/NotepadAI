@@ -54,23 +54,22 @@ class Publisher
 public:
     Publisher(std::shared_ptr<Channel> channel) : m_channel(std::move(channel)) { m_timer.start(); }
 
-    void publish(const WaveformPeaks &peaks, bool force)
+    // Moves the finished buckets out of `peaks` to the GUI thread.
+    void publish(WaveformPeaks &peaks, bool force)
     {
         if (!force && m_timer.elapsed() < kPublishMs)
             return;
         m_timer.restart();
-        if (peaks.size() <= m_sent)
+        if (peaks.peaks().empty())
             return;
-        std::vector<WaveformPeaks::Peak> slice(peaks.peaks().begin() + m_sent, peaks.peaks().end());
-        m_sent = peaks.size();
         const std::shared_ptr<Channel> channel = m_channel;
-        m_channel->post([channel, slice = std::move(slice)]() {
+        m_channel->post([channel, slice = peaks.takePeaks()]() {
             if (WaveformBuilder *b = channel->receiver)
                 emit b->peaksAppended(slice);
         });
     }
 
-    void finish(const WaveformPeaks &peaks)
+    void finish(WaveformPeaks &peaks)
     {
         publish(peaks, true);
         const std::shared_ptr<Channel> channel = m_channel;
@@ -93,7 +92,6 @@ public:
 private:
     std::shared_ptr<Channel> m_channel;
     QElapsedTimer m_timer;
-    qsizetype m_sent = 0;
 };
 
 // Raw little-endian PCM straight from the file: the cost is the read.

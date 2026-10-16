@@ -150,6 +150,9 @@ private:
     void watchPath(const QString &path);
     void unwatchPath(const QString &path);
     void flushChangedFiles();
+    // A watched file that stayed missing: watch its folder until it is back.
+    void watchForReturn(const QString &path);
+    void onDirectoryChanged(const QString &dir);
 
     NotepadNextApplication *m_app;
     DockedEditor *m_dockedEditor;
@@ -168,6 +171,7 @@ private:
     QFileSystemWatcher *m_watcher = nullptr;
     QHash<QString, int> m_watchCount;
     QHash<QString, int> m_changedPending; // path -> ticks waited for it to reappear
+    QHash<QString, QSet<QString>> m_missingByDir; // folder -> watched files gone from it
     QTimer m_changeTimer;
 };
 
