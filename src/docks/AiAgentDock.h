@@ -83,7 +83,7 @@ public:
     // A turn or goal is running. Scheduled tasks and the idle reaper go by this.
     bool isSessionBusy(const QString &sessionId) const;
     // Busy, or background work the agent started (tasks, Monitor watches) is
-    // still alive: what the session number's spinner shows.
+    // still alive: what the session number's working fill shows.
     bool isSessionWorking(const QString &sessionId) const;
     // A question form or permission request waits on the user, whether or not
     // the user can see it right now (the number's dot hides while they can).
@@ -241,6 +241,10 @@ private:
     QString m_newestSessionId; // last addSlot; survives reordering
     ProjectMark m_iconMark = ProjectMark::None; // what the window icon shows now
     QRgb m_iconHighlight = 0;                   // ... and in which Highlight colour
+    // The dock is on screen, from QDockWidget::visibilityChanged. Never
+    // isVisible(): a tabbed dock whose tab is not current stays visible, Qt
+    // only parks it off-screen.
+    bool m_onScreen = false;
 
     QWidget *m_header = nullptr;
     QHBoxLayout *m_headerLayout = nullptr;

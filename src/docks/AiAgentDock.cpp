@@ -100,7 +100,8 @@ AiAgentDock::AiAgentDock(QString sessionId,
     connect(this, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea) {
         scheduleStripReinstall();
     });
-    connect(this, &QDockWidget::visibilityChanged, this, [this](bool) {
+    connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        m_onScreen = visible;
         // Hidden docks must reinstall too: tabify rebuilds the area bar and
         // the inactive project's [1][2] live on that bar, not on this widget.
         scheduleStripReinstall();
@@ -200,7 +201,7 @@ void AiAgentDock::wireSlotSignals(Slot &slot)
         connect(slot.connection, &AcpConnection::backgroundIdle,
                 this, &AiAgentDock::onNativeGoalBackgroundIdle,
                 Qt::UniqueConnection);
-        // Background tasks and Monitor watches keep the session number spinning.
+        // Background tasks and Monitor watches keep the session number's working fill.
         connect(slot.connection, &AcpConnection::backgroundIdle,
                 this, &AiAgentDock::onWorkChanged, Qt::UniqueConnection);
         connect(slot.connection, &AcpConnection::scheduledJobsChanged,
@@ -502,7 +503,7 @@ void AiAgentDock::setActivityIndicator(bool active)
         if (const int newest = indexOfSession(newestSessionId()); newest >= 0) {
             if (m_current != newest)
                 m_slots[newest].hasActivity = true;
-            else if (!isVisible())
+            else if (!m_onScreen)
                 m_slots[m_current].hasActivity = true;
         }
     } else if (Slot *slot = currentSlot()) {
@@ -513,7 +514,7 @@ void AiAgentDock::setActivityIndicator(bool active)
 
 AiAgentDock::ProjectMark AiAgentDock::projectMark() const
 {
-    const bool raised = isVisible();
+    const bool raised = m_onScreen;
     bool activity = false;
     bool working = false;
     bool waiting = false;
@@ -521,7 +522,7 @@ AiAgentDock::ProjectMark AiAgentDock::projectMark() const
         const Slot &slot = m_slots.at(i);
         if (slot.hasActivity && (!raised || i != m_current))
             activity = true;
-        // A raised dock already shows each number's own spinner and dot.
+        // A raised dock already shows each number's own fill and dot.
         if (!raised && slotWorking(slot))
             working = true;
         if (!raised && slotWaiting(slot))
@@ -1124,7 +1125,7 @@ void AiAgentDock::pushStripSnapshots()
         return;
     QVector<AiDockSessionStrip::SlotSnapshot> snaps;
     snaps.reserve(m_slots.size());
-    const bool raised = isVisible();
+    const bool raised = m_onScreen;
     for (int i = 0; i < m_slots.size(); ++i) {
         const Slot &slot = m_slots.at(i);
         AiDockSessionStrip::SlotSnapshot snap;

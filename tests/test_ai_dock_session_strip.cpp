@@ -27,14 +27,13 @@ private slots:
     void captions_areOneBasedDigits();
     void captions_singletonShowsOne();
     void current_isBold_othersRegularPlaceholder();
-    void busySlot_spinsWhileShown_idleStops();
-    void busySlot_hiddenStrip_doesNotSpin();
-    void busyCurrentSlot_alsoSpins();
+    void busySlot_hasFill_idleDoesNot();
+    void busyCurrentSlot_alsoFilled();
     void click_emitsActivated();
     void middleClick_emitsCloseRequested_notActivated();
     void drag_overAnotherNumber_emitsMoveRequested_notActivated();
     void waitingSlot_showsDot_othersDoNot();
-    void waitingSlot_dotCoexistsWithSpinner();
+    void waitingSlot_dotCoexistsWithFill();
     void waitingSlot_tooltipSaysWaiting_keepsPreview();
     void attentionColor_isAVisibleRed();
     void tooltip_numberShowsLastUserPreview();
@@ -100,43 +99,44 @@ void TestAiDockSessionStrip::current_isBold_othersRegularPlaceholder()
     QCOMPARE(buttons.at(2)->palette().color(QPalette::ButtonText), muted);
 }
 
-void TestAiDockSessionStrip::busySlot_spinsWhileShown_idleStops()
+// Pixel just inside the top edge, clear of the digit and the current border.
+static QColor fillProbe(QToolButton *btn)
 {
-    AiDockSessionStrip strip;
-    strip.setSlots(3, 0, threeSnapshots(false));
-    strip.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&strip));
-    QVERIFY(!strip.isSpinning());
-
-    strip.setSlots(3, 0, threeSnapshots(true));
-    QVERIFY(strip.isSpinning());
-
-    strip.setSlots(3, 0, threeSnapshots(false));
-    QVERIFY(!strip.isSpinning());
+    return btn->grab().toImage().pixelColor(btn->width() / 2, 2);
 }
 
-void TestAiDockSessionStrip::busySlot_hiddenStrip_doesNotSpin()
+void TestAiDockSessionStrip::busySlot_hasFill_idleDoesNot()
 {
     AiDockSessionStrip strip;
     strip.setSlots(3, 0, threeSnapshots(true));
-    QVERIFY(!strip.isSpinning());
-
     strip.show();
     QVERIFY(QTest::qWaitForWindowExposed(&strip));
-    QVERIFY(strip.isSpinning());
+    QVERIFY(strip.busyAt(1));
+    QVERIFY(!strip.busyAt(2));
+    QVERIFY(!strip.busyAt(7)); // out of range is simply "no"
 
-    strip.hide();
-    QVERIFY(!strip.isSpinning());
+    // Slots 1 and 2 differ only in being busy: same digit width, both muted.
+    const auto buttons = stripButtons(&strip);
+    const QColor busy = fillProbe(buttons.at(1));
+    const QColor idle = fillProbe(buttons.at(2));
+    QVERIFY2(busy != idle, qPrintable(busy.name() + QLatin1String(" == ") + idle.name()));
+    // A muted digit would fade into the fill.
+    QCOMPARE(buttons.at(1)->palette().color(QPalette::ButtonText),
+             strip.palette().color(QPalette::ButtonText));
+    QCOMPARE(buttons.at(2)->palette().color(QPalette::ButtonText),
+             strip.palette().color(QPalette::PlaceholderText));
+
+    strip.setSlots(3, 0, threeSnapshots(false));
+    QVERIFY(!strip.busyAt(1));
+    QCOMPARE(fillProbe(buttons.at(1)), idle);
 }
 
-void TestAiDockSessionStrip::busyCurrentSlot_alsoSpins()
+void TestAiDockSessionStrip::busyCurrentSlot_alsoFilled()
 {
     AiDockSessionStrip strip;
-    strip.setSlots(3, 1, threeSnapshots(false));
-    strip.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&strip));
     strip.setSlots(3, 1, threeSnapshots(true)); // the busy slot is the current one
-    QVERIFY(strip.isSpinning());
+    QVERIFY(strip.busyAt(1));
+    QVERIFY(stripButtons(&strip).at(1)->font().bold());
 }
 
 void TestAiDockSessionStrip::click_emitsActivated()
@@ -216,16 +216,14 @@ void TestAiDockSessionStrip::waitingSlot_showsDot_othersDoNot()
     QVERIFY(!strip.waitingAt(7)); // out of range is simply "no"
 }
 
-void TestAiDockSessionStrip::waitingSlot_dotCoexistsWithSpinner()
+void TestAiDockSessionStrip::waitingSlot_dotCoexistsWithFill()
 {
     auto snaps = threeSnapshots(true); // slot 1 is working
     snaps[1].waiting = true;           // and blocked on a permission request
     AiDockSessionStrip strip;
     strip.setSlots(3, 0, snaps);
-    strip.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&strip));
     QVERIFY(strip.waitingAt(1));
-    QVERIFY(strip.isSpinning());
+    QVERIFY(strip.busyAt(1));
 }
 
 void TestAiDockSessionStrip::waitingSlot_tooltipSaysWaiting_keepsPreview()

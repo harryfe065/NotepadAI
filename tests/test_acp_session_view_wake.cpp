@@ -15,6 +15,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QLabel>
+#include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSignalSpy>
@@ -268,6 +269,7 @@ private slots:
     void waiting_formCancelledForUnattendedSession_doesNotCount();
     void dock_waitingSession_showsDotUntilTheUserCanSeeIt();
     void dock_waiting_beatsWorking_onTheProjectTab();
+    void dock_tabbedAway_showsDotOnTheOpenSession();
     void draft_selectorChange_becomesAgentDefault();
     void afterUserSend_selectorChange_staysInThisSession();
     void goalAndHostPrompts_doNotEndTheDraft();
@@ -572,6 +574,43 @@ void TestAcpSessionViewWake::dock_waiting_beatsWorking_onTheProjectTab()
 
     s.conn.respondToPermission(QStringLiteral("41"), QStringLiteral("selected"), QStringLiteral("allow"));
     QCOMPARE(dock.projectMark(), AiAgentDock::ProjectMark::Working);
+}
+
+// Switching to another project's tab does not hide a tabbed QDockWidget: Qt
+// parks it off-screen and it stays isVisible(). The open session's dot and the
+// project tab's mark must still come back.
+void TestAcpSessionViewWake::dock_tabbedAway_showsDotOnTheOpenSession()
+{
+    Session s;
+    QMainWindow win;
+    win.setCentralWidget(new QWidget(&win));
+    auto *dock = new AiAgentDock(QStringLiteral("s1"), QStringLiteral("claude"), QStringLiteral("/tmp"),
+                                 s.model.get(), &s.conn, nullptr, nullptr, nullptr, &win);
+    auto *other = new QDockWidget(QStringLiteral("other"), &win);
+    other->setObjectName(QStringLiteral("other"));
+    other->setWidget(new QLabel(QStringLiteral("other project"), other));
+    win.addDockWidget(Qt::RightDockWidgetArea, dock);
+    win.addDockWidget(Qt::RightDockWidgetArea, other);
+    win.tabifyDockWidget(dock, other);
+    win.resize(900, 600);
+    win.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&win));
+    dock->raise();
+
+    s.prompt(QStringLiteral("list files"));
+    s.channel->pushStdout(permissionRequest(41));
+    QVERIFY(dock->isSessionWaiting(QStringLiteral("s1")));
+    AiDockSessionStrip *strip = nullptr;
+    QTRY_VERIFY((strip = win.findChild<AiDockSessionStrip *>()) != nullptr);
+    QTRY_VERIFY(!strip->waitingAt(0)); // on screen: the user sees the prompt
+
+    other->raise();
+    QTRY_VERIFY(strip->waitingAt(0));
+    QCOMPARE(dock->projectMark(), AiAgentDock::ProjectMark::Waiting);
+
+    dock->raise();
+    QTRY_VERIFY(!strip->waitingAt(0));
+    QCOMPARE(dock->projectMark(), AiAgentDock::ProjectMark::None);
 }
 
 namespace {

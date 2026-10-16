@@ -20,19 +20,14 @@
 #define AI_DOCK_SESSION_STRIP_H
 
 #include <QColor>
-#include <QElapsedTimer>
 #include <QPoint>
-#include <QPointer>
 #include <QString>
 #include <QVector>
 #include <QWidget>
 
 class QHBoxLayout;
 class QHideEvent;
-class QShowEvent;
-class QTimer;
 class QToolButton;
-class QWindow;
 
 // Clickable 1 2 3 session buttons for a project-grouped AI dock.
 // The strip is a pure view: it never queries ACP. The owner pushes a
@@ -69,9 +64,8 @@ public:
     int slotCount() const { return m_count; }
     int currentIndex() const { return m_current; }
     QString slotTooltip(int index) const { return tooltipFor(index); }
-    // True while the shared spin timer runs: some slot is working and the
-    // strip is on screen. Nothing ticks otherwise.
-    bool isSpinning() const;
+    // The session is working: its number sits on a static Highlight fill.
+    bool busyAt(int index) const;
     bool waitingAt(int index) const;
 
     QSize sizeHint() const override;
@@ -87,12 +81,9 @@ protected:
     void changeEvent(QEvent *event) override;
     bool event(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
-    void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
 
 private:
-    void updateSpinTimer();
-    void onSpinTick();
     void rebuildButtons();
     void restyleButtons();
     void syncIntrinsicSize();
@@ -112,10 +103,6 @@ private:
     QVector<SlotSnapshot> m_snapshots;
     int m_count = 0;
     int m_current = 0;
-
-    QTimer *m_spinTimer = nullptr;
-    QElapsedTimer m_spinClock;
-    QPointer<QWindow> m_trackedWindow;
 
     int m_pressIndex = -1;
     QPoint m_pressGlobalPos;

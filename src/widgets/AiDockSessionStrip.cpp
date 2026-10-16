@@ -32,19 +32,16 @@
 #include <QResizeEvent>
 #include <QSizePolicy>
 #include <QTabBar>
-#include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
-#include <QWindow>
 
 namespace {
 
-constexpr int kSpinIntervalMs = 66; // ~15 fps, one timer for the whole strip
-constexpr int kSpinPeriodMs = 1000; // one turn of the arc
-constexpr int kArcSpanDeg = 100;
+constexpr int kBusyFillAlpha = 110; // Highlight at ~43%: the digit stays readable
 
-// A session number that can wear a spinner. Painting only; the size never
-// changes, so a busy session never relayouts the tab bar.
+// A session number that can wear a working fill and a waiting dot. Painting
+// only, and static: the size never changes (a busy session never relayouts the
+// tab bar) and nothing repaints on a timer.
 class SessionNumberButton : public QToolButton
 {
 public:
@@ -64,31 +61,26 @@ public:
         m_waiting = waiting;
         update();
     }
-    void setSpinAngle(int degrees)
-    {
-        m_angle = degrees;
-        if (m_busy)
-            update();
-    }
 
 protected:
     void paintEvent(QPaintEvent *event) override
     {
-        QToolButton::paintEvent(event);
-        if (!m_busy && !m_waiting)
-            return;
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
+        // One painter at a time on a widget: the base paint opens its own.
         if (m_busy) {
-            const int side = qMin(width(), height()) - 2;
-            QRectF ring(0, 0, side, side);
-            ring.moveCenter(QRectF(rect()).center());
-            QPen pen(palette().color(QPalette::Highlight), 1.5);
-            pen.setCapStyle(Qt::RoundCap);
-            p.setPen(pen);
-            p.drawArc(ring, -m_angle * 16, -kArcSpanDeg * 16);
+            // Under the stylesheet's transparent rest background, so the
+            // digit, the current number's border and the hover fill draw on top.
+            QPainter p(this);
+            p.setRenderHint(QPainter::Antialiasing);
+            QColor fill = palette().color(QPalette::Highlight);
+            fill.setAlpha(kBusyFillAlpha);
+            p.setPen(Qt::NoPen);
+            p.setBrush(fill);
+            p.drawRoundedRect(QRectF(rect()), kFillRadius, kFillRadius);
         }
+        QToolButton::paintEvent(event);
         if (m_waiting) {
+            QPainter p(this);
+            p.setRenderHint(QPainter::Antialiasing);
             // A window-coloured rim keeps the dot apart from the digit.
             const QPointF center(width() - kDotRadius - 1, kDotRadius + 1);
             p.setPen(QPen(palette().color(QPalette::Window), 1));
@@ -99,9 +91,9 @@ protected:
 
 private:
     static constexpr qreal kDotRadius = 3.0; // ~6px dot, top-right corner
+    static constexpr qreal kFillRadius = 4.0; // ui-dna status-surface radius
     bool m_busy = false;
     bool m_waiting = false;
-    int m_angle = 0;
 };
 
 } // namespace
@@ -109,9 +101,6 @@ private:
 AiDockSessionStrip::AiDockSessionStrip(QWidget *parent)
     : QWidget(parent)
 {
-    m_spinTimer = new QTimer(this);
-    m_spinTimer->setInterval(kSpinIntervalMs);
-    connect(m_spinTimer, &QTimer::timeout, this, &AiDockSessionStrip::onSpinTick);
     m_layout = new QHBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
     m_layout->setSpacing(kSpacingPx);
@@ -143,9 +132,9 @@ void AiDockSessionStrip::setSlots(int count, int current, const QVector<SlotSnap
     rebuildButtons();
 }
 
-bool AiDockSessionStrip::isSpinning() const
+bool AiDockSessionStrip::busyAt(int index) const
 {
-    return m_spinTimer->isActive();
+    return index >= 0 && index < m_snapshots.size() && m_snapshots.at(index).busy;
 }
 
 QColor AiDockSessionStrip::attentionColor()
@@ -158,54 +147,10 @@ bool AiDockSessionStrip::waitingAt(int index) const
     return index >= 0 && index < m_snapshots.size() && m_snapshots.at(index).waiting;
 }
 
-void AiDockSessionStrip::updateSpinTimer()
-{
-    bool anyBusy = false;
-    for (const SlotSnapshot &snap : std::as_const(m_snapshots)) {
-        if (snap.busy) {
-            anyBusy = true;
-            break;
-        }
-    }
-    const QWidget *top = window();
-    const bool want = anyBusy && isVisible() && top && !top->isMinimized();
-    if (want == m_spinTimer->isActive())
-        return;
-    if (want) {
-        m_spinClock.start();
-        m_spinTimer->start();
-    } else {
-        m_spinTimer->stop();
-    }
-}
-
-void AiDockSessionStrip::onSpinTick()
-{
-    const int angle = static_cast<int>((m_spinClock.elapsed() % kSpinPeriodMs) * 360 / kSpinPeriodMs);
-    for (QToolButton *btn : std::as_const(m_buttons))
-        static_cast<SessionNumberButton *>(btn)->setSpinAngle(angle);
-}
-
-void AiDockSessionStrip::showEvent(QShowEvent *event)
-{
-    QWidget::showEvent(event);
-    // Minimizing hides no widget: follow the window's own visibility.
-    if (QWindow *handle = window() ? window()->windowHandle() : nullptr; handle != m_trackedWindow) {
-        if (m_trackedWindow)
-            disconnect(m_trackedWindow, nullptr, this, nullptr);
-        m_trackedWindow = handle;
-        if (handle) {
-            connect(handle, &QWindow::visibilityChanged, this, [this]() { updateSpinTimer(); });
-        }
-    }
-    updateSpinTimer();
-}
-
 void AiDockSessionStrip::hideEvent(QHideEvent *event)
 {
     QWidget::hideEvent(event);
     endDrag();
-    updateSpinTimer();
 }
 
 QSize AiDockSessionStrip::sizeHint() const
@@ -406,23 +351,27 @@ void AiDockSessionStrip::restyleButtons()
     for (int i = 0; i < m_buttons.size(); ++i) {
         QToolButton *btn = m_buttons.at(i);
         const bool current = (i == m_current);
+        const bool busy = busyAt(i);
         auto *numberBtn = static_cast<SessionNumberButton *>(btn);
-        numberBtn->setBusy(i < m_snapshots.size() && m_snapshots.at(i).busy);
+        numberBtn->setBusy(busy);
         numberBtn->setWaiting(waitingAt(i));
 
         QFont font = btn->font();
         font.setBold(current);
         btn->setFont(font);
 
+        // A muted digit on the working fill is too faint: busy numbers take the
+        // full text colour (the current one still has the bold and the border).
+        const bool strong = current || busy;
         QPalette pal = btn->palette();
-        pal.setColor(QPalette::ButtonText, current ? currentColor : muted);
-        pal.setColor(QPalette::WindowText, current ? currentColor : muted);
+        pal.setColor(QPalette::ButtonText, strong ? currentColor : muted);
+        pal.setColor(QPalette::WindowText, strong ? currentColor : muted);
         btn->setPalette(pal);
         // Toolbar chrome (ui-dna): auto-raise + 1px mid border on hover.
         // Transparent rest border keeps size stable. Windows QStyle ignores
         // QToolButton palette colors, so paint via palette() roles.
-        const QString colorRole = current ? QStringLiteral("palette(button-text)")
-                                          : QStringLiteral("palette(placeholder-text)");
+        const QString colorRole = strong ? QStringLiteral("palette(button-text)")
+                                         : QStringLiteral("palette(placeholder-text)");
         const QString restBorder = current ? QStringLiteral("1px solid palette(mid)")
                                            : QStringLiteral("1px solid transparent");
         btn->setStyleSheet(
@@ -433,7 +382,6 @@ void AiDockSessionStrip::restyleButtons()
                 .arg(colorRole, QString::number(kSpacingPx), restBorder));
         btn->setMinimumSize(btn->sizeHint());
     }
-    updateSpinTimer();
     syncIntrinsicSize();
     notifyHostTabBar();
 }
