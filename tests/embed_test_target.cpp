@@ -28,6 +28,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_TIMER:
         if (const LONG busy = g_shared->busyMs; busy > 0)
             Sleep(static_cast<DWORD>(busy));
+        // Like Blender running a long script on its UI thread.
+        if (const LONG hang = InterlockedExchange(&g_shared->hangOnceMs, 0); hang > 0) {
+            InterlockedExchange(&g_shared->hanging, 1);
+            Sleep(static_cast<DWORD>(hang));
+            InterlockedExchange(&g_shared->hanging, 0);
+        }
         return 0;
     case WM_NCACTIVATE:
         InterlockedExchange(&g_shared->active, wParam ? 1 : 0);

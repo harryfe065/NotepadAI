@@ -63,6 +63,7 @@ protected:
 private:
     friend class NativeWindowHostInput;
 
+    void responsiveChanged(bool responding);
     void foregroundChanged(quintptr foreground);
     bool embedKeepsKeyboard() const;
     void clickedWhileForeignActive(quintptr topLevel);
@@ -85,4 +86,7 @@ private:
     ChildLostCallback m_childLost;
     FocusRequestCallback m_focusRequest;
     bool m_lossReported = false;
+    // The embed's thread is hung and the embed is unowned until it answers.
+    bool m_unresponsive = false;
+    quint64 m_probeGeneration = 0;
 };

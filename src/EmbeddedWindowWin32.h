@@ -144,6 +144,12 @@ bool failSafeDetach(const NativeWindowState &state, quintptr token);
 GeometryCheck checkGeometry(quintptr targetHandle, quintptr hostHandle, quintptr token,
                             EmbedGeometry *wanted);
 
+// The embed's thread stopped processing messages: drop our ownership so the
+// two input queues are no longer shared (with them shared, NotepadAI's clicks
+// and activation wait behind the hung thread). Sends nothing to the window, so
+// it returns at once. The next checkGeometry takes ownership back.
+bool releaseOwnerWhileHung(quintptr targetHandle, quintptr token);
+
 quintptr rootWindow(quintptr windowHandle);
 quintptr foregroundWindow();
 // True if `window` is (inside) an embedded foreign window owned by `topLevel`.

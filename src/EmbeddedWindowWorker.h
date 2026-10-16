@@ -9,6 +9,7 @@
 
 #include <QtGlobal>
 
+#include <functional>
 #include <memory>
 
 // Runs the cross-thread Win32 calls an embedded foreign window needs (move,
@@ -42,6 +43,9 @@ public:
     // Place the target at (x, y, width, height) in screen pixels, shown or
     // hidden. Never activates it.
     void requestGeometry(int x, int y, int width, int height, bool visible);
+    // A geometry request whose calls have not returned yet: the window's
+    // current rect / visibility may be about to change.
+    bool geometryPending() const;
     // Make the target the foreground window, but only while one of OUR
     // windows is in front (never steal the foreground from another app).
     void requestActivate();
@@ -52,6 +56,17 @@ public:
     // Enable or disable the target (disabled while a NotepadAI modal dialog is
     // up, so it cannot be activated over the dialog).
     void requestEnabled(bool enabled);
+    // Put the target back directly above its owner if it fell below it (it was
+    // unowned while hung and our window came over it).
+    void requestRaiseAboveOwner();
+
+    // Watch whether the target's thread still processes messages: one WM_NULL
+    // in flight at a time (SendMessageCallback, from a thread that shares no
+    // input queue with it), sent every probeIntervalMs. `onChange(false)` runs
+    // once the reply is hungAfterMs late, `onChange(true)` when it arrives.
+    // Called on the probe thread, never after this object is destroyed.
+    using ResponsiveCallback = std::function<void(bool responding)>;
+    bool startProbe(int probeIntervalMs, int hungAfterMs, ResponsiveCallback onChange);
 
     // Stop issuing calls and wait up to waitMs for an in-flight call to end.
     // Used before the GUI thread releases the window, so the worker cannot
@@ -61,5 +76,7 @@ public:
 
 private:
     struct State;
+    struct Probe;
     std::shared_ptr<State> m_state;
+    std::shared_ptr<Probe> m_probe;
 };

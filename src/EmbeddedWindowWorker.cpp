@@ -13,6 +13,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <mutex>
 #include <system_error>
 #include <thread>
 
@@ -33,6 +34,10 @@ struct EmbeddedWindowWorker::State {
     std::atomic<quint64> foregroundSeq{0};
     std::atomic<quintptr> foregroundWindow{0};
     std::atomic<int> enabled{-1}; // -1: never requested
+    std::atomic<quint64> raiseSeq{0};
+    // The geometryStamp whose calls have returned: until it catches up, the
+    // window's state may still change under a reader.
+    std::atomic<quint64> doneGeometryStamp{0};
 
     ~State()
     {
@@ -63,8 +68,89 @@ struct EmbeddedWindowWorker::State {
         return EmbeddedWindowWin32::ownsWindow(reinterpret_cast<quintptr>(target), token);
     }
 
+    void raiseAboveOwner() const
+    {
+        HWND owner = GetWindow(target, GW_OWNER);
+        if (!owner)
+            return;
+        // Only if the owner is above it: otherwise leave its place among our
+        // other owned windows (dialogs stay above it).
+        for (HWND w = GetWindow(target, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+            if (w == owner) {
+                HWND above = GetWindow(owner, GW_HWNDPREV);
+                SetWindowPos(target, above ? above : HWND_TOP, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                return;
+            }
+        }
+    }
+
     static void run(const std::shared_ptr<State> &self);
 };
+
+struct EmbeddedWindowWorker::Probe {
+    HWND target = nullptr;
+    HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual
+    std::mutex callbackMutex;
+    ResponsiveCallback onChange;
+
+    ~Probe() { CloseHandle(stop); }
+
+    void notify(bool responding)
+    {
+        const std::lock_guard<std::mutex> lock(callbackMutex);
+        if (onChange)
+            onChange(responding);
+    }
+
+    static void CALLBACK onReply(HWND, UINT, ULONG_PTR data, LRESULT)
+    {
+        ++*reinterpret_cast<quint64 *>(data);
+    }
+
+    static void run(const std::shared_ptr<Probe> &self, int intervalMs, int hungAfterMs);
+};
+
+void EmbeddedWindowWorker::Probe::run(const std::shared_ptr<Probe> &self, int intervalMs, int hungAfterMs)
+{
+    Probe &p = *self;
+    MSG msg;
+    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE); // create the queue the replies come through
+    // Written only by onReply, which runs on this thread while it pumps.
+    quint64 replies = 0;
+    quint64 sent = 0;
+    bool responding = true;
+    while (IsWindow(p.target)) {
+        // A late reply stays the only message in flight: no pile-up of
+        // WM_NULLs for the app to work through when it wakes.
+        if (!SendMessageCallbackW(p.target, WM_NULL, 0, 0, &Probe::onReply, reinterpret_cast<ULONG_PTR>(&replies)))
+            return;
+        ++sent;
+        const ULONGLONG sentAt = GetTickCount64();
+        while (replies != sent) {
+            const ULONGLONG waited = GetTickCount64() - sentAt;
+            if (responding && waited >= static_cast<ULONGLONG>(hungAfterMs)) {
+                responding = false;
+                p.notify(false);
+            }
+            // While hung, wake now and then only to notice the window is gone.
+            const DWORD timeout = responding ? static_cast<DWORD>(hungAfterMs - waited) : 1000;
+            const DWORD woke = MsgWaitForMultipleObjectsEx(1, &p.stop, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (woke == WAIT_OBJECT_0 || woke == WAIT_FAILED)
+                return;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { // runs onReply
+            }
+            if (!IsWindow(p.target))
+                return;
+        }
+        if (!responding) {
+            responding = true;
+            p.notify(true);
+        }
+        if (WaitForSingleObject(p.stop, static_cast<DWORD>(intervalMs)) != WAIT_TIMEOUT)
+            return;
+    }
+}
 
 void EmbeddedWindowWorker::State::run(const std::shared_ptr<State> &self)
 {
@@ -81,6 +167,7 @@ void EmbeddedWindowWorker::State::run(const std::shared_ptr<State> &self)
     quint64 appliedStamp = 0;
     quint64 appliedActivate = 0;
     quint64 appliedForeground = 0;
+    quint64 appliedRaise = 0;
     int appliedEnabled = -1;
 
     while (WaitForSingleObject(s.wake, INFINITE) == WAIT_OBJECT_0 && !s.stop) {
@@ -134,6 +221,13 @@ void EmbeddedWindowWorker::State::run(const std::shared_ptr<State> &self)
                 if (wasForeground)
                     s.bringForward(GetWindow(s.target, GW_OWNER));
             }
+            s.doneGeometryStamp.store(stamp, std::memory_order_release);
+        }
+
+        const quint64 raise = s.raiseSeq.load();
+        if (raise != appliedRaise && !s.paused) {
+            appliedRaise = raise;
+            s.raiseAboveOwner();
         }
 
         const quint64 foregroundSeq = s.foregroundSeq.load();
@@ -144,13 +238,21 @@ void EmbeddedWindowWorker::State::run(const std::shared_ptr<State> &self)
 
         const quint64 activate = s.activateSeq.load();
         if (activate != appliedActivate && !s.paused) {
-            appliedActivate = activate;
-            // Only take the foreground from the window that hosts us: a late
-            // request must never pull NotepadAI over another app, nor the
-            // embed over one of our dialogs.
-            if (GetForegroundWindow() == GetWindow(s.target, GW_OWNER)
-                && (GetWindowLongPtrW(s.target, GWL_STYLE) & WS_VISIBLE) && IsWindowEnabled(s.target))
-                SetForegroundWindow(s.target);
+            if (s.geometryStamp.load(std::memory_order_acquire) != appliedStamp) {
+                // A show requested while this pass was blocked on the app
+                // (after its geometry step) must land first, or the
+                // activation sees the embed still hidden and is dropped:
+                // leave it for the next pass.
+                SetEvent(s.wake);
+            } else {
+                appliedActivate = activate;
+                // Only take the foreground from the window that hosts us: a
+                // late request must never pull NotepadAI over another app, nor
+                // the embed over one of our dialogs.
+                if (GetForegroundWindow() == GetWindow(s.target, GW_OWNER)
+                    && (GetWindowLongPtrW(s.target, GWL_STYLE) & WS_VISIBLE) && IsWindowEnabled(s.target))
+                    SetForegroundWindow(s.target);
+            }
         }
         SetEvent(s.idle);
     }
@@ -168,6 +270,13 @@ EmbeddedWindowWorker::~EmbeddedWindowWorker()
 {
     m_state->stop = true;
     SetEvent(m_state->wake);
+    if (m_probe) {
+        {
+            const std::lock_guard<std::mutex> lock(m_probe->callbackMutex);
+            m_probe->onChange = nullptr;
+        }
+        SetEvent(m_probe->stop);
+    }
 }
 
 bool EmbeddedWindowWorker::start()
@@ -199,6 +308,12 @@ void EmbeddedWindowWorker::requestGeometry(int x, int y, int width, int height, 
     SetEvent(m_state->wake);
 }
 
+bool EmbeddedWindowWorker::geometryPending() const
+{
+    return m_state->geometryStamp.load(std::memory_order_acquire)
+        != m_state->doneGeometryStamp.load(std::memory_order_acquire);
+}
+
 void EmbeddedWindowWorker::requestActivate()
 {
     m_state->activateSeq.fetch_add(1);
@@ -218,6 +333,30 @@ void EmbeddedWindowWorker::requestForeground(quintptr window)
     SetEvent(m_state->wake);
 }
 
+void EmbeddedWindowWorker::requestRaiseAboveOwner()
+{
+    m_state->raiseSeq.fetch_add(1);
+    SetEvent(m_state->wake);
+}
+
+bool EmbeddedWindowWorker::startProbe(int probeIntervalMs, int hungAfterMs, ResponsiveCallback onChange)
+{
+    if (m_probe)
+        return false;
+    auto probe = std::make_shared<Probe>();
+    if (!probe->stop)
+        return false;
+    probe->target = m_state->target;
+    probe->onChange = std::move(onChange);
+    try {
+        std::thread(&Probe::run, probe, qMax(1, probeIntervalMs), qMax(1, hungAfterMs)).detach();
+    } catch (const std::system_error &) {
+        return false;
+    }
+    m_probe = std::move(probe);
+    return true;
+}
+
 bool EmbeddedWindowWorker::pause(int waitMs)
 {
     m_state->paused = true;
@@ -235,6 +374,9 @@ void EmbeddedWindowWorker::resume()
 struct EmbeddedWindowWorker::State {
 };
 
+struct EmbeddedWindowWorker::Probe {
+};
+
 EmbeddedWindowWorker::EmbeddedWindowWorker(quintptr, quintptr)
     : m_state(std::make_shared<State>())
 {
@@ -248,9 +390,19 @@ bool EmbeddedWindowWorker::start()
 }
 
 void EmbeddedWindowWorker::requestGeometry(int, int, int, int, bool) {}
+bool EmbeddedWindowWorker::geometryPending() const
+{
+    return false;
+}
 void EmbeddedWindowWorker::requestActivate() {}
 void EmbeddedWindowWorker::requestForeground(quintptr) {}
 void EmbeddedWindowWorker::requestEnabled(bool) {}
+void EmbeddedWindowWorker::requestRaiseAboveOwner() {}
+
+bool EmbeddedWindowWorker::startProbe(int, int, ResponsiveCallback)
+{
+    return false;
+}
 
 bool EmbeddedWindowWorker::pause(int)
 {

@@ -96,7 +96,7 @@ public:
         m_process = {};
     }
 
-    HWND hwnd() const { return reinterpret_cast<HWND>(m_shared->hwnd); }
+    HWND hwnd() const { return m_shared ? reinterpret_cast<HWND>(m_shared->hwnd) : nullptr; }
     EmbedTestShared *shared() const { return m_shared; }
 
 private:
@@ -250,6 +250,9 @@ private slots:
     void clickIntoEmbedDoesNotBounceFocus();
     void foreignAppActivationDeactivatesEmbed();
     void tabClicksDoNotStallWithBusyTarget();
+    void hungEmbedDoesNotFreezeHost_data();
+    void hungEmbedDoesNotFreezeHost();
+    void releasingHungEmbedDoesNotBlock();
     void tabSwitchDoesNotResendSize();
     void rawInputKeyboardReachesEmbed();
     void embedIsOwnedPopupOutOfTaskbar();
@@ -441,7 +444,10 @@ void TestEmbeddedWindowWin32::click(QPoint screen)
     POINT pt{screen.x(), screen.y()};
     // Another app (e.g. a running NotepadAI) may grab the foreground between
     // steps; take it back rather than click into a window that is not ours.
-    if (!ownedBy(GetForegroundWindow(), top) && IsWindowVisible(top) && !h->otherForegroundExpected)
+    // (Never force it away from our own target: forceForeground attaches to the
+    // foreground thread, which would wait on a hung target.)
+    if (!ownedBy(GetForegroundWindow(), top) && GetForegroundWindow() != h->target.hwnd()
+        && IsWindowVisible(top) && !h->otherForegroundExpected)
         forceForeground(top);
     QVERIFY2(ownedBy(WindowFromPoint(pt), top),
              "click target is not inside the test window; refusing to inject input");
@@ -456,7 +462,8 @@ void TestEmbeddedWindowWin32::click(QPoint screen)
 
 void TestEmbeddedWindowWin32::type(wchar_t ch)
 {
-    QVERIFY2(ours(GetForegroundWindow(), topHwnd(&h->window)),
+    // Our target counts even while it is not owned (released while hung).
+    QVERIFY2(ours(GetForegroundWindow(), topHwnd(&h->window)) || GetForegroundWindow() == h->target.hwnd(),
              "test window lost the foreground; refusing to inject keystrokes");
     INPUT in[2]{};
     in[0].type = in[1].type = INPUT_KEYBOARD;
@@ -812,6 +819,125 @@ void TestEmbeddedWindowWin32::tabClicksDoNotStallWithBusyTarget()
     settle(300);
     type(L'w');
     QTRY_COMPARE_WITH_TIMEOUT(s->lastChar, static_cast<LONG>(L'w'), 2000);
+}
+
+void TestEmbeddedWindowWin32::hungEmbedDoesNotFreezeHost_data()
+{
+    QTest::addColumn<bool>("embedHasKeyboard");
+    QTest::newRow("embed-active") << true;
+    QTest::newRow("notepadai-active") << false;
+}
+
+void TestEmbeddedWindowWin32::hungEmbedDoesNotFreezeHost()
+{
+    QFETCH(bool, embedHasKeyboard);
+    QVERIFY(embed());
+    QVERIFY(forceForeground(topHwnd(&h->window)));
+    QTRY_VERIFY_WITH_TIMEOUT(hostFilledByChild(), 1500);
+    EmbedTestShared *s = h->target.shared();
+    click(hostPoint(60, 60));
+    type(L'a');
+    QTRY_COMPARE_WITH_TIMEOUT(s->chars, 1L, 1000);
+    if (!embedHasKeyboard) {
+        click(widgetCenter(h->edit));
+        QTRY_VERIFY_WITH_TIMEOUT(h->edit->hasFocus(), 1000);
+    }
+
+    // The embedded app stops pumping messages (Blender running a long script),
+    // with the mouse over it as the user would have it.
+    constexpr LONG kHangMs = 6000;
+    InterlockedExchange(&s->hangOnceMs, kHangMs);
+    QTRY_VERIFY_WITH_TIMEOUT(s->hanging == 1, 1000);
+    const QPoint over = hostPoint(80, 80);
+    SetCursorPos(over.x(), over.y());
+    settle(50);
+    SetCursorPos(over.x() + 20, over.y() + 20);
+    // Long enough for the host to tell hung from busy (about a second, like a
+    // user noticing Blender is stuck).
+    settle(1000);
+
+    // NotepadAI must keep working: its event loop runs, and a click on one of
+    // its widgets plus a keystroke land while the embed is still hung.
+    QElapsedTimer clock;
+    clock.start();
+    qint64 last = 0;
+    qint64 worst = 0;
+    QTimer meter;
+    meter.setTimerType(Qt::PreciseTimer);
+    meter.setInterval(1);
+    connect(&meter, &QTimer::timeout, this, [&]() {
+        const qint64 now = clock.elapsed();
+        worst = qMax(worst, now - last);
+        last = now;
+    });
+    meter.start();
+    h->edit->clear();
+    click(widgetCenter(h->edit));
+    type(L'z');
+    QElapsedTimer typed;
+    typed.start();
+    while (!h->edit->text().contains(QLatin1Char('z')) && typed.elapsed() < 1500)
+        settle(10);
+    const qint64 latency = clock.elapsed();
+    const bool stillHung = s->hanging == 1;
+    meter.stop();
+    qInfo("hung embed: keystroke after %lld ms, worst event-loop stall %lld ms, embed still hung: %d",
+          latency, worst, stillHung);
+    const bool landed = h->edit->text().contains(QLatin1Char('z'));
+
+    // Let the hang end before cleanup releases the window.
+    QTRY_VERIFY_WITH_TIMEOUT(s->hanging == 0, kHangMs + 2000);
+    QVERIFY2(stillHung, "the hang ended before the check; the test proves nothing");
+    QVERIFY2(landed && latency < 1500,
+             qPrintable(QStringLiteral("NotepadAI input stuck behind the hung embed (%1 ms)").arg(latency)));
+    QVERIFY2(worst < 250, qPrintable(QStringLiteral("GUI thread stalled %1 ms").arg(worst)));
+
+    // Once it answers again it is embedded as before: owned, over its host,
+    // taking clicks and the keyboard.
+    QTRY_VERIFY_WITH_TIMEOUT(GetWindow(h->target.hwnd(), GW_OWNER) == topHwnd(&h->window), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(hostFilledByChild(false), 1500);
+    const auto aboveOwner = [this]() {
+        for (HWND w = GetWindow(topHwnd(&h->window), GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+            if (w == h->target.hwnd())
+                return true;
+        }
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(aboveOwner(), 1500);
+    const LONG charsBefore = s->chars;
+    click(hostPoint(60, 60));
+    type(L'r');
+    QTRY_COMPARE_WITH_TIMEOUT(s->chars, charsBefore + 1, 1500);
+    QCOMPARE(s->lastChar, static_cast<LONG>(L'r'));
+}
+
+void TestEmbeddedWindowWin32::releasingHungEmbedDoesNotBlock()
+{
+    QVERIFY(embed());
+    QVERIFY(forceForeground(topHwnd(&h->window)));
+    QTRY_VERIFY_WITH_TIMEOUT(hostFilledByChild(), 1500);
+    EmbedTestShared *s = h->target.shared();
+    constexpr LONG kHangMs = 5000;
+    InterlockedExchange(&s->hangOnceMs, kHangMs);
+    QTRY_VERIFY_WITH_TIMEOUT(s->hanging == 1, 1000);
+    settle(1000);
+
+    // The user closes the tab of the hung app (manager order: pause, release,
+    // detach).
+    QElapsedTimer clock;
+    clock.start();
+    h->host->pauseForeignCalls();
+    const bool released = EmbeddedWindowWin32::restoreExact(h->state, h->token);
+    h->host->detach();
+    const qint64 took = clock.elapsed();
+    const bool stillHung = s->hanging == 1;
+    h->embedded = !released;
+    qInfo("releasing a hung embed took %lld ms (still hung: %d)", took, stillHung);
+    QVERIFY(released);
+    QVERIFY(GetWindow(h->target.hwnd(), GW_OWNER) == nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(s->hanging == 0, kHangMs + 2000);
+    QVERIFY2(stillHung, "the hang ended before the check; the test proves nothing");
+    QVERIFY2(took < 500, qPrintable(QStringLiteral("GUI thread blocked %1 ms releasing it").arg(took)));
 }
 
 void TestEmbeddedWindowWin32::tabSwitchDoesNotResendSize()

@@ -11,7 +11,23 @@
 #include <Windows.h>
 #include <commctrl.h>
 
+#include <system_error>
+#include <thread>
+
 namespace {
+// Style, placement and show changes are synchronous sends to the window's
+// thread. After a release nothing waits for them, so they run here: a hung or
+// busy app must not hold the GUI thread while its tab closes.
+template<typename Steps>
+void runOffGuiThread(const Steps &steps)
+{
+    try {
+        std::thread(steps).detach();
+    } catch (const std::system_error &) {
+        steps();
+    }
+}
+
 constexpr wchar_t EmbedPropertyName[] = L"NotepadAI.EmbeddedWindow.Token";
 constexpr UINT_PTR kCaptionGuardId = 0x4e414945;
 
@@ -250,36 +266,42 @@ bool restoreExact(const NativeWindowState &s, quintptr token)
     // tab is safe to reap. It is the SOLE gate on the return value: a cosmetic
     // failure below must not report the window as still embedded, or the
     // controller vetoes the close and the host takes the window right back.
+    // Already unowned while it was hung: setting the same owner again fails.
     HWND originalOwner = reinterpret_cast<HWND>(s.originalOwner);
-    if (!ensureTopLevel(hwnd) || !setLong(hwnd, GWLP_HWNDPARENT, s.originalOwner)
+    if (!ensureTopLevel(hwnd)
+        || (GetWindow(hwnd, GW_OWNER) != originalOwner && !setLong(hwnd, GWLP_HWNDPARENT, s.originalOwner))
         || GetWindow(hwnd, GW_OWNER) != originalOwner) {
         qWarning("EmbeddedWindow: restoreExact could not drop ownership (err=%lu)", GetLastError());
         return false;
     }
 
-    // Cosmetic best-effort restoration; each is gated on the token so a window
-    // recycled after detach is never touched, but none affect the result.
-    if (sameWindow(s, token))
-        setLong(hwnd, GWL_STYLE, s.originalStyle);
-    if (sameWindow(s, token))
-        setLong(hwnd, GWL_EXSTYLE, s.originalExStyle);
-    if (sameWindow(s, token)) {
-        HWND z = (s.originalExStyle & WS_EX_TOPMOST) ? HWND_TOPMOST : HWND_NOTOPMOST;
-        SetWindowPos(hwnd, z, s.rectLeft, s.rectTop, s.rectRight - s.rectLeft,
-                     s.rectBottom - s.rectTop, SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    }
-    if (s.placementValid && sameWindow(s, token)) {
-        WINDOWPLACEMENT placement = placementFrom(s);
-        SetWindowPlacement(hwnd, &placement);
-    }
-    if (sameWindow(s, token)) {
-        const int show = s.placementValid ? static_cast<int>(s.placementShowCmd) : SW_SHOWNOACTIVATE;
-        ShowWindowAsync(hwnd, s.originallyVisible ? (show == SW_HIDE ? SW_SHOWNOACTIVATE : show) : SW_HIDE);
-    }
-    // Untag is best-effort: if the window was recycled the new owner keeps its
-    // property; our host no longer tracks it so no re-grab can occur.
-    if (sameWindow(s, token))
-        RemovePropW(hwnd, EmbedPropertyName);
+    // Cosmetic best-effort restoration, off the GUI thread; each is gated on the
+    // token so a window recycled after detach is never touched, but none affect
+    // the result.
+    runOffGuiThread([s, token]() {
+        HWND hwnd = reinterpret_cast<HWND>(s.handle);
+        if (sameWindow(s, token))
+            setLong(hwnd, GWL_STYLE, s.originalStyle);
+        if (sameWindow(s, token))
+            setLong(hwnd, GWL_EXSTYLE, s.originalExStyle);
+        if (sameWindow(s, token)) {
+            HWND z = (s.originalExStyle & WS_EX_TOPMOST) ? HWND_TOPMOST : HWND_NOTOPMOST;
+            SetWindowPos(hwnd, z, s.rectLeft, s.rectTop, s.rectRight - s.rectLeft,
+                         s.rectBottom - s.rectTop, SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        if (s.placementValid && sameWindow(s, token)) {
+            WINDOWPLACEMENT placement = placementFrom(s);
+            SetWindowPlacement(hwnd, &placement);
+        }
+        if (sameWindow(s, token)) {
+            const int show = s.placementValid ? static_cast<int>(s.placementShowCmd) : SW_SHOWNOACTIVATE;
+            ShowWindowAsync(hwnd, s.originallyVisible ? (show == SW_HIDE ? SW_SHOWNOACTIVATE : show) : SW_HIDE);
+        }
+        // Untag is best-effort: if the window was recycled the new owner keeps
+        // its property; our host no longer tracks it so no re-grab can occur.
+        if (sameWindow(s, token))
+            RemovePropW(hwnd, EmbedPropertyName);
+    });
     return true;
 #else
     Q_UNUSED(s) Q_UNUSED(token)
@@ -301,24 +323,28 @@ bool failSafeDetach(const NativeWindowState &s, quintptr token)
         return false;
 
     // The release-defining step first (see restoreExact).
-    if (!ensureTopLevel(hwnd) || !setLong(hwnd, GWLP_HWNDPARENT, 0) || GetWindow(hwnd, GW_OWNER)) {
+    if (!ensureTopLevel(hwnd) || (GetWindow(hwnd, GW_OWNER) && !setLong(hwnd, GWLP_HWNDPARENT, 0))
+        || GetWindow(hwnd, GW_OWNER)) {
         qWarning("EmbeddedWindow: failSafeDetach could not drop ownership (err=%lu)", GetLastError());
         return false;
     }
 
-    // Best-effort cosmetic cleanup, always token-gated.
-    if (sameWindow(s, token))
-        setLong(hwnd, GWL_STYLE, s.originalStyle & ~WS_CHILD);
-    if (sameWindow(s, token))
-        setLong(hwnd, GWL_EXSTYLE, s.originalExStyle);
-    if (sameWindow(s, token)) {
-        const UINT flags = SWP_NOACTIVATE | SWP_FRAMECHANGED
-            | (s.originallyVisible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
-        SetWindowPos(hwnd, HWND_TOP, s.rectLeft, s.rectTop,
-                     s.rectRight - s.rectLeft, s.rectBottom - s.rectTop, flags);
-    }
-    if (sameWindow(s, token))
-        RemovePropW(hwnd, EmbedPropertyName);
+    // Best-effort cosmetic cleanup, off the GUI thread, always token-gated.
+    runOffGuiThread([s, token]() {
+        HWND hwnd = reinterpret_cast<HWND>(s.handle);
+        if (sameWindow(s, token))
+            setLong(hwnd, GWL_STYLE, s.originalStyle & ~WS_CHILD);
+        if (sameWindow(s, token))
+            setLong(hwnd, GWL_EXSTYLE, s.originalExStyle);
+        if (sameWindow(s, token)) {
+            const UINT flags = SWP_NOACTIVATE | SWP_FRAMECHANGED
+                | (s.originallyVisible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
+            SetWindowPos(hwnd, HWND_TOP, s.rectLeft, s.rectTop,
+                         s.rectRight - s.rectLeft, s.rectBottom - s.rectTop, flags);
+        }
+        if (sameWindow(s, token))
+            RemovePropW(hwnd, EmbedPropertyName);
+    });
     return true;
 #else
     Q_UNUSED(s) Q_UNUSED(token)
@@ -364,6 +390,19 @@ GeometryCheck checkGeometry(quintptr targetHandle, quintptr hostHandle, quintptr
 #else
     Q_UNUSED(targetHandle) Q_UNUSED(hostHandle) Q_UNUSED(token) Q_UNUSED(wanted)
     return GeometryCheck::WindowLost;
+#endif
+}
+
+bool releaseOwnerWhileHung(quintptr targetHandle, quintptr token)
+{
+#ifdef Q_OS_WIN
+    HWND target = reinterpret_cast<HWND>(targetHandle);
+    return ownsWindow(targetHandle, token)
+        && (!GetWindow(target, GW_OWNER) || setLong(target, GWLP_HWNDPARENT, 0))
+        && !GetWindow(target, GW_OWNER);
+#else
+    Q_UNUSED(targetHandle) Q_UNUSED(token)
+    return false;
 #endif
 }
 

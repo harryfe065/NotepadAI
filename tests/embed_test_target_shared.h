@@ -32,4 +32,6 @@ struct EmbedTestShared {
     volatile LONG mouseMoves;
     volatile LONG rawKeyDowns;     // WM_INPUT keyboard make events (--raw-input)
     volatile LONG lastRawVKey;
+    volatile LONG hangOnceMs;      // test -> target: stop pumping messages this long, once
+    volatile LONG hanging;         // target -> test: 1 while that hang lasts
 };

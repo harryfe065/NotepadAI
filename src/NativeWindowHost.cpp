@@ -27,6 +27,11 @@ constexpr int kActivateRetryMs = 15;
 // How long to wait for Qt to deliver a press before deciding anyway (a
 // title-bar press never reaches Qt).
 constexpr int kClickDecisionTimeoutMs = 100;
+// Liveness probe of the embed's thread: one WM_NULL per interval; a reply this
+// late means it is hung (a busy app answers well within it). Input to
+// NotepadAI waits behind a hung embed for at most about their sum.
+constexpr int kProbeIntervalMs = 200;
+constexpr int kHungAfterMs = 400;
 } // namespace
 
 // App-wide plumbing for the hosts that currently track an embed: a native event
@@ -86,9 +91,11 @@ public:
             // wait for the embed's thread to process its deactivation (the
             // owner relationship shares the two input queues). Let Qt handle
             // the click without activation; the host then decides.
+            // A hung embed is no longer owned: Windows activates our window
+            // natively, without waiting for it.
             const quintptr foreground = EmbeddedWindowWin32::foregroundWindow();
             for (NativeWindowHost *host : std::as_const(m_hosts)) {
-                if (host->m_worker && foreground
+                if (host->m_worker && !host->m_unresponsive && foreground
                     && EmbeddedWindowWin32::rootWindow(foreground) == host->m_targetHandle) {
                     host->clickedWhileForeignActive(EmbeddedWindowWin32::rootWindow(clicked));
                     if (result)
@@ -132,7 +139,7 @@ private:
             return false;
         const quintptr focusRoot = EmbeddedWindowWin32::rootWindow(focus);
         for (NativeWindowHost *host : std::as_const(self->m_hosts)) {
-            if (host->m_worker && host->m_targetHandle == focusRoot) {
+            if (host->m_worker && !host->m_unresponsive && host->m_targetHandle == focusRoot) {
                 host->topLevelActivatedWithForeignFocus(topLevel);
                 return true;
             }
@@ -195,10 +202,20 @@ bool NativeWindowHost::attach(quintptr targetHandle, quintptr token)
         qWarning("EmbeddedWindow: could not start the worker for the embedded window");
         return false;
     }
+    // Runs on the probe thread; only posts, and never after the worker is gone.
+    const quint64 generation = ++m_probeGeneration;
+    if (!worker->startProbe(kProbeIntervalMs, kHungAfterMs, [this, generation](bool responding) {
+            QMetaObject::invokeMethod(this, [this, generation, responding]() {
+                if (generation == m_probeGeneration)
+                    responsiveChanged(responding);
+            }, Qt::QueuedConnection);
+        }))
+        qWarning("EmbeddedWindow: could not start the liveness probe for the embedded window");
     m_targetHandle = targetHandle;
     m_token = token;
     m_topLevelHandle = EmbeddedWindowWin32::rootWindow(nativeHandle());
     m_lossReported = false;
+    m_unresponsive = false;
     m_worker = std::move(worker);
     if (!sync()) {
         stopTracking();
@@ -223,7 +240,8 @@ void NativeWindowHost::detach()
 
 void NativeWindowHost::pauseForeignCalls()
 {
-    if (m_worker && !m_worker->pause(kPauseWaitMs))
+    // A hung embed's worker is stuck on it: waiting would only add a delay.
+    if (m_worker && !m_worker->pause(m_unresponsive ? 0 : kPauseWaitMs) && !m_unresponsive)
         qWarning("EmbeddedWindow: embedded app is not responding; releasing it anyway");
 }
 
@@ -235,7 +253,7 @@ void NativeWindowHost::resumeForeignCalls()
 
 void NativeWindowHost::activateForeign()
 {
-    if (!m_worker || !isVisible() || QApplication::focusWidget() != this)
+    if (!m_worker || m_unresponsive || !isVisible() || QApplication::focusWidget() != this)
         return;
     // Wait for the click (or the menu it opened) that brought us here to end:
     // it may move Qt focus elsewhere, and activating the embed under an open
@@ -321,10 +339,24 @@ bool NativeWindowHost::sync()
 #ifdef Q_OS_WIN
     if (!m_targetHandle || !m_worker || !nativeHandle())
         return false;
+    if (m_unresponsive) {
+        // Leave it unowned (checkGeometry would take it back) and unmoved (the
+        // worker is stuck on it anyway) until it answers again.
+        if (!EmbeddedWindowWin32::ownsWindow(m_targetHandle, m_token)) {
+            reportChildLost();
+            return false;
+        }
+        return true;
+    }
     EmbeddedWindowWin32::EmbedGeometry wanted;
     switch (EmbeddedWindowWin32::checkGeometry(m_targetHandle, nativeHandle(), m_token, &wanted)) {
     case EmbeddedWindowWin32::GeometryCheck::Ok:
-        return true;
+        // In place now, but a request the worker is still blocked on (a
+        // busy app) would undo that, e.g. a hide from the tab switch just
+        // reverted: send the wanted state again so it replaces it.
+        if (!m_worker->geometryPending())
+            return true;
+        [[fallthrough]];
     case EmbeddedWindowWin32::GeometryCheck::NeedsUpdate:
         m_worker->requestGeometry(wanted.x, wanted.y, wanted.width, wanted.height, wanted.visible);
         return true;
@@ -338,6 +370,31 @@ bool NativeWindowHost::sync()
 #else
     return false;
 #endif
+}
+
+void NativeWindowHost::responsiveChanged(bool responding)
+{
+    if (!m_worker || m_unresponsive == !responding)
+        return;
+    if (!responding) {
+        // Its thread stopped processing messages (a long script, a deadlock):
+        // with the input queue shared, every click on NotepadAI and every
+        // activation change would wait for it. Unown it so they do not, and
+        // let Windows activate our window natively on the next click.
+        if (!EmbeddedWindowWin32::releaseOwnerWhileHung(m_targetHandle, m_token))
+            return;
+        m_unresponsive = true;
+        m_activateRetry.stop();
+        m_clickDecision.stop();
+        stopWaitingForPress();
+        qInfo("EmbeddedWindow: embedded app is not responding; released its input queue");
+        return;
+    }
+    // Answering again: take it back (sync() re-owns it) and put it above our
+    // window again if our window came over it meanwhile.
+    m_unresponsive = false;
+    if (sync())
+        m_worker->requestRaiseAboveOwner();
 }
 
 void NativeWindowHost::foregroundChanged(quintptr foreground)
@@ -417,6 +474,8 @@ void NativeWindowHost::stopTracking()
     m_clickDecision.stop();
     stopWaitingForPress();
     m_worker.reset();
+    ++m_probeGeneration;
+    m_unresponsive = false;
     m_targetHandle = 0;
     m_token = 0;
     m_topLevelHandle = 0;
