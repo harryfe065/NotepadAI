@@ -283,6 +283,11 @@ void DiffView::configureEditor()
     send(SCI_SETSCROLLWIDTHTRACKING, 1);
     send(SCI_SETCARETLINEVISIBLE, 0);
     send(SCI_RESETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK);
+    // The editor-wide View toggles must not leak in (EditorManager skips diff
+    // views when they change, so these stay off).
+    send(SCI_SETVIEWWS, SCWS_INVISIBLE);
+    send(SCI_SETVIEWEOL, 0);
+    send(SCI_SETINDENTATIONGUIDES, SC_IV_NONE);
 
     // One right-aligned text margin carries both number columns (margin text
     // is per line and shared by every text margin). Every margin mask is 0 so
@@ -1571,6 +1576,9 @@ void DiffView::layoutChrome()
     const QRect content = e->contentsRect();
     const QRect vp = e->viewport()->geometry();
     m_toolbar->setGeometry(content.left(), content.top(), vp.right() + 1 - content.left(), toolbarHeight);
+    // Built after the editor may already be on screen: a child created under a
+    // visible parent stays hidden until shown, leaving only its reserved margin.
+    if (m_toolbar->isHidden()) m_toolbar->show();
     m_toolbar->raise();
     if (m_treeHost) {
         m_treeHost->setVisible(tree);

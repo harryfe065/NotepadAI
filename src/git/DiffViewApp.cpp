@@ -30,4 +30,11 @@ ApplicationSettings *settings()
     return app ? app->getSettings() : nullptr;
 }
 
+void applyLanguageForPath(ScintillaNext *editor, const QString &relPath)
+{
+    auto *app = qobject_cast<NotepadNextApplication *>(QCoreApplication::instance());
+    if (!app || !editor) return;
+    app->setEditorLanguage(editor, app->detectLanguageFromPath(relPath));
+}
+
 } // namespace DiffViewApp

@@ -97,7 +97,6 @@ private:
     void load(const QByteArray &sha, bool keepPosition);
     void showDetail(quint64 serial, const std::shared_ptr<const GitCommitDetail> &detail, bool keepPosition);
     void onOpenFileRequested(const QString &relPath, int line, DiffView::Side side);
-    void styleFileAtShaEditor();
 
     // Show file content at a SHA in the shared file-at-sha tab, at `line` (1-based).
     void openFileAtSha(const QByteArray &sha, const QString &relPath, int line);

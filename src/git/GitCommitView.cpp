@@ -80,11 +80,6 @@ QByteArray makeFileAtShaKey(const QByteArray &sha, const QString &relPath)
     return k;
 }
 
-int bgr(const QColor &c)
-{
-    return c.red() | (c.green() << 8) | (c.blue() << 16);
-}
-
 void goToLine(ScintillaNext *editor, int line)
 {
     if (line <= 1) return;
@@ -138,21 +133,7 @@ void GitCommitView::setDarkPalette(bool dark)
     m_dark = dark;
     // Restyles the shown document in place; nothing is refetched.
     if (m_view) m_view->setDark(dark);
-    styleFileAtShaEditor();
-}
-
-void GitCommitView::styleFileAtShaEditor()
-{
-    ScintillaNext *e = m_fileAtShaEditor.data();
-    if (!e) return;
-    // Registered as a diff view, so the editor theme skips it: paint the
-    // plain text in the diff canvas colours.
-    const DiffViewColors colors = DiffViewColors::make(m_dark);
-    e->send(SCI_STYLESETFORE, STYLE_DEFAULT, bgr(colors.text));
-    e->send(SCI_STYLESETBACK, STYLE_DEFAULT, bgr(colors.canvas));
-    e->send(SCI_STYLECLEARALL);
-    e->send(SCI_STYLESETFORE, STYLE_LINENUMBER, bgr(colors.muted));
-    e->send(SCI_SETCARETFORE, bgr(colors.text));
+    // The file-at-revision tab is a plain editor: EditorManager themes it.
 }
 
 void GitCommitView::setWatcher(GitWatcher *watcher)
@@ -327,10 +308,9 @@ void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath,
     ScintillaNext *editor = m_fileAtShaEditor.data();
 
     if (needNewEditor) {
+        // A normal editor (themed, syntax-coloured), read-only below.
         editor = m_editorManager->createEditor(tabTitleForFileAtSha(sha, relPath));
-        m_editorManager->registerAsDiffView(editor);
         m_fileAtShaEditor = editor;
-        styleFileAtShaEditor();
         connect(editor, &QObject::destroyed, this, [this](QObject *) {
             m_currentFileAtShaKey.clear();
         });
@@ -342,12 +322,13 @@ void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath,
     m_currentFileAtShaKey = key;
 
     m_fileFetcher->request(sha, relPath,
-        [this, key](const QByteArray &bytes, bool truncated, const QString &err) {
+        [this, key, relPath](const QByteArray &bytes, bool truncated, const QString &err) {
         if (key != m_currentFileAtShaKey) return;     // stale
         ScintillaNext *e = m_fileAtShaEditor.data();
         if (!e) return;
         e->send(SCI_SETREADONLY, 0, 0);
         e->send(SCI_CLEARALL, 0, 0);
+        if (err.isEmpty()) DiffViewApp::applyLanguageForPath(e, relPath);
         if (!err.isEmpty()) {
             const QByteArray msg = tr("Could not load file: %1").arg(err).toUtf8();
             e->send(SCI_APPENDTEXT, msg.size(),
@@ -362,6 +343,9 @@ void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath,
                         reinterpret_cast<sptr_t>(foot.constData()));
             }
         }
+        // Not a document the user edited: no undo history, never "modified".
+        e->send(SCI_EMPTYUNDOBUFFER, 0, 0);
+        e->send(SCI_SETSAVEPOINT, 0, 0);
         e->send(SCI_SETREADONLY, 1, 0);
         goToLine(e, m_fileAtShaLine);
     });

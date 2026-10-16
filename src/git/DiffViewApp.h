@@ -20,6 +20,8 @@
 #define DIFF_VIEW_APP_H
 
 class ApplicationSettings;
+class QString;
+class ScintillaNext;
 
 // The diff view's link to the application, in its own translation unit so
 // tests and benches can link DiffView without NotepadNextApplication.
@@ -27,6 +29,10 @@ namespace DiffViewApp {
 
 // The application settings, or null outside the application.
 ApplicationSettings *settings();
+
+// Colours `editor` for the language its file extension names (no-op outside
+// the application).
+void applyLanguageForPath(ScintillaNext *editor, const QString &relPath);
 
 } // namespace DiffViewApp
 

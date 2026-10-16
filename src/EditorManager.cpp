@@ -93,19 +93,24 @@ EditorManager::EditorManager(ApplicationSettings *settings, QObject *parent)
     connect(settings, &ApplicationSettings::showWhitespaceChanged, this, [=](bool b) {
         // TODO: could make SCWS_VISIBLEALWAYS configurable via settings. Probably not worth
         // taking up menu space e.g. show all, show leading, show trailing
+        // Diff views never show whitespace dots, EOL marks or guides: the
+        // diff already marks changes, and the dots make indented code noisy.
         for (auto &editor : getEditors()) {
+            if (isDiffView(editor)) continue;
             editor->setViewWS(b ? SCWS_VISIBLEALWAYS : SCWS_INVISIBLE);
         }
     });
 
     connect(settings, &ApplicationSettings::showEndOfLineChanged, this, [=](bool b) {
         for (auto &editor : getEditors()) {
+            if (isDiffView(editor)) continue;
             editor->setViewEOL(b);
         }
     });
 
     connect(settings, &ApplicationSettings::showIndentGuideChanged, this, [=](bool b) {
         for (auto &editor : getEditors()) {
+            if (isDiffView(editor)) continue;
             editor->setIndentationGuides(b ? SC_IV_LOOKBOTH : SC_IV_NONE);
         }
     });
