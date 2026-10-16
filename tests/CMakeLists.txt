@@ -2757,3 +2757,26 @@ target_sources(test_texture_decoders PRIVATE
     ${CMAKE_SOURCE_DIR}/src/preview/AsepriteDecoder.cpp
 )
 add_test(NAME TextureDecoders COMMAND test_texture_decoders)
+
+# --- Model loaders: STL/PLY/VOX/glTF/GLB/OBJ, camera framing, animation sampling ---
+qt_add_executable(test_model_loaders test_model_loaders.cpp)
+target_include_directories(test_model_loaders PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/preview ${CMAKE_SOURCE_DIR}/src/preview/model)
+target_link_libraries(test_model_loaders PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Svg Qt6::Concurrent Qt6::Test stb_image bcdec tinyexr miniz cgltf ufbx fast_obj)
+target_sources(test_model_loaders PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/DdsDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/RasterDecoders.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/AsepriteDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/ModelDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/ModelLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/GltfLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/FbxLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/ObjLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/SimpleMeshLoaders.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/ModelAnimator.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/model/ModelCamera.cpp
+)
+add_test(NAME ModelLoaders COMMAND test_model_loaders)

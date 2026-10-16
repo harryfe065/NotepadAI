@@ -50,6 +50,7 @@ find_package(Qt6 6.5
             Core5Compat
             Concurrent
             Svg
+            OpenGL
 )
 
 option(NOTEPADAI_BUILD_TESTS "Build unit tests" OFF)

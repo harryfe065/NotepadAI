@@ -3,6 +3,8 @@
 #include "AsepriteDecoder.h"
 #include "DdsDecoder.h"
 #include "ImagePreviewWidget.h"
+#include "ModelLoader.h"
+#include "ModelPreviewWidget.h"
 #include "RasterDecoders.h"
 #include "LuaState.h"
 #include "NotepadNextApplication.h"
@@ -130,6 +132,23 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
                                  {QStringLiteral("svg"), QStringLiteral("svgz")});
     svg.sniffers = {isSvg};
     manager->registerType(QStringLiteral("svg"), svg);
+
+    // 3D models (add-model-preview). OBJ/PLY/glTF are text formats, but their
+    // extensions are unique to models, so they preview by default too.
+    PreviewTabManager::TypeRegistration model;
+    model.extensions = {QStringLiteral("gltf"), QStringLiteral("glb"), QStringLiteral("fbx"), QStringLiteral("obj"),
+                        QStringLiteral("stl"),  QStringLiteral("ply"), QStringLiteral("vox")};
+    model.iconPath = QStringLiteral(":/icons/model-preview.svg");
+    model.factory = [](QWidget *parent) -> PreviewContentWidget * {
+        return new ModelPreviewWidget(QStringLiteral("model"), QStringLiteral("3D model"), parent);
+    };
+    model.wantsFilePath = true;
+    model.displayName = QStringLiteral("3D model");
+    model.opensByDefault = true;
+    model.watchFile = true;
+    model.sniffers = {ModelLoader::looksLikeGlb, ModelLoader::looksLikeFbx, ModelLoader::looksLikePly,
+                      ModelLoader::looksLikeVox};
+    manager->registerType(QStringLiteral("model"), model);
 
     // Known text extensions skip the head read entirely. Snapshotted from the
     // Lua language table on first use (the table is loaded by then and never

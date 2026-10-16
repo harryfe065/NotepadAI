@@ -714,6 +714,23 @@ target_sources(NotepadAI PRIVATE
 )
 target_link_libraries(NotepadAI PRIVATE Qt6::Svg stb_image bcdec tinyexr)
 
+# 3D model tabs (add-model-preview): loaders (glTF via cgltf, FBX via ufbx,
+# OBJ via fast_obj, own STL/PLY/VOX) and the native OpenGL 3.3 viewer.
+target_sources(NotepadAI PRIVATE
+    preview/model/ModelDocument.cpp preview/model/ModelDocument.h
+    preview/model/ModelLoader.cpp preview/model/ModelLoader.h
+    preview/model/GltfLoader.cpp preview/model/GltfLoader.h
+    preview/model/FbxLoader.cpp preview/model/FbxLoader.h
+    preview/model/ObjLoader.cpp preview/model/ObjLoader.h
+    preview/model/SimpleMeshLoaders.cpp preview/model/SimpleMeshLoaders.h
+    preview/model/ModelAnimator.cpp preview/model/ModelAnimator.h
+    preview/model/ModelCamera.cpp preview/model/ModelCamera.h
+    preview/model/ModelRenderer.cpp preview/model/ModelRenderer.h
+    preview/model/ModelViewWindow.cpp preview/model/ModelViewWindow.h
+    preview/model/ModelPreviewWidget.cpp preview/model/ModelPreviewWidget.h
+)
+target_link_libraries(NotepadAI PRIVATE Qt6::OpenGL cgltf ufbx fast_obj)
+
 # Platform-conditional CredentialStore backend + native API link.
 if(WIN32)
     target_sources(NotepadAI PRIVATE ai/CredentialStore_Windows.cpp)
@@ -761,6 +778,7 @@ target_include_directories(NotepadAI
         ${CMAKE_CURRENT_SOURCE_DIR}/docks
         ${CMAKE_CURRENT_SOURCE_DIR}/git
         ${CMAKE_CURRENT_SOURCE_DIR}/preview
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/model
         ${CMAKE_CURRENT_SOURCE_DIR}/remote
         ${CMAKE_CURRENT_SOURCE_DIR}/widgets
         ${CMAKE_CURRENT_SOURCE_DIR}

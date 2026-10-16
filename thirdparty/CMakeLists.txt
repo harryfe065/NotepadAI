@@ -56,6 +56,10 @@ add_subdirectory(miniz)
 add_subdirectory(stb)
 add_subdirectory(bcdec)
 add_subdirectory(tinyexr)
+# Model preview loaders (add-model-preview).
+add_subdirectory(cgltf)
+add_subdirectory(ufbx)
+add_subdirectory(fast_obj)
 
 # SSH remote transport (vendored). mbedTLS MUST be added before libssh2 — the
 # libssh2 wrapper consumes NN_MBEDTLS_INCLUDE_DIR + the mbedcrypto target that
