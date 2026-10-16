@@ -24,6 +24,7 @@
 
 #include <QAbstractItemModel>
 #include <QHash>
+#include <QItemSelection>
 
 #include <cstdint>
 
@@ -65,9 +66,19 @@ public:
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
     Qt::ItemFlags flags(const QModelIndex &index) const override;
 
-    void setEntries(const GitStatusEntries &entries);
-    // Merge numstat hash (keyed by relPath) into the matching side. Emits
-    // dataChanged for affected rows; safe to call repeatedly.
+    // Replace the contents with `entries` (parser order). Rows whose path stays
+    // in a section are kept in place, so selection, expansion, scroll and the
+    // last known numstat survive (numstat is refreshed by mergeNumstat later);
+    // only inserted/removed runs and changed rows are signalled. Falls back to
+    // a model reset when the edit script is too fragmented.
+    void setEntries(GitStatusEntries entries);
+    // Bumped by every setEntries() (numstat merges excluded), so observers
+    // can tell whether the status rows moved since they last looked.
+    std::uint64_t changeSerial() const { return m_changeSerial; }
+    // Merge numstat hash (keyed by relPath) into the matching side; rows of
+    // that side missing from `stats` go back to unknown (-1). Emits one
+    // dataChanged per run of rows whose values changed; a repeat call with
+    // the same stats emits nothing.
     void mergeNumstat(const QHash<QString, GitNumstatParser::Stat> &stats, bool stagedSide);
 
     // Merge aggregated inner-submodule stats. Applies to ALL entries with the
@@ -94,6 +105,10 @@ public:
     QStringList relPathsInSection(GitStatusEntry::Section s) const;
     QStringList stagedSelectionPaths(const QModelIndexList &idxs) const;
     QStringList unstagedSelectionPaths(const QModelIndexList &idxs) const;
+    // True when a selection (child rows of sections) reaches the staged /
+    // unstaged side. O(ranges), no path list is built.
+    bool selectionHasStaged(const QItemSelection &sel) const;
+    bool selectionHasUnstaged(const QItemSelection &sel) const;
 
     // Concatenated view of all sections' entries — section-order:
     // Conflicts, Staged, Tracked, Untracked. Returned by value (cheap copy
@@ -105,11 +120,18 @@ public:
     static QString changeShort(GitStatusEntry::Change c);
 
 private:
+    // Child indexes carry their Section value as internalId (sections carry
+    // SECTION_PARENT), so they stay valid while sections appear or vanish
+    // above them.
     GitStatusEntries m_buckets[GitStatusEntry::SectionCount];
     // Map from visible row index → real Section value. Sections with 0 entries are skipped.
     QVector<GitStatusEntry::Section> m_visibleSections;
+    std::uint64_t m_changeSerial = 0;
     bool m_isDark = false;
     void rebuildVisible();
+    int visibleRowOf(GitStatusEntry::Section s) const;
+    QModelIndex sectionIndex(GitStatusEntry::Section s) const;
+    void resetTo(GitStatusEntries (&next)[GitStatusEntry::SectionCount]);
 };
 
 #endif // GIT_STATUS_MODEL_H

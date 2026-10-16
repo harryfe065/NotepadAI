@@ -22,10 +22,79 @@
 
 #include <QBrush>
 #include <QCoreApplication>
+#include <QSet>
 
 namespace {
 constexpr quintptr SECTION_PARENT = quintptr(-1);
+
+// Beyond this many inserted/removed runs a reset is cheaper than replaying
+// the edit script (each run shifts the bucket tail once).
+constexpr int kMaxStructuralRuns = 64;
+
+const QList<int> kNumstatRoles{ Qt::DisplayRole, GitStatusModel::AddedLinesRole,
+                                GitStatusModel::DeletedLinesRole, GitStatusModel::IsBinaryRole };
+
+// Everything status reports about a row, numstat excluded (that arrives
+// later and is carried over).
+bool sameStatus(const GitStatusEntry &a, const GitStatusEntry &b)
+{
+    return a.change == b.change && a.stagedSide == b.stagedSide
+        && a.isSubmodule == b.isSubmodule
+        && a.subHasModifiedContent == b.subHasModifiedContent
+        && a.hasUnstableEncoding == b.hasUnstableEncoding
+        && a.isModeOnly == b.isModeOnly
+        && a.xy == b.xy && a.origRelPath == b.origRelPath
+        && a.oursSha == b.oursSha && a.theirsSha == b.theirsSha;
 }
+
+void carryNumstat(GitStatusEntry &to, const GitStatusEntry &from)
+{
+    to.addedLines = from.addedLines;
+    to.deletedLines = from.deletedLines;
+    to.isBinary = from.isBinary;
+    to.subAddedLines = from.subAddedLines;
+    to.subDeletedLines = from.subDeletedLines;
+}
+
+struct Run {
+    enum Kind : std::uint8_t { Keep, Remove, Insert };
+    Kind kind;
+    int count;
+};
+
+void pushRun(QVector<Run> &runs, Run::Kind kind)
+{
+    if (!runs.isEmpty() && runs.last().kind == kind) ++runs.last().count;
+    else runs.append({ kind, 1 });
+}
+
+// Edit script turning `cur` into `next`, matching rows by relPath with a
+// merge walk. Valid for any order (every next row is kept or inserted in
+// order, every cur row kept or removed); minimal when both lists share an
+// order, which git's path-sorted output gives.
+QVector<Run> diffRuns(const GitStatusEntries &cur, const GitStatusEntries &next)
+{
+    QVector<Run> runs;
+    qsizetype i = 0;
+    qsizetype j = 0;
+    while (i < cur.size() && j < next.size()) {
+        const int c = QString::compare(cur.at(i).relPath, next.at(j).relPath);
+        if (c == 0) { pushRun(runs, Run::Keep); ++i; ++j; }
+        else if (c < 0) { pushRun(runs, Run::Remove); ++i; }
+        else { pushRun(runs, Run::Insert); ++j; }
+    }
+    for (; i < cur.size(); ++i) pushRun(runs, Run::Remove);
+    for (; j < next.size(); ++j) pushRun(runs, Run::Insert);
+    return runs;
+}
+
+int structuralRuns(const QVector<Run> &runs)
+{
+    int n = 0;
+    for (const Run &r : runs) n += r.kind != Run::Keep;
+    return n;
+}
+} // namespace
 
 GitStatusModel::GitStatusModel(QObject *parent) : QAbstractItemModel(parent)
 {
@@ -66,13 +135,132 @@ void GitStatusModel::rebuildVisible()
     }
 }
 
-void GitStatusModel::setEntries(const GitStatusEntries &entries)
+int GitStatusModel::visibleRowOf(GitStatusEntry::Section s) const
+{
+    for (int v = 0; v < m_visibleSections.size(); ++v)
+        if (m_visibleSections.at(v) == s) return v;
+    return -1;
+}
+
+QModelIndex GitStatusModel::sectionIndex(GitStatusEntry::Section s) const
+{
+    const int v = visibleRowOf(s);
+    return v < 0 ? QModelIndex() : createIndex(v, 0, SECTION_PARENT);
+}
+
+void GitStatusModel::resetTo(GitStatusEntries (&next)[GitStatusEntry::SectionCount])
 {
     beginResetModel();
-    for (int s = 0; s < GitStatusEntry::SectionCount; ++s) m_buckets[s].clear();
-    for (const GitStatusEntry &e : entries) m_buckets[e.section].append(e);
+    for (int s = 0; s < GitStatusEntry::SectionCount; ++s) {
+        // Keep the last known numstat for rows that survive, like the
+        // incremental path does.
+        QHash<QString, const GitStatusEntry *> old;
+        old.reserve(m_buckets[s].size());
+        for (const GitStatusEntry &e : std::as_const(m_buckets[s])) old.insert(e.relPath, &e);
+        for (GitStatusEntry &e : next[s]) {
+            const auto it = old.constFind(e.relPath);
+            if (it != old.constEnd()) carryNumstat(e, **it);
+        }
+    }
+    for (int s = 0; s < GitStatusEntry::SectionCount; ++s) m_buckets[s] = std::move(next[s]);
     rebuildVisible();
     endResetModel();
+}
+
+void GitStatusModel::setEntries(GitStatusEntries entries)
+{
+    ++m_changeSerial;
+    GitStatusEntries next[GitStatusEntry::SectionCount];
+    for (GitStatusEntry &e : entries) next[e.section].append(std::move(e));
+    entries.clear();
+
+    // Plan first: a fragmented script (mass rename, repo switch) resets.
+    QVector<Run> runs[GitStatusEntry::SectionCount];
+    int structural = 0;
+    for (int s = 0; s < GitStatusEntry::SectionCount; ++s) {
+        if (m_buckets[s].isEmpty() || next[s].isEmpty()) continue;
+        runs[s] = diffRuns(m_buckets[s], next[s]);
+        structural += structuralRuns(runs[s]);
+    }
+    if (structural > kMaxStructuralRuns) {
+        resetTo(next);
+        return;
+    }
+
+    for (int si = 0; si < GitStatusEntry::SectionCount; ++si) {
+        const auto s = static_cast<GitStatusEntry::Section>(si);
+        GitStatusEntries &bucket = m_buckets[s];
+        GitStatusEntries &incoming = next[s];
+        if (bucket.isEmpty() && incoming.isEmpty()) continue;
+
+        if (incoming.isEmpty()) {
+            const int v = visibleRowOf(s);
+            beginRemoveRows(QModelIndex(), v, v);
+            bucket.clear();
+            rebuildVisible();
+            endRemoveRows();
+            continue;
+        }
+        if (bucket.isEmpty()) {
+            // Sections before s are already final, so the new row's position
+            // is the number of visible sections below s.
+            int v = 0;
+            while (v < m_visibleSections.size() && m_visibleSections.at(v) < s) ++v;
+            beginInsertRows(QModelIndex(), v, v);
+            bucket = std::move(incoming);
+            rebuildVisible();
+            endInsertRows();
+            continue;
+        }
+
+        const QModelIndex parentIdx = sectionIndex(s);
+        const qsizetype oldCount = bucket.size();
+        qsizetype row = 0;
+        qsizetype j = 0;
+        qsizetype firstChanged = -1;
+        qsizetype lastChanged = -1;
+        const auto flushChanged = [&]() {
+            if (firstChanged < 0) return;
+            emit dataChanged(createIndex(int(firstChanged), 0, quintptr(s)),
+                             createIndex(int(lastChanged), 0, quintptr(s)));
+            firstChanged = -1;
+        };
+        for (const Run &r : std::as_const(runs[s])) {
+            switch (r.kind) {
+            case Run::Keep:
+                for (int k = 0; k < r.count; ++k, ++row, ++j) {
+                    GitStatusEntry &cur = bucket[row];
+                    if (sameStatus(cur, incoming.at(j))) continue;
+                    GitStatusEntry fresh = std::move(incoming[j]);
+                    carryNumstat(fresh, cur);
+                    cur = std::move(fresh);
+                    if (firstChanged >= 0 && lastChanged + 1 != row) flushChanged();
+                    if (firstChanged < 0) firstChanged = row;
+                    lastChanged = row;
+                }
+                break;
+            case Run::Remove:
+                flushChanged();
+                beginRemoveRows(parentIdx, int(row), int(row + r.count - 1));
+                bucket.remove(row, r.count);
+                endRemoveRows();
+                break;
+            case Run::Insert:
+                flushChanged();
+                beginInsertRows(parentIdx, int(row), int(row + r.count - 1));
+                bucket.insert(row, r.count, GitStatusEntry());
+                for (int k = 0; k < r.count; ++k) bucket[row + k] = std::move(incoming[j + k]);
+                endInsertRows();
+                row += r.count;
+                j += r.count;
+                break;
+            }
+        }
+        flushChanged();
+        // Section title carries the row count.
+        if (bucket.size() != oldCount)
+            emit dataChanged(parentIdx, parentIdx, { Qt::DisplayRole });
+    }
 }
 
 int GitStatusModel::columnCount(const QModelIndex &) const { return 1; }
@@ -95,19 +283,17 @@ QModelIndex GitStatusModel::index(int row, int col, const QModelIndex &parent) c
     }
     if (parent.internalId() != SECTION_PARENT) return {};
     if (parent.row() < 0 || parent.row() >= m_visibleSections.size()) return {};
-    const auto &bucket = m_buckets[m_visibleSections.at(parent.row())];
-    if (row < 0 || row >= bucket.size()) return {};
-    // store parent.row() in internalId so parent() can find back to section
-    return createIndex(row, col, quintptr(parent.row()));
+    const GitStatusEntry::Section s = m_visibleSections.at(parent.row());
+    if (row < 0 || row >= m_buckets[s].size()) return {};
+    return createIndex(row, col, quintptr(s));
 }
 
 QModelIndex GitStatusModel::parent(const QModelIndex &child) const
 {
     if (!child.isValid()) return {};
     if (child.internalId() == SECTION_PARENT) return {};
-    const int sectionRow = int(child.internalId());
-    if (sectionRow < 0 || sectionRow >= m_visibleSections.size()) return {};
-    return createIndex(sectionRow, 0, SECTION_PARENT);
+    if (child.internalId() >= GitStatusEntry::SectionCount) return {};
+    return sectionIndex(static_cast<GitStatusEntry::Section>(child.internalId()));
 }
 
 Qt::ItemFlags GitStatusModel::flags(const QModelIndex &index) const
@@ -126,9 +312,13 @@ bool GitStatusModel::isSection(const QModelIndex &i) const
 GitStatusEntry::Section GitStatusModel::sectionOf(const QModelIndex &i) const
 {
     if (!i.isValid()) return GitStatusEntry::Tracked;
-    const int row = isSection(i) ? i.row() : int(i.internalId());
-    if (row < 0 || row >= m_visibleSections.size()) return GitStatusEntry::Tracked;
-    return m_visibleSections.at(row);
+    if (isSection(i)) {
+        const int row = i.row();
+        if (row < 0 || row >= m_visibleSections.size()) return GitStatusEntry::Tracked;
+        return m_visibleSections.at(row);
+    }
+    if (i.internalId() >= GitStatusEntry::SectionCount) return GitStatusEntry::Tracked;
+    return static_cast<GitStatusEntry::Section>(i.internalId());
 }
 
 int GitStatusModel::entriesInSection(GitStatusEntry::Section s) const
@@ -218,31 +408,42 @@ QVariant GitStatusModel::data(const QModelIndex &index, int role) const
 
 void GitStatusModel::mergeNumstat(const QHash<QString, GitNumstatParser::Stat> &stats, bool stagedSide)
 {
-    if (stats.isEmpty()) return;
-    // Update entries whose stagedSide matches. Emit per-row dataChanged so
-    // QStyledItemDelegate repaints only affected rows.
-    for (int s = 0; s < GitStatusEntry::SectionCount; ++s) {
-        const bool sectionIsStaged = (s == GitStatusEntry::Staged);
+    for (int si = 0; si < GitStatusEntry::SectionCount; ++si) {
+        const bool sectionIsStaged = (si == GitStatusEntry::Staged);
         if (sectionIsStaged != stagedSide) continue;
-        auto &bucket = m_buckets[s];
+        // Untracked rows never appear in `git diff --numstat`.
+        if (si == GitStatusEntry::Untracked) continue;
+        auto &bucket = m_buckets[si];
+        int first = -1;
+        int last = -1;
+        const auto flush = [&]() {
+            if (first < 0) return;
+            emit dataChanged(createIndex(first, 0, quintptr(si)),
+                             createIndex(last, 0, quintptr(si)), kNumstatRoles);
+            first = -1;
+        };
         for (int r = 0; r < bucket.size(); ++r) {
-            const auto it = stats.constFind(bucket.at(r).relPath);
-            if (it == stats.constEnd()) continue;
             GitStatusEntry &e = bucket[r];
-            e.addedLines = it->added;
-            e.deletedLines = it->deleted;
-            e.isBinary = it->isBinary;
-
-            // Locate visible row index for this bucket position.
-            int visParent = -1;
-            for (int v = 0; v < m_visibleSections.size(); ++v) {
-                if (m_visibleSections.at(v) == s) { visParent = v; break; }
+            qint32 added = -1;
+            qint32 deleted = -1;
+            bool binary = false;
+            const auto it = stats.constFind(e.relPath);
+            if (it != stats.constEnd()) {
+                added = it->added;
+                deleted = it->deleted;
+                binary = it->isBinary;
             }
-            if (visParent < 0) continue;
-            const QModelIndex parentIdx = createIndex(visParent, 0, quintptr(-1));
-            const QModelIndex idx = index(r, 0, parentIdx);
-            emit dataChanged(idx, idx, { Qt::DisplayRole, AddedLinesRole, DeletedLinesRole, IsBinaryRole });
+            if (e.addedLines == added && e.deletedLines == deleted && e.isBinary == binary) {
+                flush();
+                continue;
+            }
+            e.addedLines = added;
+            e.deletedLines = deleted;
+            e.isBinary = binary;
+            if (first < 0) first = r;
+            last = r;
         }
+        flush();
     }
 }
 
@@ -260,14 +461,7 @@ void GitStatusModel::mergeSubmoduleStats(const QString &relPath, qint32 added, q
             if (e.subAddedLines == added && e.subDeletedLines == deleted) continue;
             e.subAddedLines = added;
             e.subDeletedLines = deleted;
-
-            int visParent = -1;
-            for (int v = 0; v < m_visibleSections.size(); ++v) {
-                if (m_visibleSections.at(v) == s) { visParent = v; break; }
-            }
-            if (visParent < 0) continue;
-            const QModelIndex parentIdx = createIndex(visParent, 0, quintptr(-1));
-            const QModelIndex idx = index(r, 0, parentIdx);
+            const QModelIndex idx = createIndex(r, 0, quintptr(s));
             emit dataChanged(idx, idx, { Qt::DisplayRole, SubAddedLinesRole, SubDeletedLinesRole });
         }
     }
@@ -318,63 +512,81 @@ GitStatusEntries GitStatusModel::allEntries() const
     return out;
 }
 
+namespace {
+// Ordered, de-duplicated path collector (selections can name a section and
+// its rows at once).
+struct PathCollector {
+    QStringList out;
+    QSet<QString> seen;
+    void add(const QString &p)
+    {
+        if (!seen.contains(p)) { seen.insert(p); out.append(p); }
+    }
+};
+} // namespace
+
 QStringList GitStatusModel::relPathsAtIndexes(const QModelIndexList &idxs) const
 {
-    QStringList out;
+    PathCollector c;
     for (const QModelIndex &i : idxs) {
         if (!i.isValid()) continue;
+        const auto sec = sectionOf(i);
         if (isSection(i)) {
-            const auto sec = sectionOf(i);
-            for (const GitStatusEntry &e : m_buckets[sec])
-                if (!out.contains(e.relPath)) out.append(e.relPath);
-        } else {
-            const auto sec = sectionOf(i);
-            if (i.row() < m_buckets[sec].size()) {
-                const QString p = m_buckets[sec].at(i.row()).relPath;
-                if (!out.contains(p)) out.append(p);
-            }
+            for (const GitStatusEntry &e : m_buckets[sec]) c.add(e.relPath);
+        } else if (i.row() < m_buckets[sec].size()) {
+            c.add(m_buckets[sec].at(i.row()).relPath);
         }
     }
-    return out;
+    return c.out;
 }
 
 QStringList GitStatusModel::stagedSelectionPaths(const QModelIndexList &idxs) const
 {
-    QStringList out;
+    PathCollector c;
     for (const QModelIndex &i : idxs) {
         if (!i.isValid()) continue;
+        const auto sec = sectionOf(i);
+        if (sec != GitStatusEntry::Staged) continue;
         if (isSection(i)) {
-            if (sectionOf(i) == GitStatusEntry::Staged)
-                for (const GitStatusEntry &e : m_buckets[GitStatusEntry::Staged])
-                    if (!out.contains(e.relPath)) out.append(e.relPath);
-        } else {
-            const auto sec = sectionOf(i);
-            if (sec == GitStatusEntry::Staged && i.row() < m_buckets[sec].size()) {
-                const QString p = m_buckets[sec].at(i.row()).relPath;
-                if (!out.contains(p)) out.append(p);
-            }
+            for (const GitStatusEntry &e : m_buckets[sec]) c.add(e.relPath);
+        } else if (i.row() < m_buckets[sec].size()) {
+            c.add(m_buckets[sec].at(i.row()).relPath);
         }
     }
-    return out;
+    return c.out;
 }
 
 QStringList GitStatusModel::unstagedSelectionPaths(const QModelIndexList &idxs) const
 {
-    QStringList out;
+    PathCollector c;
     for (const QModelIndex &i : idxs) {
         if (!i.isValid()) continue;
+        const auto sec = sectionOf(i);
+        if (sec != GitStatusEntry::Tracked && sec != GitStatusEntry::Untracked) continue;
         if (isSection(i)) {
-            const auto sec = sectionOf(i);
-            if (sec == GitStatusEntry::Tracked || sec == GitStatusEntry::Untracked)
-                for (const GitStatusEntry &e : m_buckets[sec])
-                    if (!out.contains(e.relPath)) out.append(e.relPath);
-        } else {
-            const auto sec = sectionOf(i);
-            if ((sec == GitStatusEntry::Tracked || sec == GitStatusEntry::Untracked) && i.row() < m_buckets[sec].size()) {
-                const QString p = m_buckets[sec].at(i.row()).relPath;
-                if (!out.contains(p)) out.append(p);
-            }
+            for (const GitStatusEntry &e : m_buckets[sec]) c.add(e.relPath);
+        } else if (i.row() < m_buckets[sec].size()) {
+            c.add(m_buckets[sec].at(i.row()).relPath);
         }
     }
-    return out;
+    return c.out;
+}
+
+bool GitStatusModel::selectionHasStaged(const QItemSelection &sel) const
+{
+    for (const QItemSelectionRange &r : sel) {
+        if (!r.isValid() || r.model() != this || !r.parent().isValid()) continue;
+        if (sectionOf(r.parent()) == GitStatusEntry::Staged) return true;
+    }
+    return false;
+}
+
+bool GitStatusModel::selectionHasUnstaged(const QItemSelection &sel) const
+{
+    for (const QItemSelectionRange &r : sel) {
+        if (!r.isValid() || r.model() != this || !r.parent().isValid()) continue;
+        const auto sec = sectionOf(r.parent());
+        if (sec == GitStatusEntry::Tracked || sec == GitStatusEntry::Untracked) return true;
+    }
+    return false;
 }

@@ -438,6 +438,8 @@ qt_add_executable(NotepadAI
 	git/GitStatusModel.h
 	git/GitStatusParser.cpp
 	git/GitStatusParser.h
+	git/GitStatusSync.cpp
+	git/GitStatusSync.h
 	git/GitTabWidget.cpp
 	git/GitTabWidget.h
 	git/GitTypes.cpp

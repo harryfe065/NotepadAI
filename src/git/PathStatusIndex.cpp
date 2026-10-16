@@ -101,7 +101,10 @@ void PathStatusIndex::rebuild(const GitStatusEntries &entries,
 
         // Folder rollup: walk parents up to (but excluding) root. Compare
         // by string prefix because QFileInfo::absolutePath would allocate
-        // repeatedly inside the loop.
+        // repeatedly inside the loop. Every folder is at least as bad as its
+        // children, so once an ancestor already holds a status at least this
+        // bad, every folder above it does too: stop there. Siblings then cost
+        // one lookup instead of one per directory level.
         int cut = abs.lastIndexOf(slash);
         while (cut > root.size()) {
             const QString ancestor = abs.left(cut);
@@ -110,8 +113,10 @@ void PathStatusIndex::rebuild(const GitStatusEntries &entries,
             auto fit = m_folders.find(ancestor);
             if (fit == m_folders.end()) {
                 m_folders.insert(ancestor, e.change);
+            } else if (worseChange(*fit, e.change) == *fit) {
+                break;
             } else {
-                *fit = worseChange(*fit, e.change);
+                *fit = e.change;
             }
             cut = abs.lastIndexOf(slash, cut - 1);
         }

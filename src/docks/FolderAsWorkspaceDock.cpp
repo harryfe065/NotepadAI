@@ -51,6 +51,7 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHelpEvent>
@@ -69,6 +70,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <utility>
 
@@ -1170,8 +1172,8 @@ void FolderAsWorkspaceDock::ensureGitTab()
     // for the controller pointer to be non-null. Using a queued one-shot
     // captures the controller post-init.
     if (GitController *c = gitTab->controller()) {
-        connect(c, &GitController::statusUpdated,
-                this, &FolderAsWorkspaceDock::onStatusUpdated);
+        connect(c, &GitController::statusRefreshed,
+                this, &FolderAsWorkspaceDock::onStatusRefreshed);
     }
 
     gitTab->initializeIfNeeded();
@@ -1181,25 +1183,28 @@ void FolderAsWorkspaceDock::ensureGitTab()
     if (GitController *c = gitTab->controller()) {
         // Guard against double-connect (Qt deduplicates the same method ptr +
         // sender + receiver tuple by default when UniqueConnection is set).
-        connect(c, &GitController::statusUpdated,
-                this, &FolderAsWorkspaceDock::onStatusUpdated,
+        connect(c, &GitController::statusRefreshed,
+                this, &FolderAsWorkspaceDock::onStatusRefreshed,
                 Qt::UniqueConnection);
     }
 
     // Drain any status the controller has cached at this point (rare, but
     // covers the case where the new workspace inherits an in-flight refresh
     // from a quick re-open of the same path).
-    onStatusUpdated();
+    onStatusRefreshed();
 }
 
-void FolderAsWorkspaceDock::onStatusUpdated()
+void FolderAsWorkspaceDock::onStatusRefreshed()
 {
-    PROFILE_SCOPE("FolderAsWorkspaceDock::onStatusUpdated");
+    PROFILE_SCOPE("FolderAsWorkspaceDock::onStatusRefreshed");
 
     if (!gitTab || !gitTab->controller() || !gitTab->controller()->statusModel()) {
         // Nothing to read yet. If we previously had entries, clear them so
         // stale decorations disappear (e.g. controller errored out).
+        m_decoratedStatusSerial = std::uint64_t(-1);
+        m_submodulePaths.clear();
         if (!m_pathStatus.isEmpty()) {
+            ++m_pathStatusGeneration; // a rebuild in flight must not resurrect them
             const QSet<QString> stale = m_pathStatus.allIndexedPaths();
             m_pathStatus.clear();
             if (model) model->notifyPathsChanged(stale);
@@ -1208,24 +1213,35 @@ void FolderAsWorkspaceDock::onStatusUpdated()
     }
 
     const GitController *c = gitTab->controller();
-    const GitStatusEntries parentEntries = c->statusModel()->allEntries();
+    const GitStatusModel *status = c->statusModel();
     const QString repoTop = c->currentRepo();
+    const bool parentChanged = status->changeSerial() != m_decoratedStatusSerial;
+    // Same parent status and no submodules: nothing can have changed.
+    if (!parentChanged && m_submodulePaths.isEmpty()) return;
 
-    // Stage 1: paint immediately with parent entries only. The submodule
-    // folder itself is coloured here (its entry has isSubmodule=true →
-    // PathStatusIndex registers it as a folder), but files inside the
-    // submodule remain undecorated until the async sub-status returns.
-    applyMergedEntries(parentEntries, repoTop);
+    const GitStatusEntries parentEntries = status->allEntries();
+    if (parentChanged) {
+        m_decoratedStatusSerial = status->changeSerial();
+        // Stage 1: paint with parent entries only. The submodule folder itself
+        // is coloured here (its entry has isSubmodule=true → PathStatusIndex
+        // registers it as a folder), but files inside the submodule remain
+        // undecorated until the async sub-status returns.
+        applyMergedEntries(parentEntries, repoTop);
+        m_submodulePaths.clear();
+        for (const GitStatusEntry &e : parentEntries) {
+            if (e.isSubmodule && !e.relPath.isEmpty() && !m_submodulePaths.contains(e.relPath))
+                m_submodulePaths.append(e.relPath);
+        }
+    }
 
-    // Stage 2: collect submodule paths from the parent's entries and kick off
-    // a fan-out fetch. The fetcher cancels any prior in-flight round, so
-    // back-to-back refreshes coalesce safely.
+    // Stage 2: fan out a status fetch per submodule. The fetcher cancels any
+    // prior in-flight round, so back-to-back refreshes coalesce safely.
     QVector<SubmoduleStatusFetcher::Submodule> submodules;
-    for (const GitStatusEntry &e : parentEntries) {
-        if (!e.isSubmodule || e.relPath.isEmpty()) continue;
+    submodules.reserve(m_submodulePaths.size());
+    for (const QString &rel : std::as_const(m_submodulePaths)) {
         SubmoduleStatusFetcher::Submodule s;
-        s.absPath = QDir::cleanPath(repoTop + QLatin1Char('/') + e.relPath);
-        s.relFromRoot = e.relPath;
+        s.absPath = QDir::cleanPath(repoTop + QLatin1Char('/') + rel);
+        s.relFromRoot = rel;
         submodules.append(s);
     }
 
@@ -1259,19 +1275,38 @@ void FolderAsWorkspaceDock::onSubmoduleEntriesReady(const GitStatusEntries &entr
     m_pendingRepoTop.clear();
 }
 
-void FolderAsWorkspaceDock::applyMergedEntries(const GitStatusEntries &merged,
+void FolderAsWorkspaceDock::applyMergedEntries(GitStatusEntries merged,
                                                const QString &repoTop)
 {
-    PathStatusIndex next;
-    next.rebuild(merged, repoTop);
-
-    const QSet<QString> delta = next.deltaPaths(m_pathStatus);
-    m_pathStatus = std::move(next);
-    if (model) {
-        model->notifyPathsChanged(delta);
-    } else if (auto *rm = qobject_cast<remote::RemoteFileSystemModel *>(fsModel ? fsModel->asModel() : nullptr)) {
-        rm->notifyPathsChanged(delta);
-    }
+    struct Rebuilt {
+        PathStatusIndex index;
+        QSet<QString> delta;
+    };
+    // The delta is taken against the index as it is now. A newer launch
+    // supersedes this one, so whichever result applies was computed against
+    // the m_pathStatus it replaces (synchronous changes bump the generation too).
+    const std::uint64_t gen = ++m_pathStatusGeneration;
+    auto *watcher = new QFutureWatcher<Rebuilt>(this);
+    connect(watcher, &QFutureWatcher<Rebuilt>::finished, this, [this, watcher, gen]() {
+        watcher->deleteLater();
+        if (gen != m_pathStatusGeneration) return;
+        Rebuilt r = watcher->future().takeResult();
+        m_pathStatus = std::move(r.index);
+        if (model) {
+            model->notifyPathsChanged(r.delta);
+        } else if (auto *rm = qobject_cast<remote::RemoteFileSystemModel *>(fsModel ? fsModel->asModel() : nullptr)) {
+            rm->notifyPathsChanged(r.delta);
+        }
+    });
+    // PathStatusIndex is a pair of implicitly shared hashes: the worker reads
+    // its own snapshot while the UI keeps painting from m_pathStatus.
+    watcher->setFuture(QtConcurrent::run(
+        [merged = std::move(merged), repoTop, previous = m_pathStatus]() {
+            Rebuilt r;
+            r.index.rebuild(merged, repoTop);
+            r.delta = r.index.deltaPaths(previous);
+            return r;
+        }));
 }
 
 SubmoduleStatusFetcher *FolderAsWorkspaceDock::ensureSubmoduleFetcher()

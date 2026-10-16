@@ -115,6 +115,8 @@ QStringList GitWatcher::currentWatchedFiles() const
     files.append(m_gitDir + QStringLiteral("/HEAD"));
     files.append(m_gitDir + QStringLiteral("/index"));
     files.append(m_gitDir + QStringLiteral("/packed-refs"));
+    // Remotes live here; refreshes for working-tree changes no longer re-list them.
+    files.append(m_gitDir + QStringLiteral("/config"));
     files.append(m_gitDir + QStringLiteral("/MERGE_HEAD"));
     files.append(m_gitDir + QStringLiteral("/REBASE_HEAD"));
     // Trim missing files; QFileSystemWatcher will warn loudly on misses.
@@ -165,7 +167,8 @@ void GitWatcher::onFileChanged(const QString &path)
 {
     if (path.endsWith(QStringLiteral("/HEAD")))              m_pending |= PHead;
     else if (path.endsWith(QStringLiteral("/index")))        m_pending |= PIndex;
-    else if (path.endsWith(QStringLiteral("/packed-refs")))  m_pending |= PRefs;
+    else if (path.endsWith(QStringLiteral("/packed-refs"))
+             || path.endsWith(QStringLiteral("/config")))     m_pending |= PRefs;
     else if (path.endsWith(QStringLiteral("/MERGE_HEAD")) ||
              path.endsWith(QStringLiteral("/REBASE_HEAD")))  m_pending |= POpState;
     else                                                     m_pending |= PTree;

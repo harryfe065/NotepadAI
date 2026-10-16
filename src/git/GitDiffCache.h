@@ -32,8 +32,9 @@
 
 // LRU cache for parsed diffs, keyed by (repo, relPath, stagedSide). Stores the
 // fully parsed Result + the optional syntax overlay to skip re-parsing and
-// re-lexing on tab re-activation. Cleared en bloc whenever statusUpdated
-// fires — smart invalidation would require extra git spawns to verify blob
+// re-lexing on tab re-activation. Cleared en bloc on every status refresh
+// (GitController::statusRefreshed), since a file can change while its status
+// stays the same — smart invalidation would require extra git spawns to verify blob
 // shas, and the win is negligible compared to the cost.
 class GitDiffCache
 {
@@ -53,7 +54,7 @@ public:
     Entry get(Key k);
     void put(Key k, Entry value, qsizetype rawDiffBytes);
 
-    // Drop everything. Called on statusUpdated.
+    // Drop everything. Called on statusRefreshed.
     void clear();
 
     qsizetype sizeBytes() const { return m_sizeBytes; }

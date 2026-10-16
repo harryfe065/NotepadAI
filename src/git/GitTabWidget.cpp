@@ -1377,7 +1377,6 @@ void GitTabWidget::onControllerState(GitController::State s)
 
 void GitTabWidget::onStatusUpdated()
 {
-    if (m_changesPanel) m_changesPanel->expandTree();
     updateActionsEnabled();
 }
 

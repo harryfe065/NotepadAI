@@ -179,6 +179,7 @@ void ChangesPanel::buildUi()
 
 void ChangesPanel::setStatusModel(GitStatusModel *model)
 {
+    if (m_statusModel) disconnect(m_statusModel, nullptr, this, nullptr);
     m_statusModel = model;
     m_tree->setModel(model);
     // QTreeView::setModel rebuilds the selection model, so we have to (re)wire
@@ -186,6 +187,19 @@ void ChangesPanel::setStatusModel(GitStatusModel *model)
     if (auto *sel = m_tree->selectionModel()) {
         connect(sel, &QItemSelectionModel::selectionChanged,
                 this, &ChangesPanel::onSelectionChanged, Qt::UniqueConnection);
+    }
+    if (model) {
+        // Sections open when they appear. Refreshes update rows in place, so
+        // a section the user collapsed stays collapsed and nothing re-lays
+        // out the whole tree per refresh.
+        connect(model, &QAbstractItemModel::rowsInserted, this,
+                [this](const QModelIndex &parent, int first, int last) {
+            if (parent.isValid() || !m_statusModel) return;
+            for (int r = first; r <= last; ++r)
+                m_tree->expand(m_statusModel->index(r, 0));
+        });
+        connect(model, &QAbstractItemModel::modelReset, m_tree, &QTreeView::expandAll);
+        m_tree->expandAll();
     }
     refreshActionEnabled();
 }
@@ -212,14 +226,14 @@ void ChangesPanel::refreshActionEnabled()
     // Stage / Unstage are selection-driven: enabled iff the current selection
     // resolves to at least one path on that side. Prevents the dead-click case
     // where the button is enabled but a click does nothing.
+    // Range-based: selecting thousands of rows must not build path lists on
+    // every selectionChanged.
     bool hasUnstagedSel = false;
     bool hasStagedSel = false;
     if (m_statusModel && m_tree->selectionModel()) {
-        const QModelIndexList idxs = m_tree->selectionModel()->selectedIndexes();
-        if (!idxs.isEmpty()) {
-            hasUnstagedSel = !m_statusModel->unstagedSelectionPaths(idxs).isEmpty();
-            hasStagedSel   = !m_statusModel->stagedSelectionPaths(idxs).isEmpty();
-        }
+        const QItemSelection sel = m_tree->selectionModel()->selection();
+        hasUnstagedSel = m_statusModel->selectionHasUnstaged(sel);
+        hasStagedSel   = m_statusModel->selectionHasStaged(sel);
     }
 
     m_stageBtn->setEnabled(m_hasRepo && hasUnstagedSel);
@@ -231,11 +245,6 @@ void ChangesPanel::refreshActionEnabled()
     const bool somethingToCommit = m_anyStaged || amend || m_anyEntries;
     const bool canCommit = commitSubmitEnabled(m_hasRepo, m_hasConflicts, somethingToCommit);
     if (m_composer) m_composer->setSubmitEnabled(canCommit);
-}
-
-void ChangesPanel::expandTree()
-{
-    m_tree->expandAll();
 }
 
 void ChangesPanel::onStageClicked()

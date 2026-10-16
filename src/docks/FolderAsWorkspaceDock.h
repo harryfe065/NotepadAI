@@ -31,6 +31,8 @@
 #include "GitStatusEntry.h"
 #include "PathStatusIndex.h"
 
+#include <cstdint>
+
 namespace Ui {
 class FolderAsWorkspaceDock;
 }
@@ -224,7 +226,10 @@ private slots:
     void onDirectoryLoaded(const QString &loadedPath);
     void onTreeExpanded(const QModelIndex &index);
     void onTreeCollapsed(const QModelIndex &index);
-    void onStatusUpdated();
+    // Every git refresh: rebuilds the parent-repo decorations only when the
+    // status model changed, and re-reads submodule status either way (files
+    // inside a dirty submodule change without changing the parent status).
+    void onStatusRefreshed();
     void onSubmoduleEntriesReady(const GitStatusEntries &entries);
     // Relay from GitTabWidget. If a git-diff fetch is still in flight, the
     // editor open is queued so it fires AFTER the diff tab activation —
@@ -280,6 +285,14 @@ private:
     // dock's lifetime. Pointer handed to `model` via setStatusIndex; cleared
     // in destructor before the index dies.
     PathStatusIndex m_pathStatus;
+    // Rebuilds of m_pathStatus run on the thread pool; only the newest one
+    // applies. Bumped by every rebuild launch and every synchronous change.
+    std::uint64_t m_pathStatusGeneration = 0;
+    // GitStatusModel::changeSerial() the parent decorations were built from.
+    std::uint64_t m_decoratedStatusSerial = std::uint64_t(-1);
+    // Submodule paths (repo-relative) of the last parent status; their status
+    // is re-fetched on every refresh.
+    QStringList m_submodulePaths;
     // Async fetcher for per-file `git status` inside each detected submodule.
     // Lazily created on first need; nullptr means no submodule status has
     // been requested for this dock yet.
@@ -371,8 +384,10 @@ private:
     SubmoduleStatusFetcher *ensureSubmoduleFetcher();
     // Apply a fully merged GitStatusEntries vector (parent + sub-status if
     // available) to m_pathStatus, computing the delta against the previous
-    // snapshot and asking the model to repaint only the affected rows.
-    void applyMergedEntries(const GitStatusEntries &merged, const QString &repoTop);
+    // snapshot and asking the model to repaint only the affected rows. The
+    // rebuild and delta run on the thread pool; the swap and repaint happen
+    // back on the UI thread.
+    void applyMergedEntries(GitStatusEntries merged, const QString &repoTop);
 
     // Wire the new FolderAsWorkspaceFsModel to the app's theme signal +
     // ApplicationSettings/FileTreeGitColors setting + this dock's

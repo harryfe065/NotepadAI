@@ -23,6 +23,7 @@
 #include "GitRefreshCoalescer.h"
 #include "GitRepoInfo.h"
 #include "GitStatusEntry.h"
+#include "GitStatusParser.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -37,6 +38,7 @@ class GitProcessRunner;
 class IGitProcessRunner;
 class GitRepoModel;
 class GitStatusModel;
+class GitStatusSync;
 class GitWatcher;
 class QTimer;
 
@@ -127,7 +129,12 @@ public slots:
 
 signals:
     void stateChanged(GitController::State s);
+    // The status model changed. Not emitted when a refresh returns the same
+    // status (e.g. an agent editing files that are already dirty).
     void statusUpdated();
+    // Every completed status refresh, changed or not: file contents can move
+    // while the status stays the same. Follows statusUpdated() when both fire.
+    void statusRefreshed();
     void numstatUpdated();
     void branchesUpdated();
     // Fired whenever ahead/behind vs upstream (or upstream-presence) changes.
@@ -162,7 +169,6 @@ private:
         Discover, Toplevel, SubmodulesList, WorktreesList,
         HeadSym, HeadSha, Refs, Remotes, Status,
         IgnoredDirs,
-        NumstatStaged, NumstatUnstaged,
         SubmoduleNumstat,
         DiffPath,
         DiffAllCached, DiffAllWorktree,
@@ -191,10 +197,32 @@ private:
     IGitProcessRunner *m_realRunner = nullptr;    // owned when not test-injected
     GitRepoModel *m_repos;
     GitStatusModel *m_status;
+    GitStatusSync *m_statusSync;
     GitWatcher *m_watcher;
     QTimer *m_refreshDebounce = nullptr;
     QElapsedTimer m_refreshClock;
     GitRefreshCoalescer m_coalescer;
+    // HEAD or refs moved since the last refresh, or a caller asked for a full
+    // one. Working-tree and index changes cannot move HEAD, refs or remotes,
+    // so their refreshes skip those probes.
+    bool m_fullRefreshPending = false;
+
+    // Numstat runs on its own runner, off m_queue: a whole-worktree
+    // `git diff --numstat` takes seconds on a large dirty set and must not
+    // hold stage / diff / commit behind it. Latest wins: a request while one
+    // runs reruns once after it.
+    IGitProcessRunner *m_numstatRunner = nullptr;
+    bool m_numstatRunning = false;
+    bool m_numstatAgain = false;
+    // Bumped on repo switch so a numstat still running for the old repo is dropped.
+    std::uint64_t m_numstatGeneration = 0;
+    // Last raw numstat output per side ([0] unstaged, [1] staged) and whether
+    // the model changed since it was merged; identical output on an unchanged
+    // model is not re-parsed.
+    QByteArray m_lastNumstat[2];
+    bool m_numstatModelDirty[2] = { true, true };
+    // Per side: only the newest off-thread numstat parse merges.
+    std::uint64_t m_numstatMergeGeneration[2] = { 0, 0 };
 
     QString m_currentRepo;
     QString m_discoveredRoot;
@@ -228,7 +256,8 @@ private:
     void onRunFinished(int exit, const QByteArray &out, const QByteArray &err);
 
     void enqueueDiscovery();
-    void enqueueFullRefresh();
+    void enqueueRefresh(bool full);
+    void startRefresh();
     void enqueueWorktreeList();
     void enqueueWorktreeListFor(const QString &ownerToplevel);
     // Internal — apply a repo switch (mutate state + enqueue refresh).
@@ -246,9 +275,11 @@ private:
     void handleRefsDone(const QByteArray &out);
     void handleRemotesDone(const QByteArray &out);
     void handleStatusDone(const QByteArray &out);
+    void onStatusApplied(const GitStatusParser::Header &hdr);
     void handleIgnoredDirsDone(const QByteArray &out);
+    void requestNumstat();
+    void runNumstat(bool stagedSide);
     void handleNumstatDone(const QByteArray &out, bool stagedSide);
-    void enqueueNumstatRefresh();
     // Submodule aggregate stats — one `git -C <subAbs> diff --numstat -z
     // --no-renames HEAD` spawn per unique submodule entry that has modified
     // content (sub field 'S.M.'). Pointer-only and untracked-only submodules
@@ -263,6 +294,7 @@ private:
     bool m_lastHeadShaExitNonZero = false;
 
     void scheduleDebouncedRefresh();
+    void scheduleFullRefresh();
     void applyCoalescedRefresh(GitRefreshCoalescer::Decision d);
 };
 

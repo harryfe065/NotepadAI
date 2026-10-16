@@ -66,7 +66,8 @@ void GitOperationManager::registerController(GitController *controller)
         return;
     }
     m_controllers.insert(repo, controller);
-    connect(controller, &GitController::statusUpdated,
+    // Every refresh: resolving markers in a conflicted file leaves its status unchanged.
+    connect(controller, &GitController::statusRefreshed,
             this, &GitOperationManager::onControllerStatusUpdated);
     detectInProgressOperations(repo);
 }

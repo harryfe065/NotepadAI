@@ -1367,6 +1367,27 @@ target_sources(test_git_numstat_parser PRIVATE
 )
 add_test(NAME GitNumstatParser COMMAND test_git_numstat_parser)
 
+# --- GitStatusSync + GitStatusModel: Git tab refresh path. Identical status
+#     output is a no-op, parsing happens off the UI thread (latest wins), small
+#     changes update rows in place (persistent indexes + numstat survive, no
+#     reset), repeated numstat merges emit nothing. ---
+qt_add_executable(test_git_status_sync test_git_status_sync.cpp)
+target_include_directories(test_git_status_sync PRIVATE ${CMAKE_SOURCE_DIR}/src/git)
+target_link_libraries(test_git_status_sync PRIVATE Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::Test)
+target_sources(test_git_status_sync PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusSync.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusSync.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusParser.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusModel.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitNumstatParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitNumstatParser.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.h
+)
+add_test(NAME GitStatusSync COMMAND test_git_status_sync)
+
 # --- GitRepoDiscovery: `git worktree list --porcelain` plus combo fallback. ---
 qt_add_executable(test_git_repo_discovery test_git_repo_discovery.cpp)
 target_include_directories(test_git_repo_discovery PRIVATE ${CMAKE_SOURCE_DIR}/src/git)

@@ -36,7 +36,9 @@ GitDiffFetcher::GitDiffFetcher(GitController *controller, QObject *parent)
 {
     connect(controller, &GitController::diffReady, this, &GitDiffFetcher::onDiffReady);
     connect(controller, &GitController::diffFailed, this, &GitDiffFetcher::onDiffFailed);
-    connect(controller, &GitController::statusUpdated, this, &GitDiffFetcher::onStatusUpdated);
+    // statusRefreshed, not statusUpdated: a file already listed as modified
+    // can change content without changing the status output.
+    connect(controller, &GitController::statusRefreshed, this, &GitDiffFetcher::onStatusUpdated);
 }
 
 QByteArray GitDiffFetcher::synthDiffForUntracked(const QString &repoRoot, const QString &relPath)

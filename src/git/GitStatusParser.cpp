@@ -18,34 +18,60 @@
 
 #include "GitStatusParser.h"
 
-#include <QList>
+#include <QByteArrayView>
 
+#include <array>
 #include <cstring>
 
 namespace {
 
-// Split on first N spaces, returning the trailing chunk verbatim. For porcelain
-// v2 we count from the left because field counts are fixed per record type.
-QList<QByteArray> splitFields(const QByteArray &line, int firstN)
+// Split the first `firstN` space-separated fields off `line`; out[firstN] gets
+// the rest verbatim (the path may contain spaces). Views into `line`, no
+// allocation. False when the record has fewer fields than expected.
+bool splitFields(QByteArrayView line, int firstN, QByteArrayView *out)
 {
-    QList<QByteArray> out;
-    int start = 0;
-    int field = 0;
-    for (int i = 0; i < line.size() && field < firstN; ++i) {
-        if (line[i] == ' ') {
-            out.append(line.mid(start, i - start));
-            start = i + 1;
-            ++field;
-        }
+    const char *d = line.data();
+    const qsizetype n = line.size();
+    qsizetype start = 0;
+    for (int field = 0; field < firstN; ++field) {
+        const void *sp = std::memchr(d + start, ' ', size_t(n - start));
+        if (sp == nullptr) return false;
+        const qsizetype i = static_cast<const char *>(sp) - d;
+        out[field] = line.sliced(start, i - start);
+        start = i + 1;
     }
-    out.append(line.mid(start));
-    return out;
+    out[firstN] = line.sliced(start);
+    return true;
+}
+
+// The XY field is two status letters out of a small alphabet. Hand out shared
+// copies of one QString per pair instead of allocating one per record.
+QString internXy(QByteArrayView xyB)
+{
+    static constexpr char kAlphabet[] = ".MTADRCU?! ";
+    static constexpr int kN = sizeof(kAlphabet) - 1;
+    static const std::array<QString, kN * kN> table = []() {
+        std::array<QString, kN * kN> t;
+        for (int a = 0; a < kN; ++a)
+            for (int b = 0; b < kN; ++b) {
+                const char pair[2] = { kAlphabet[a], kAlphabet[b] };
+                t[a * kN + b] = QString::fromLatin1(pair, 2);
+            }
+        return t;
+    }();
+    if (xyB.size() == 2) {
+        const char *a = static_cast<const char *>(std::memchr(kAlphabet, xyB.at(0), kN));
+        const char *b = static_cast<const char *>(std::memchr(kAlphabet, xyB.at(1), kN));
+        if (a != nullptr && b != nullptr)
+            return table[(a - kAlphabet) * kN + (b - kAlphabet)];
+    }
+    return QString::fromLatin1(xyB);
 }
 
 GitStatusEntry makeEntry(GitStatusEntry::Section sec,
                          GitStatusEntry::Change ch,
-                         const QByteArray &rawPath,
-                         const QByteArray &rawOrig,
+                         QByteArrayView rawPath,
+                         QByteArrayView rawOrig,
                          bool stagedSide,
                          const QString &xy)
 {
@@ -53,24 +79,48 @@ GitStatusEntry makeEntry(GitStatusEntry::Section sec,
     e.section = sec;
     e.change = ch;
     e.relPath = QString::fromUtf8(rawPath);
-    e.origRelPath = QString::fromUtf8(rawOrig);
+    if (!rawOrig.isEmpty()) e.origRelPath = QString::fromUtf8(rawOrig);
     e.stagedSide = stagedSide;
     e.xy = xy;
-    // Round-trip detect: if QString→UTF-8 doesn't round-trip the raw bytes, the
-    // path was not valid UTF-8 (git emits it verbatim with core.quotepath=false).
-    if (e.relPath.toUtf8() != rawPath) e.hasUnstableEncoding = true;
-    if (!rawOrig.isEmpty() && e.origRelPath.toUtf8() != rawOrig) e.hasUnstableEncoding = true;
+    // Not valid UTF-8 means git emitted the raw bytes (core.quotepath=false)
+    // and the decoded QString cannot round-trip them.
+    e.hasUnstableEncoding = !rawPath.isValidUtf8() || !rawOrig.isValidUtf8();
     return e;
 }
 
 // Decode the porcelain v2 `sub` field. Format: "<S|N><C|.><M|.><U|.>", where
 // S=submodule, C=commit changed, M=tracked content modified, U=has untracked.
 // For non-submodules ("N..."), all flags stay false.
-void applySubFlags(GitStatusEntry &e, const QByteArray &subField)
+void applySubFlags(GitStatusEntry &e, QByteArrayView subField)
 {
     if (subField.size() < 1 || subField.at(0) != 'S') return;
     e.isSubmodule = true;
     if (subField.size() >= 3 && subField.at(2) == 'M') e.subHasModifiedContent = true;
+}
+
+// One changed record ('1' or '2') yields up to two entries: staged (X) and
+// worktree (Y).
+void appendChanged(GitStatusEntries &result, QByteArrayView xyB, QByteArrayView subB,
+                   QByteArrayView rawPath, QByteArrayView rawOrig)
+{
+    if (xyB.size() < 2) return;
+    const char x = xyB.at(0);
+    const char y = xyB.at(1);
+    const QString xy = internXy(xyB);
+    if (x != '.' && x != ' ') {
+        GitStatusEntry e = makeEntry(GitStatusEntry::Staged,
+                                     GitStatusParser::xyToChange(x, y, true),
+                                     rawPath, rawOrig, true, xy);
+        applySubFlags(e, subB);
+        result.append(std::move(e));
+    }
+    if (y != '.' && y != ' ') {
+        GitStatusEntry e = makeEntry(GitStatusEntry::Tracked,
+                                     GitStatusParser::xyToChange(x, y, false),
+                                     rawPath, rawOrig, false, xy);
+        applySubFlags(e, subB);
+        result.append(std::move(e));
+    }
 }
 
 } // namespace
@@ -104,132 +154,83 @@ GitStatusEntries GitStatusParser::parsePorcelainV2(const QByteArray &input,
                                                     Header *header)
 {
     GitStatusEntries result;
+    // Shortest useful record is "? x\0"; real ones average well above 64 bytes.
+    result.reserve(input.size() / 64);
 
     // Records are nul-separated. Renamed records contain TWO paths separated by nul,
-    // so we walk byte-by-byte and parse record-by-record based on the leading marker.
-    int i = 0;
-    const int n = input.size();
-    while (i < n) {
-        // Locate end of this record's first segment (header + path), terminated by \0.
-        int end = input.indexOf('\0', i);
-        if (end < 0) end = n;
-        QByteArray rec = input.mid(i, end - i);
+    // so we walk record-by-record based on the leading marker. All fields are
+    // views into `input`; only the decoded paths allocate.
+    const QByteArrayView all(input);
+    const char *base = all.data();
+    const qsizetype n = all.size();
+    qsizetype i = 0;
+    const auto nextSegment = [&]() {
+        const void *z = std::memchr(base + i, '\0', size_t(n - i));
+        const qsizetype end = z ? static_cast<const char *>(z) - base : n;
+        const QByteArrayView seg = all.sliced(i, end - i);
         i = end + 1;
+        return seg;
+    };
+
+    QByteArrayView fields[11];
+    while (i < n) {
+        const QByteArrayView rec = nextSegment();
         if (rec.isEmpty()) continue;
 
-        const char marker = rec[0];
+        const char marker = rec.at(0);
 
         if (marker == '1') {
-            // "1 XY sub mH mI mW hH hI path"
-            // path is field index 8 (zero-based)
-            QList<QByteArray> fields = splitFields(rec, 8);
-            if (fields.size() < 9) continue;
-            const QByteArray &xyB = fields.at(1);
-            const QByteArray &subB = fields.at(2);
-            const QByteArray &rawPath = fields.at(8);
-            if (xyB.size() < 2) continue;
-            const char x = xyB.at(0);
-            const char y = xyB.at(1);
-            const QString xy = QString::fromLatin1(xyB);
-
-            if (x != '.' && x != ' ') {
-                GitStatusEntry e = makeEntry(GitStatusEntry::Staged,
-                                             xyToChange(x, y, true),
-                                             rawPath, {}, true, xy);
-                applySubFlags(e, subB);
-                result.append(e);
-            }
-            if (y != '.' && y != ' ') {
-                GitStatusEntry e = makeEntry(GitStatusEntry::Tracked,
-                                             xyToChange(x, y, false),
-                                             rawPath, {}, false, xy);
-                applySubFlags(e, subB);
-                result.append(e);
-            }
+            // "1 XY sub mH mI mW hH hI path" — path is field index 8.
+            if (!splitFields(rec, 8, fields)) continue;
+            appendChanged(result, fields[1], fields[2], fields[8], {});
         }
         else if (marker == '2') {
-            // "2 XY sub mH mI mW hH hI X<score> path\0origPath"
-            // path is field index 9; orig path follows after a nul terminator.
-            QList<QByteArray> fields = splitFields(rec, 9);
-            if (fields.size() < 10) continue;
-            const QByteArray &xyB = fields.at(1);
-            const QByteArray &subB = fields.at(2);
-            const QByteArray &rawPath = fields.at(9);
-            // Read the orig path (next nul-terminated segment).
-            int origEnd = input.indexOf('\0', i);
-            if (origEnd < 0) origEnd = n;
-            const QByteArray rawOrig = input.mid(i, origEnd - i);
-            i = origEnd + 1;
-            if (xyB.size() < 2) continue;
-            const char x = xyB.at(0);
-            const char y = xyB.at(1);
-            const QString xy = QString::fromLatin1(xyB);
-
-            if (x != '.' && x != ' ') {
-                GitStatusEntry e = makeEntry(GitStatusEntry::Staged,
-                                             xyToChange(x, y, true),
-                                             rawPath, rawOrig, true, xy);
-                applySubFlags(e, subB);
-                result.append(e);
-            }
-            if (y != '.' && y != ' ') {
-                GitStatusEntry e = makeEntry(GitStatusEntry::Tracked,
-                                             xyToChange(x, y, false),
-                                             rawPath, rawOrig, false, xy);
-                applySubFlags(e, subB);
-                result.append(e);
-            }
+            // "2 XY sub mH mI mW hH hI X<score> path\0origPath" — path is
+            // field index 9; the orig path is the next nul-terminated segment.
+            if (!splitFields(rec, 9, fields)) continue;
+            const QByteArrayView rawOrig = i < n ? nextSegment() : QByteArrayView();
+            appendChanged(result, fields[1], fields[2], fields[9], rawOrig);
         }
         else if (marker == 'u') {
             // "u XY sub m1 m2 m3 mW h1 h2 h3 path"
             //   field index: 0  1  2  3  4  5  6  7  8  9  10
             // h2 = stage2 (ours), h3 = stage3 (theirs)
-            QList<QByteArray> fields = splitFields(rec, 10);
-            if (fields.size() < 11) continue;
-            const QByteArray &xyB = fields.at(1);
-            const QByteArray &rawPath = fields.at(10);
-            const QString xy = QString::fromLatin1(xyB);
+            if (!splitFields(rec, 10, fields)) continue;
             GitStatusEntry e = makeEntry(GitStatusEntry::Conflicts,
                                          GitStatusEntry::Unmerged,
-                                         rawPath, {}, false, xy);
-            e.oursSha   = QString::fromLatin1(fields.at(8));
-            e.theirsSha = QString::fromLatin1(fields.at(9));
-            result.append(e);
+                                         fields[10], {}, false, internXy(fields[1]));
+            e.oursSha   = QString::fromLatin1(fields[8]);
+            e.theirsSha = QString::fromLatin1(fields[9]);
+            result.append(std::move(e));
         }
         else if (marker == '?') {
             // "? path"
-            QByteArray rawPath = rec.mid(2);
+            static const QString kUntrackedXy = QStringLiteral("??");
             result.append(makeEntry(GitStatusEntry::Untracked,
                                     GitStatusEntry::Untracked_,
-                                    rawPath, {}, false,
-                                    QStringLiteral("??")));
+                                    rec.size() > 2 ? rec.sliced(2) : QByteArrayView(),
+                                    {}, false, kUntrackedXy));
         }
-        else if (marker == '#' || marker == '!') {
-            // '!' = ignored — drop. '#' = porcelain v2 branch header (only
-            // present with --branch). Extract upstream + ahead/behind if a
-            // caller asked for the header.
-            if (marker == '#' && header) {
-                // Field layout: "# branch.<key> <value...>"
-                if (rec.startsWith(QByteArrayLiteral("# branch.upstream "))) {
+        else if (marker == '#' && header) {
+            // '#' = porcelain v2 branch header (only present with --branch).
+            // '!' = ignored — dropped like any other unknown marker.
+            // Field layout: "# branch.<key> <value...>"
+            if (rec.startsWith("# branch.upstream ")) {
+                header->hasUpstream = true;
+            } else if (rec.startsWith("# branch.ab ")) {
+                // "+<ahead> -<behind>" — parse two signed integers.
+                const QByteArrayView rest = rec.sliced(qsizetype(strlen("# branch.ab ")));
+                const qsizetype space = rest.indexOf(' ');
+                if (space > 0 && rest.at(0) == '+' && space + 1 < rest.size()
+                    && rest.at(space + 1) == '-') {
+                    bool okA = false, okB = false;
+                    const int a = rest.sliced(1, space - 1).toInt(&okA);
+                    const int b = rest.sliced(space + 2).toInt(&okB);
+                    if (okA) header->ahead  = a;
+                    if (okB) header->behind = b;
                     header->hasUpstream = true;
-                } else if (rec.startsWith(QByteArrayLiteral("# branch.ab "))) {
-                    // "+<ahead> -<behind>" — parse two signed integers.
-                    const QByteArray rest = rec.mid(qsizetype(strlen("# branch.ab ")));
-                    int space = rest.indexOf(' ');
-                    if (space > 0 && rest.at(0) == '+' && space + 1 < rest.size()
-                        && rest.at(space + 1) == '-') {
-                        const QByteArray ah = rest.mid(1, space - 1);
-                        const QByteArray be = rest.mid(space + 2);
-                        bool okA = false, okB = false;
-                        const int a = ah.toInt(&okA);
-                        const int b = be.toInt(&okB);
-                        if (okA) header->ahead  = a;
-                        if (okB) header->behind = b;
-                        header->hasUpstream = true;
-                    }
                 }
             }
-            continue;
         }
     }
     return result;

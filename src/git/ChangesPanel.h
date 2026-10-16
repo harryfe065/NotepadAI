@@ -66,10 +66,6 @@ public:
     void updateActionsEnabled(bool hasRepo, bool hasConflicts,
                               bool anyStaged, bool anyEntries);
 
-    // Expand all top-level sections — called after the status model is
-    // refreshed so user immediately sees per-file rows.
-    void expandTree();
-
     // Persist / restore the splitter position between the tree and composer.
     void saveSplitterState(const QString &settingsKey);
     void restoreSplitterState(const QString &settingsKey);

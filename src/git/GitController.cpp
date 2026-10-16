@@ -29,6 +29,7 @@
 #include "GitRunnerFactory.h"
 #include "GitStatusModel.h"
 #include "GitStatusParser.h"
+#include "GitStatusSync.h"
 #include "GitWatcher.h"
 
 #include "../NotepadNextApplication.h"
@@ -37,7 +38,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QTimer>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <limits>
@@ -71,12 +74,19 @@ GitController::GitController(const QString &workspaceRoot, QObject *parent)
 {
     m_repos = new GitRepoModel(this);
     m_status = new GitStatusModel(this);
+    m_statusSync = new GitStatusSync(m_status, this);
+    connect(m_statusSync, &GitStatusSync::applied, this, &GitController::onStatusApplied);
+    connect(m_statusSync, &GitStatusSync::unchanged, this, [this]() {
+        emit statusRefreshed();
+        requestNumstat();
+    });
     m_watcher = new GitWatcher(this);
     // Obtain the runner through the workspace's ExecutionContext (D6): a local
     // workspace gets the QProcess GitProcessRunner, a remote (ssh://) one gets a
     // RemoteGitProcessRunner. Defaults to local for any non-ssh path.
     m_realRunner = GitRunnerFactory::createForRepo(m_workspaceRoot, this);
     m_runner = m_realRunner;
+    m_numstatRunner = GitRunnerFactory::createForRepo(m_workspaceRoot, this);
 
     m_refreshDebounce = new QTimer(this);
     m_refreshDebounce->setSingleShot(true);
@@ -94,7 +104,7 @@ GitController::GitController(const QString &workspaceRoot, QObject *parent)
     connect(m_realRunner->asQObject(), SIGNAL(progressLine(QString)),
             this, SIGNAL(remoteOpProgress(QString)));
     connect(m_watcher, &GitWatcher::headChanged,
-            this, &GitController::scheduleDebouncedRefresh);
+            this, &GitController::scheduleFullRefresh);
     // HEAD now points to a different commit → every cached HEAD blob for
     // this repo is potentially stale. Drop them so the next buffer-diff
     // refresh re-fetches via cat-file. Index/refs/workingTree changes leave
@@ -115,7 +125,7 @@ GitController::GitController(const QString &workspaceRoot, QObject *parent)
     connect(m_watcher, &GitWatcher::indexChanged,
             this, &GitController::scheduleDebouncedRefresh);
     connect(m_watcher, &GitWatcher::refsChanged,
-            this, &GitController::scheduleDebouncedRefresh);
+            this, &GitController::scheduleFullRefresh);
     connect(m_watcher, &GitWatcher::workingTreeChanged,
             this, &GitController::scheduleDebouncedRefresh);
     connect(m_watcher, &GitWatcher::worktreesChanged,
@@ -145,6 +155,7 @@ GitController::~GitController()
 void GitController::setRunnerForTesting(IGitProcessRunner *runner)
 {
     m_runner = runner;
+    m_numstatRunner = runner;
 }
 
 void GitController::setState(State s)
@@ -164,11 +175,17 @@ void GitController::scheduleDebouncedRefresh()
     applyCoalescedRefresh(m_coalescer.onDirty(m_refreshClock.elapsed(), m_busy));
 }
 
+void GitController::scheduleFullRefresh()
+{
+    m_fullRefreshPending = true;
+    scheduleDebouncedRefresh();
+}
+
 void GitController::applyCoalescedRefresh(GitRefreshCoalescer::Decision d)
 {
     if (d == GitRefreshCoalescer::Decision::Fire) {
         m_refreshDebounce->stop();
-        refresh();
+        if (!m_currentRepo.isEmpty()) startRefresh();
         return;
     }
     if (m_coalescer.pending())
@@ -201,7 +218,7 @@ void GitController::enqueueDiscovery()
     enqueue(topl);
 }
 
-void GitController::enqueueFullRefresh()
+void GitController::enqueueRefresh(bool full)
 {
     if (m_currentRepo.isEmpty()) return;
     setState(State::Refreshing);
@@ -225,34 +242,39 @@ void GitController::enqueueFullRefresh()
     ign.timeoutMs = kTimeoutShort * 2;
     enqueue(ign);
 
-    Op hsym;
-    hsym.kind = OpKind::HeadSym;
-    hsym.argv = { QStringLiteral("-C"), m_currentRepo,
-                  QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("HEAD") };
-    hsym.timeoutMs = kTimeoutShort;
-    enqueue(hsym);
+    // HEAD, refs and remotes only move with .git/HEAD, refs or config, which
+    // GitWatcher reports separately (scheduleFullRefresh). Each probe is a
+    // process spawn, so working-tree refreshes skip them.
+    if (full) {
+        Op hsym;
+        hsym.kind = OpKind::HeadSym;
+        hsym.argv = { QStringLiteral("-C"), m_currentRepo,
+                      QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("HEAD") };
+        hsym.timeoutMs = kTimeoutShort;
+        enqueue(hsym);
 
-    Op hsha;
-    hsha.kind = OpKind::HeadSha;
-    hsha.argv = { QStringLiteral("-C"), m_currentRepo,
-                  QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("HEAD") };
-    hsha.timeoutMs = kTimeoutShort;
-    enqueue(hsha);
+        Op hsha;
+        hsha.kind = OpKind::HeadSha;
+        hsha.argv = { QStringLiteral("-C"), m_currentRepo,
+                      QStringLiteral("rev-parse"), QStringLiteral("--short"), QStringLiteral("HEAD") };
+        hsha.timeoutMs = kTimeoutShort;
+        enqueue(hsha);
 
-    Op remotes;
-    remotes.kind = OpKind::Remotes;
-    remotes.argv = { QStringLiteral("-C"), m_currentRepo, QStringLiteral("remote") };
-    remotes.timeoutMs = kTimeoutShort;
-    enqueue(remotes);
+        Op remotes;
+        remotes.kind = OpKind::Remotes;
+        remotes.argv = { QStringLiteral("-C"), m_currentRepo, QStringLiteral("remote") };
+        remotes.timeoutMs = kTimeoutShort;
+        enqueue(remotes);
 
-    Op refs;
-    refs.kind = OpKind::Refs;
-    refs.argv = { QStringLiteral("-C"), m_currentRepo,
-                  QStringLiteral("for-each-ref"),
-                  QStringLiteral("--format=%(HEAD)%00%(refname:short)%00%(objecttype)%00%(upstream:short)%00"),
-                  QStringLiteral("refs/heads"), QStringLiteral("refs/remotes") };
-    refs.timeoutMs = kTimeoutShort * 2;
-    enqueue(refs);
+        Op refs;
+        refs.kind = OpKind::Refs;
+        refs.argv = { QStringLiteral("-C"), m_currentRepo,
+                      QStringLiteral("for-each-ref"),
+                      QStringLiteral("--format=%(HEAD)%00%(refname:short)%00%(objecttype)%00%(upstream:short)%00"),
+                      QStringLiteral("refs/heads"), QStringLiteral("refs/remotes") };
+        refs.timeoutMs = kTimeoutShort * 2;
+        enqueue(refs);
+    }
 
     Op st;
     st.kind = OpKind::Status;
@@ -331,7 +353,22 @@ void GitController::applySelectRepo(const QString &cleanToplevel)
         m_hasUpstream = false;
         emit aheadBehindChanged(0, 0, false);
     }
-    enqueueFullRefresh();
+    // Status and numstat from the previous repo must not short-circuit or
+    // land on this one.
+    m_statusSync->invalidate();
+    ++m_numstatGeneration;
+    if (m_numstatRunning) {
+        // Kill the old repo's pass without waiting; its callback is dropped.
+        m_numstatRunner->cancelAsync();
+        m_numstatRunning = false;
+    }
+    m_numstatAgain = false;
+    for (int side = 0; side < 2; ++side) {
+        m_lastNumstat[side].clear();
+        m_numstatModelDirty[side] = true;
+    }
+    m_fullRefreshPending = false;
+    enqueueRefresh(true);
 }
 
 void GitController::refresh(bool relistWorktrees)
@@ -339,13 +376,21 @@ void GitController::refresh(bool relistWorktrees)
     if (m_currentRepo.isEmpty()) return;
     if (relistWorktrees)
         enqueueWorktreeList();
+    m_fullRefreshPending = true;
+    startRefresh();
+}
+
+void GitController::startRefresh()
+{
     if (m_busy) {
         m_coalescer.requestImmediateFollowUp();
         return;
     }
     m_coalescer.acknowledgeRefresh();
     m_refreshDebounce->stop();
-    enqueueFullRefresh();
+    const bool full = m_fullRefreshPending;
+    m_fullRefreshPending = false;
+    enqueueRefresh(full);
 }
 
 void GitController::stagePaths(const QStringList &relPaths)
@@ -769,7 +814,8 @@ void GitController::handleToplevelDone(int exit, const QByteArray &out, const QB
     enqueue(sub);
 
     enqueueWorktreeList();
-    enqueueFullRefresh();
+    m_fullRefreshPending = false;
+    enqueueRefresh(true);
 }
 
 void GitController::handleSubmodulesDone(int exit, const QByteArray &out)
@@ -934,8 +980,15 @@ void GitController::handleRefsDone(const QByteArray &out)
 
 void GitController::handleStatusDone(const QByteArray &out)
 {
-    GitStatusParser::Header hdr;
-    m_status->setEntries(GitStatusParser::parsePorcelainV2(out, &hdr));
+    // Parsed off the UI thread; onStatusApplied() or the unchanged() handler
+    // continues.
+    m_statusSync->submit(out);
+}
+
+void GitController::onStatusApplied(const GitStatusParser::Header &hdr)
+{
+    m_numstatModelDirty[0] = true;
+    m_numstatModelDirty[1] = true;
     // Emit only when something actually changed — saves a UI repaint per refresh.
     const bool changed = (hdr.ahead != m_ahead) || (hdr.behind != m_behind)
                          || (hdr.hasUpstream != m_hasUpstream);
@@ -943,8 +996,9 @@ void GitController::handleStatusDone(const QByteArray &out)
     m_behind = hdr.behind;
     m_hasUpstream = hdr.hasUpstream;
     emit statusUpdated();
+    emit statusRefreshed();
     if (changed) emit aheadBehindChanged(m_ahead, m_behind, m_hasUpstream);
-    enqueueNumstatRefresh();
+    requestNumstat();
 }
 
 void GitController::handleIgnoredDirsDone(const QByteArray &out)
@@ -967,48 +1021,71 @@ void GitController::handleIgnoredDirsDone(const QByteArray &out)
     m_watcher->setIgnoredPrefixes(prefixes);
 }
 
-void GitController::enqueueNumstatRefresh()
+void GitController::requestNumstat()
 {
-    if (m_currentRepo.isEmpty()) return;
-
-    // Unstaged: worktree vs index (or worktree vs HEAD if empty repo)
-    {
-        Op op;
-        op.kind = OpKind::NumstatUnstaged;
-        op.argv = { QStringLiteral("-c"), QStringLiteral("core.quotepath=false"),
-                    QStringLiteral("-C"), m_currentRepo,
-                    QStringLiteral("diff"), QStringLiteral("--numstat"), QStringLiteral("-z"),
-                    QStringLiteral("--no-renames") };
-        op.timeoutMs = kTimeoutStatus;
-        enqueue(op);
+    if (m_currentRepo.isEmpty() || !m_numstatRunner) return;
+    if (m_numstatRunning) {
+        // The running pass may predate this change; run once more after it.
+        // Never restart: a pass longer than the refresh cadence would starve.
+        m_numstatAgain = true;
+        return;
     }
-    // Staged: index vs HEAD (skip on empty repo — would error)
-    if (!m_empty) {
-        Op op;
-        op.kind = OpKind::NumstatStaged;
-        op.argv = { QStringLiteral("-c"), QStringLiteral("core.quotepath=false"),
-                    QStringLiteral("-C"), m_currentRepo,
-                    QStringLiteral("diff"), QStringLiteral("--cached"),
-                    QStringLiteral("--numstat"), QStringLiteral("-z"),
-                    QStringLiteral("--no-renames") };
-        op.timeoutMs = kTimeoutStatus;
-        enqueue(op);
-    }
+    m_numstatAgain = false;
+    runNumstat(false);
 }
 
-void GitController::handleNumstatDone(const QByteArray &out, bool stagedSide)
+void GitController::runNumstat(bool stagedSide)
 {
-    const auto stats = GitNumstatParser::parse(out);
-    m_status->mergeNumstat(stats, stagedSide);
-    // Emit only after the staged side completes (the second of the pair).
-    // On empty repos we only run the unstaged op, so emit there too.
-    if (stagedSide || m_empty) {
+    m_numstatRunning = true;
+    // Unstaged: worktree vs index (or worktree vs HEAD if empty repo).
+    // Staged: index vs HEAD.
+    QStringList argv = { QStringLiteral("-c"), QStringLiteral("core.quotepath=false"),
+                         QStringLiteral("-C"), m_currentRepo, QStringLiteral("diff") };
+    if (stagedSide) argv.append(QStringLiteral("--cached"));
+    argv.append({ QStringLiteral("--numstat"), QStringLiteral("-z"), QStringLiteral("--no-renames") });
+
+    const std::uint64_t gen = m_numstatGeneration;
+    m_numstatRunner->run(QString(), argv, {}, kTimeoutStatus, false,
+                         [this, gen, stagedSide](int exit, const QByteArray &out, const QByteArray &) {
+        if (gen != m_numstatGeneration) return; // repo switched; its pass was reset there
+        // Numstat is best-effort — a failure (unborn HEAD edge cases, missing
+        // object) leaves the last counts in place.
+        if (exit == 0) handleNumstatDone(out, stagedSide);
+        // The staged side errors on an empty repo, so it is skipped there.
+        if (!stagedSide && !m_empty) {
+            runNumstat(true);
+            return;
+        }
+        m_numstatRunning = false;
         emit numstatUpdated();
         // Once per-file numstat is merged into the model, fan out submodule
         // inner-diff probes (only for entries that actually have modified
         // content — porcelain v2 already told us which ones).
         enqueueSubmoduleStatsRefresh();
-    }
+        if (m_numstatAgain) requestNumstat();
+    });
+}
+
+void GitController::handleNumstatDone(const QByteArray &out, bool stagedSide)
+{
+    // Same output on an unchanged model would merge to the same values.
+    const int side = stagedSide ? 1 : 0;
+    if (!m_numstatModelDirty[side] && out == m_lastNumstat[side]) return;
+    m_lastNumstat[side] = out;
+    m_numstatModelDirty[side] = false;
+    // Parsing is the O(lines) part; it runs on the pool and only the newest
+    // parse per side merges. A status applied meanwhile reruns numstat.
+    using Stats = QHash<QString, GitNumstatParser::Stat>;
+    const std::uint64_t gen = ++m_numstatMergeGeneration[side];
+    const std::uint64_t repoGen = m_numstatGeneration;
+    auto *watcher = new QFutureWatcher<Stats>(this);
+    connect(watcher, &QFutureWatcher<Stats>::finished, this,
+            [this, watcher, gen, repoGen, side, stagedSide]() {
+        watcher->deleteLater();
+        if (gen != m_numstatMergeGeneration[side] || repoGen != m_numstatGeneration) return;
+        m_status->mergeNumstat(watcher->future().takeResult(), stagedSide);
+    });
+    watcher->setFuture(QtConcurrent::run([out]() { return GitNumstatParser::parse(out); }));
 }
 
 void GitController::enqueueSubmoduleStatsRefresh()
@@ -1180,8 +1257,7 @@ void GitController::onRunFinished(int exit, const QByteArray &out, const QByteAr
         }
         // Numstat ops are best-effort — a failure (e.g. unborn HEAD edge cases,
         // missing object) shouldn't tip the controller into Error or block UI.
-        if (kind == OpKind::NumstatStaged || kind == OpKind::NumstatUnstaged
-            || kind == OpKind::SubmoduleNumstat || kind == OpKind::ConfigTracking
+        if (kind == OpKind::SubmoduleNumstat || kind == OpKind::ConfigTracking
             || kind == OpKind::IgnoredDirs || kind == OpKind::WorktreesList) {
             popAndAdvance();
             return;
@@ -1255,8 +1331,6 @@ void GitController::onRunFinished(int exit, const QByteArray &out, const QByteAr
         case OpKind::Remotes:         handleRemotesDone(out); break;
         case OpKind::Status:          handleStatusDone(out); break;
         case OpKind::IgnoredDirs:     handleIgnoredDirsDone(out); break;
-        case OpKind::NumstatStaged:   handleNumstatDone(out, true); break;
-        case OpKind::NumstatUnstaged: handleNumstatDone(out, false); break;
         case OpKind::SubmoduleNumstat:
             handleSubmoduleNumstatDone(out,
                 m_current.meta.value(QStringLiteral("subRelPath")).toString());
