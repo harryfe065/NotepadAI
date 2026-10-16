@@ -21,6 +21,7 @@
 
 #include <cstdint>
 
+#include <QJsonObject>
 #include <QObject>
 #include <QPair>
 #include <QString>
@@ -38,6 +39,13 @@ class ILlmHttpClient : public QObject
 public:
     enum class ApiFormat : std::uint8_t { OpenAiCompatible, Anthropic };
 
+    // A function the model may call. `inputSchema` is a JSON Schema object.
+    struct Tool {
+        QString     name;
+        QString     description;
+        QJsonObject inputSchema;
+    };
+
     struct Request {
         QUrl    url;             // base URL of the provider (e.g. https://api.openai.com/v1)
         QString model;
@@ -48,6 +56,10 @@ public:
         int     idleTimeoutSec = 60;
         QVector<QPair<QByteArray, QString>> images;
         ApiFormat apiFormat = ApiFormat::OpenAiCompatible;
+        QVector<Tool> tools;             // empty = plain text completion
+        // When tools is non-empty: name the first tool in tool_choice so the
+        // model must call it. Some OpenAI-compatible servers reject that field.
+        bool forceToolChoice = true;
     };
 
     explicit ILlmHttpClient(QObject *parent = nullptr) : QObject(parent) {}
@@ -68,6 +80,15 @@ signals:
 
     // One token (or token chunk) parsed from the stream.
     void tokenReceived(const QString &token);
+
+    // One completed tool call, emitted in reply order just before streamEnded.
+    // `argumentsJson` is the raw concatenated argument text (may be truncated
+    // or invalid JSON if the stream was cut off).
+    void toolCallReceived(const QString &name, const QByteArray &argumentsJson);
+
+    // The provider's stop/finish reason ("tool_use", "stop", "max_tokens",
+    // "length", ...), emitted before streamEnded when the stream reported one.
+    void stopReasonReceived(const QString &reason);
 
     // Stream ended cleanly (provider sent [DONE] / finish_reason / closed
     // gracefully after at least one token).

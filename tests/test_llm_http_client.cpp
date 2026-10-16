@@ -48,6 +48,11 @@ private slots:
     void openaiUrl_appendsChatCompletionsNotMessages();
     void openaiPayload_keepsSystemRoleAndOmitsMaxTokensWhenZero();
     void anthropicPayload_neverPutsSystemRoleInMessages();
+    void anthropicPayload_toolsForceNamedToolChoice();
+    void anthropicPayload_toolsWithoutForcingOmitToolChoice();
+    void openaiPayload_toolsForceNamedToolChoice();
+    void openaiPayload_toolsWithoutForcingOmitToolChoice();
+    void payload_withoutToolsHasNoToolFields();
 };
 
 void TestLlmHttpClient::anthropicPayload_usesTopLevelSystemAndDefaultMaxTokens()
@@ -261,6 +266,82 @@ void TestLlmHttpClient::anthropicPayload_neverPutsSystemRoleInMessages()
                                     .object().value(QLatin1String("messages")).toArray();
     for (const auto &v : messages)
         QVERIFY(v.toObject().value(QLatin1String("role")).toString() != QLatin1String("system"));
+}
+
+namespace {
+
+ai::ILlmHttpClient::Request toolRequest(ai::ILlmHttpClient::ApiFormat fmt, bool force)
+{
+    ai::ILlmHttpClient::Request req;
+    req.apiFormat = fmt;
+    req.prompt = QStringLiteral("Hello");
+    ai::ILlmHttpClient::Tool t;
+    t.name = QStringLiteral("submit_commit_message");
+    t.description = QStringLiteral("Submit it");
+    t.inputSchema = QJsonObject{{QStringLiteral("type"), QStringLiteral("object")}};
+    req.tools.append(t);
+    req.forceToolChoice = force;
+    return req;
+}
+
+QJsonObject payloadOf(const ai::ILlmHttpClient::Request &req)
+{
+    return QJsonDocument::fromJson(ai::LlmHttpClient::buildPayload(req)).object();
+}
+
+} // namespace
+
+void TestLlmHttpClient::anthropicPayload_toolsForceNamedToolChoice()
+{
+    const QJsonObject body = payloadOf(toolRequest(ai::ILlmHttpClient::ApiFormat::Anthropic, true));
+    const QJsonObject tool = body.value(QLatin1String("tools")).toArray().at(0).toObject();
+    QCOMPARE(tool.value(QLatin1String("name")).toString(), QStringLiteral("submit_commit_message"));
+    QCOMPARE(tool.value(QLatin1String("input_schema")).toObject().value(QLatin1String("type")).toString(),
+             QStringLiteral("object"));
+    const QJsonObject choice = body.value(QLatin1String("tool_choice")).toObject();
+    QCOMPARE(choice.value(QLatin1String("type")).toString(), QStringLiteral("tool"));
+    QCOMPARE(choice.value(QLatin1String("name")).toString(), QStringLiteral("submit_commit_message"));
+}
+
+void TestLlmHttpClient::anthropicPayload_toolsWithoutForcingOmitToolChoice()
+{
+    const QJsonObject body = payloadOf(toolRequest(ai::ILlmHttpClient::ApiFormat::Anthropic, false));
+    QCOMPARE(body.value(QLatin1String("tools")).toArray().size(), 1);
+    QVERIFY(!body.contains(QLatin1String("tool_choice")));
+}
+
+void TestLlmHttpClient::openaiPayload_toolsForceNamedToolChoice()
+{
+    const QJsonObject body = payloadOf(toolRequest(ai::ILlmHttpClient::ApiFormat::OpenAiCompatible, true));
+    const QJsonObject tool = body.value(QLatin1String("tools")).toArray().at(0).toObject();
+    QCOMPARE(tool.value(QLatin1String("type")).toString(), QStringLiteral("function"));
+    const QJsonObject fn = tool.value(QLatin1String("function")).toObject();
+    QCOMPARE(fn.value(QLatin1String("name")).toString(), QStringLiteral("submit_commit_message"));
+    QCOMPARE(fn.value(QLatin1String("parameters")).toObject().value(QLatin1String("type")).toString(),
+             QStringLiteral("object"));
+    const QJsonObject choice = body.value(QLatin1String("tool_choice")).toObject();
+    QCOMPARE(choice.value(QLatin1String("type")).toString(), QStringLiteral("function"));
+    QCOMPARE(choice.value(QLatin1String("function")).toObject().value(QLatin1String("name")).toString(),
+             QStringLiteral("submit_commit_message"));
+}
+
+void TestLlmHttpClient::openaiPayload_toolsWithoutForcingOmitToolChoice()
+{
+    const QJsonObject body = payloadOf(toolRequest(ai::ILlmHttpClient::ApiFormat::OpenAiCompatible, false));
+    QCOMPARE(body.value(QLatin1String("tools")).toArray().size(), 1);
+    QVERIFY(!body.contains(QLatin1String("tool_choice")));
+}
+
+void TestLlmHttpClient::payload_withoutToolsHasNoToolFields()
+{
+    for (auto fmt : {ai::ILlmHttpClient::ApiFormat::OpenAiCompatible, ai::ILlmHttpClient::ApiFormat::Anthropic}) {
+        ai::ILlmHttpClient::Request req;
+        req.apiFormat = fmt;
+        req.prompt = QStringLiteral("Hello");
+        const QJsonObject body = payloadOf(req);
+        QVERIFY(!body.contains(QLatin1String("tools")));
+        QVERIFY(!body.contains(QLatin1String("tool_choice")));
+    }
 }
 
 QTEST_APPLESS_MAIN(TestLlmHttpClient)

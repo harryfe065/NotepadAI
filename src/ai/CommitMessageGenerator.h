@@ -22,33 +22,33 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
-#include <QTimer>
 
 #include <cstdint>
+
+#include "ILlmHttpClient.h"
 
 class CommitComposer;
 class ApplicationSettings;
 
 namespace ai {
 
-class ILlmHttpClient;
 class CredentialStore;
 
 // Singleton owned by NotepadNextApplication. Coordinates the AI-driven commit
 // message generation flow for the currently-active CommitComposer:
 //
-//   Idle  ─trigger→  Authenticating  ─first byte→  Streaming  ─done→  Idle
-//                       │                              │
-//                       └────────── error/cancel ──────┴────→  (Idle or Error)
+//   Idle  -trigger->  Authenticating  -first byte->  Streaming  -done->  Idle
+//                        |                              |
+//                        +---------- error/cancel ------+---->  (Idle or Error)
+//
+// The model must deliver the message by calling `submit_commit_message`
+// (docs/adr/0004). The request streams, but nothing reaches the composer
+// until the call is complete and valid; then the composer's text is replaced
+// in one undo step. A text reply, an invalid call or a cut-off reply is an
+// error and leaves the composer untouched.
 //
 // At most one generation is in flight across the entire app. Switching the
-// active repo or workspace cancels the in-flight stream; the text already
-// appended to the previous composer is preserved (lives in the composer's
-// own buffer + the per-repo draft persistence handled by GitTabWidget).
-//
-// Token chunks are coalesced through a single reusable QTimer (interval 0,
-// single-shot) so we get exactly one insertText per event-loop tick regardless
-// of network chunk rate — zero per-chunk QObject allocation.
+// active repo or workspace cancels the in-flight request.
 class CommitMessageGenerator : public QObject
 {
     Q_OBJECT
@@ -99,13 +99,16 @@ signals:
 private slots:
     void onFirstByte();
     void onToken(const QString &chunk);
+    void onToolCall(const QString &name, const QByteArray &argumentsJson);
+    void onStopReason(const QString &reason);
     void onStreamEnded();
     void onStreamError(int httpStatus, const QString &message);
-    void flushPending();
 
 private:
     void setState(State s);
-    void appendChunk(const QString &chunk);
+    void wireClient();
+    void resetReply();
+    void insertMessage(const QString &message);
     void teardownAfterError();
 
     ApplicationSettings *m_settings = nullptr;
@@ -115,11 +118,15 @@ private:
     State                m_state = State::Idle;
     QPointer<CommitComposer> m_target;
     QString              m_currentRepoKey;        // identifier (workspaceRoot for now)
-    bool                 m_hadSubjectHint = false;
-    bool                 m_firstChunkSeen = false;
 
-    QString              m_pendingTokens;         // coalesce buffer
-    QTimer               m_flushTimer;            // reusable, zero-alloc per chunk
+    ILlmHttpClient::Request m_request;            // kept to resend without tool_choice
+    bool                 m_retryPending = false;
+
+    // The current reply, filled by the client's signals.
+    QString              m_textReply;             // text only explains an error
+    QString              m_stopReason;
+    QByteArray           m_toolArgs;
+    bool                 m_haveCall = false;
 };
 
 } // namespace ai

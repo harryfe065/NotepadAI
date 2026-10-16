@@ -2327,6 +2327,17 @@ target_sources(test_llm_http_client PRIVATE
 )
 add_test(NAME LlmHttpClient COMMAND test_llm_http_client)
 
+# --- CommitMessageTool: submit_commit_message schema + argument validation ---
+qt_add_executable(test_commit_message_tool test_commit_message_tool.cpp)
+target_include_directories(test_commit_message_tool PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_commit_message_tool PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_commit_message_tool PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/ai/CommitMessageTool.cpp
+    ${CMAKE_SOURCE_DIR}/src/ai/CommitMessageTool.h
+    ${CMAKE_SOURCE_DIR}/src/ai/ILlmHttpClient.h
+)
+add_test(NAME CommitMessageTool COMMAND test_commit_message_tool)
+
 # --- OpenaiAnthropicBridge: Mini App page-agent chat-completions ↔ /v1/messages ---
 qt_add_executable(test_openai_anthropic_bridge test_openai_anthropic_bridge.cpp)
 target_include_directories(test_openai_anthropic_bridge PRIVATE ${CMAKE_SOURCE_DIR}/src)

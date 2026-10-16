@@ -41,17 +41,24 @@ namespace ai {
 //   - JSON with "error"                                     → Error
 //   - JSON with finish_reason != null OR done == true       → Done
 //   - JSON with type=message_stop                           → Done (Anthropic)
+//   - choices[0].delta.tool_calls[] (index, function.name / .arguments)
+//   - content_block_start (tool_use) / content_block_delta (input_json_delta)
+//                                                           → ToolDelta
+//   - choices[0].finish_reason / message_delta.delta.stop_reason → StopReason
 //
 // Comment lines (": ...") and unknown event fields are ignored. Malformed JSON
 // triggers no event but does NOT abort parsing of subsequent events.
 class SsePartialParser
 {
 public:
-    enum class EventKind : std::uint8_t { Token, Done, Error };
+    enum class EventKind : std::uint8_t { Token, Done, Error, ToolDelta, StopReason };
 
     struct Event {
         EventKind kind = EventKind::Token;
-        QString   text;    // token content (Token) or error message (Error)
+        QString   text;    // token (Token), error (Error), argument JSON fragment
+                           // (ToolDelta) or stop/finish reason (StopReason)
+        int       toolIndex = 0;  // ToolDelta: which call in the reply
+        QString   toolName;       // ToolDelta: set on the fragment that names the call
     };
 
     using EventCallback = std::function<void(const Event &)>;

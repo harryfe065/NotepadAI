@@ -28,11 +28,10 @@ QString PromptAssembler::defaultTemplate()
         "You are an expert at writing git commit messages in the Conventional Commits format.\n"
         "\n"
         "Generate a commit message for the following changes. Follow these rules strictly:\n"
-        "- First line: <type>(<scope>): <subject>, no more than 50 characters, imperative mood, no trailing period.\n"
-        "- Blank line.\n"
-        "- Body: explain WHY, not WHAT. Wrap at 72 characters. Use bullet points if multiple concerns.\n"
+        "- Header: <type>(<scope>): <subject>, no more than 50 characters in total, imperative mood, no trailing period.\n"
+        "- Body (optional): explain WHY, not WHAT. Wrap at 72 characters. Use bullet points if multiple concerns.\n"
         "- No trailing whitespace.\n"
-        "- Output ONLY the commit message text — no markdown fences, no preamble, no explanation.\n"
+        "- Deliver the message ONLY by calling the submit_commit_message tool (type, optional scope, subject, optional body). Never write it as text.\n"
         "\n"
         "{{rules}}\n"
         "{{subject_hint}}\n"
@@ -54,9 +53,9 @@ QString PromptAssembler::renderSubjectHintBlock(const QString &subjectLine)
     const QString trimmed = subjectLine.trimmed();
     if (trimmed.isEmpty()) return QString();
     return QStringLiteral(
-        "The user has already written the subject line below. DO NOT repeat it or rewrite it. "
-        "Generate ONLY the body (no first line). The body will be appended after the subject.\n"
-        "Subject: %1\n").arg(trimmed);
+        "The user has typed the draft below. Treat it as guidance: keep its intent and reuse its "
+        "wording for the subject where it fits. Your tool call replaces the draft.\n"
+        "Draft: %1\n").arg(trimmed);
 }
 
 QString PromptAssembler::renderDiffBlock(const QByteArray &compressedDiff)

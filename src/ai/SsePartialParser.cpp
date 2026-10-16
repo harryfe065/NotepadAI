@@ -127,6 +127,68 @@ QString extractError(const QJsonDocument &doc)
     return {};
 }
 
+// Tool-call fragments. OpenAI streams choices[0].delta.tool_calls[] (the first
+// fragment of a call carries function.name, later ones function.arguments);
+// Anthropic announces a tool_use block in content_block_start and streams its
+// input as input_json_delta.partial_json.
+void emitToolEvents(const QJsonDocument &doc, const SsePartialParser::EventCallback &cb)
+{
+    if (!doc.isObject()) return;
+    const QJsonObject root = doc.object();
+
+    const QJsonArray choices = root.value(QLatin1String("choices")).toArray();
+    if (!choices.isEmpty() && choices.first().isObject()) {
+        const QJsonObject delta = choices.first().toObject().value(QLatin1String("delta")).toObject();
+        const QJsonArray calls = delta.value(QLatin1String("tool_calls")).toArray();
+        for (int i = 0; i < calls.size(); ++i) {
+            const QJsonObject call = calls.at(i).toObject();
+            const QJsonObject fn = call.value(QLatin1String("function")).toObject();
+            SsePartialParser::Event ev;
+            ev.kind = SsePartialParser::EventKind::ToolDelta;
+            ev.toolIndex = call.value(QLatin1String("index")).toInt(i);
+            ev.toolName = fn.value(QLatin1String("name")).toString();
+            ev.text = fn.value(QLatin1String("arguments")).toString();
+            if (!ev.toolName.isEmpty() || !ev.text.isEmpty()) cb(ev);
+        }
+        return;
+    }
+
+    const QString type = root.value(QLatin1String("type")).toString();
+    if (type == QLatin1String("content_block_start")) {
+        const QJsonObject block = root.value(QLatin1String("content_block")).toObject();
+        if (block.value(QLatin1String("type")).toString() != QLatin1String("tool_use")) return;
+        SsePartialParser::Event ev;
+        ev.kind = SsePartialParser::EventKind::ToolDelta;
+        ev.toolIndex = root.value(QLatin1String("index")).toInt();
+        ev.toolName = block.value(QLatin1String("name")).toString();
+        cb(ev);
+    } else if (type == QLatin1String("content_block_delta")) {
+        const QJsonObject delta = root.value(QLatin1String("delta")).toObject();
+        if (delta.value(QLatin1String("type")).toString() != QLatin1String("input_json_delta")) return;
+        SsePartialParser::Event ev;
+        ev.kind = SsePartialParser::EventKind::ToolDelta;
+        ev.toolIndex = root.value(QLatin1String("index")).toInt();
+        ev.text = delta.value(QLatin1String("partial_json")).toString();
+        if (!ev.text.isEmpty()) cb(ev);
+    }
+}
+
+QString extractStopReason(const QJsonDocument &doc)
+{
+    if (!doc.isObject()) return {};
+    const QJsonObject root = doc.object();
+    const QJsonArray choices = root.value(QLatin1String("choices")).toArray();
+    if (!choices.isEmpty() && choices.first().isObject()) {
+        const QJsonValue fr = choices.first().toObject().value(QLatin1String("finish_reason"));
+        if (fr.isString()) return fr.toString();
+    }
+    if (root.value(QLatin1String("type")).toString() == QLatin1String("message_delta")) {
+        const QJsonValue sr = root.value(QLatin1String("delta")).toObject().value(QLatin1String("stop_reason"));
+        if (sr.isString()) return sr.toString();
+    }
+    return {};
+}
+
 } // namespace
 
 void SsePartialParser::feed(QByteArrayView newBytes, const EventCallback &cb)
@@ -201,6 +263,16 @@ void SsePartialParser::processEvent(const QByteArray &eventBytes, const EventCal
     const QString token = extractToken(doc);
     if (!token.isEmpty()) {
         cb({ EventKind::Token, token });
+    }
+
+    emitToolEvents(doc, cb);
+
+    const QString stopReason = extractStopReason(doc);
+    if (!stopReason.isEmpty()) {
+        Event ev;
+        ev.kind = EventKind::StopReason;
+        ev.text = stopReason;
+        cb(ev);
     }
 
     if (hasFinishSignal(doc)) {

@@ -22,6 +22,7 @@
 #include "ILlmHttpClient.h"
 #include "SsePartialParser.h"
 
+#include <QMap>
 #include <QPointer>
 #include <QTimer>
 
@@ -65,6 +66,15 @@ private:
     bool m_firstByteEmitted = false;
     bool m_anyTokenSeen = false;
     bool m_endedCleanly = false;
+    bool m_anyToolSeen = false;
+
+    struct ToolCallAccum {
+        QString    name;
+        QByteArray args;
+    };
+    QMap<int, ToolCallAccum> m_toolCalls;   // keyed by call index, reply order
+
+    void flushToolCalls();
 
     static QUrl normalizeChatCompletionsUrl(const QUrl &base);
 };

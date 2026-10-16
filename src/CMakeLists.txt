@@ -635,6 +635,8 @@ qt_add_executable(NotepadAI
 
 	ai/DiffCompressor.h
 	ai/DiffCompressor.cpp
+	ai/CommitMessageTool.h
+	ai/CommitMessageTool.cpp
 	ai/PromptAssembler.h
 	ai/PromptAssembler.cpp
 	ai/RulesLocator.h

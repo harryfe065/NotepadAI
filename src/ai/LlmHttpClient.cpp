@@ -25,6 +25,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 
+#include <utility>
+
 namespace ai {
 
 LlmHttpClient::LlmHttpClient(QObject *parent)
@@ -139,6 +141,23 @@ QByteArray LlmHttpClient::buildPayload(const Request &req)
         body.insert(QLatin1String("max_tokens"), req.maxTokens > 0 ? req.maxTokens : 16000);
         if (!req.systemPrompt.isEmpty())
             body.insert(QLatin1String("system"), req.systemPrompt);
+        if (!req.tools.isEmpty()) {
+            QJsonArray tools;
+            for (const Tool &t : req.tools) {
+                QJsonObject o;
+                o.insert(QLatin1String("name"), t.name);
+                o.insert(QLatin1String("description"), t.description);
+                o.insert(QLatin1String("input_schema"), t.inputSchema);
+                tools.append(o);
+            }
+            body.insert(QLatin1String("tools"), tools);
+            if (req.forceToolChoice) {
+                QJsonObject choice;
+                choice.insert(QLatin1String("type"), QLatin1String("tool"));
+                choice.insert(QLatin1String("name"), req.tools.first().name);
+                body.insert(QLatin1String("tool_choice"), choice);
+            }
+        }
         return QJsonDocument(body).toJson(QJsonDocument::Compact);
     }
 
@@ -183,6 +202,28 @@ QByteArray LlmHttpClient::buildPayload(const Request &req)
     body.insert(QLatin1String("stream"),   true);
     if (req.maxTokens > 0)
         body.insert(QLatin1String("max_tokens"), req.maxTokens);
+    if (!req.tools.isEmpty()) {
+        QJsonArray tools;
+        for (const Tool &t : req.tools) {
+            QJsonObject fn;
+            fn.insert(QLatin1String("name"), t.name);
+            fn.insert(QLatin1String("description"), t.description);
+            fn.insert(QLatin1String("parameters"), t.inputSchema);
+            QJsonObject o;
+            o.insert(QLatin1String("type"), QLatin1String("function"));
+            o.insert(QLatin1String("function"), fn);
+            tools.append(o);
+        }
+        body.insert(QLatin1String("tools"), tools);
+        if (req.forceToolChoice) {
+            QJsonObject fn;
+            fn.insert(QLatin1String("name"), req.tools.first().name);
+            QJsonObject choice;
+            choice.insert(QLatin1String("type"), QLatin1String("function"));
+            choice.insert(QLatin1String("function"), fn);
+            body.insert(QLatin1String("tool_choice"), choice);
+        }
+    }
     return QJsonDocument(body).toJson(QJsonDocument::Compact);
 }
 
@@ -200,6 +241,8 @@ void LlmHttpClient::openStream(const Request &req)
     m_firstByteEmitted = false;
     m_anyTokenSeen = false;
     m_endedCleanly = false;
+    m_anyToolSeen = false;
+    m_toolCalls.clear();
     m_parser.reset();
 
     QNetworkRequest httpReq(normalizeUrl(req));
@@ -262,8 +305,19 @@ void LlmHttpClient::onReadyRead()
             m_anyTokenSeen = true;
             emit tokenReceived(ev.text);
             break;
+        case SsePartialParser::EventKind::ToolDelta: {
+            m_anyToolSeen = true;
+            ToolCallAccum &c = m_toolCalls[ev.toolIndex];
+            if (c.name.isEmpty()) c.name = ev.toolName;
+            c.args += ev.text.toUtf8();
+            break;
+        }
+        case SsePartialParser::EventKind::StopReason:
+            emit stopReasonReceived(ev.text);
+            break;
         case SsePartialParser::EventKind::Done:
             m_endedCleanly = true;
+            flushToolCalls();
             emit streamEnded();
             cancel();
             break;
@@ -295,14 +349,25 @@ void LlmHttpClient::onFinished()
     }
     // Connection closed without [DONE]/finish_reason. If we got tokens, treat
     // as soft end; otherwise as error.
-    if (m_anyTokenSeen) emit streamEnded();
-    else emit errorOccurred(status, QStringLiteral("Stream closed before any token arrived"));
+    if (m_anyTokenSeen || m_anyToolSeen) {
+        flushToolCalls();
+        emit streamEnded();
+    } else emit errorOccurred(status, QStringLiteral("Stream closed before any token arrived"));
+}
+
+void LlmHttpClient::flushToolCalls()
+{
+    // Move out first: a slot may start a new stream, which clears the member.
+    const QMap<int, ToolCallAccum> calls = std::move(m_toolCalls);
+    m_toolCalls.clear();
+    for (const ToolCallAccum &c : calls)
+        emit toolCallReceived(c.name, c.args);
 }
 
 void LlmHttpClient::onIdleTimeout()
 {
     if (!m_reply) return;
-    const QString msg = m_anyTokenSeen
+    const QString msg = (m_anyTokenSeen || m_anyToolSeen)
         ? QStringLiteral("No bytes from provider for the idle timeout window")
         : QStringLiteral("Provider did not respond before the idle timeout");
     emit errorOccurred(0, msg);

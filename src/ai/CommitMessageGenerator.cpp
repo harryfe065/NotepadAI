@@ -19,6 +19,7 @@
 #include "CommitMessageGenerator.h"
 
 #include "ApplicationSettings.h"
+#include "CommitMessageTool.h"
 #include "CredentialStore.h"
 #include "DiffCompressor.h"
 #include "LlmHttpClient.h"
@@ -28,9 +29,34 @@
 #include "git/CommitComposer.h"
 
 #include <QPlainTextEdit>
+#include <QSet>
 #include <QTextCursor>
+#include <QTimer>
 
 namespace ai {
+
+namespace {
+
+// url|model pairs whose server rejected a named tool_choice this session
+// (docs/adr/0004). In memory only; UI thread only.
+QSet<QString> &noForcedToolChoice()
+{
+    static QSet<QString> set;
+    return set;
+}
+
+QString forcedChoiceKey(const ILlmHttpClient::Request &req)
+{
+    return req.url.toString() + QLatin1Char('|') + req.model;
+}
+
+QString clipped(const QString &text, int max)
+{
+    const QString one = text.simplified();
+    return one.size() <= max ? one : one.left(max) + QChar(0x2026);
+}
+
+} // namespace
 
 CommitMessageGenerator::CommitMessageGenerator(ApplicationSettings *settings,
                                                CredentialStore *credStore,
@@ -40,19 +66,20 @@ CommitMessageGenerator::CommitMessageGenerator(ApplicationSettings *settings,
       m_credStore(credStore),
       m_http(new LlmHttpClient(this))
 {
-    m_flushTimer.setSingleShot(true);
-    m_flushTimer.setInterval(0);
-    m_flushTimer.setTimerType(Qt::PreciseTimer);
-    connect(&m_flushTimer, &QTimer::timeout, this, &CommitMessageGenerator::flushPending);
-    m_pendingTokens.reserve(4096);
-
-    connect(m_http, &ILlmHttpClient::firstByteReceived, this, &CommitMessageGenerator::onFirstByte);
-    connect(m_http, &ILlmHttpClient::tokenReceived,     this, &CommitMessageGenerator::onToken);
-    connect(m_http, &ILlmHttpClient::streamEnded,       this, &CommitMessageGenerator::onStreamEnded);
-    connect(m_http, &ILlmHttpClient::errorOccurred,     this, &CommitMessageGenerator::onStreamError);
+    wireClient();
 }
 
 CommitMessageGenerator::~CommitMessageGenerator() = default;
+
+void CommitMessageGenerator::wireClient()
+{
+    connect(m_http, &ILlmHttpClient::firstByteReceived,  this, &CommitMessageGenerator::onFirstByte);
+    connect(m_http, &ILlmHttpClient::tokenReceived,      this, &CommitMessageGenerator::onToken);
+    connect(m_http, &ILlmHttpClient::toolCallReceived,   this, &CommitMessageGenerator::onToolCall);
+    connect(m_http, &ILlmHttpClient::stopReasonReceived, this, &CommitMessageGenerator::onStopReason);
+    connect(m_http, &ILlmHttpClient::streamEnded,        this, &CommitMessageGenerator::onStreamEnded);
+    connect(m_http, &ILlmHttpClient::errorOccurred,      this, &CommitMessageGenerator::onStreamError);
+}
 
 void CommitMessageGenerator::setHttpClientForTesting(ILlmHttpClient *client)
 {
@@ -63,10 +90,7 @@ void CommitMessageGenerator::setHttpClientForTesting(ILlmHttpClient *client)
     }
     m_http = client;
     m_http->setParent(this);
-    connect(m_http, &ILlmHttpClient::firstByteReceived, this, &CommitMessageGenerator::onFirstByte);
-    connect(m_http, &ILlmHttpClient::tokenReceived,     this, &CommitMessageGenerator::onToken);
-    connect(m_http, &ILlmHttpClient::streamEnded,       this, &CommitMessageGenerator::onStreamEnded);
-    connect(m_http, &ILlmHttpClient::errorOccurred,     this, &CommitMessageGenerator::onStreamError);
+    wireClient();
 }
 
 bool CommitMessageGenerator::canFireGenerate(const QString &workspaceRoot,
@@ -135,17 +159,20 @@ void CommitMessageGenerator::trigger(const QString &workspaceRoot,
 
     m_target = composer;
     m_currentRepoKey = workspaceRoot;
-    m_hadSubjectHint = !subjectHint.trimmed().isEmpty();
-    m_firstChunkSeen = false;
-    m_pendingTokens.clear();
+    m_retryPending = false;
+    resetReply();
 
     ILlmHttpClient::Request req;
     req.url = QUrl(m_settings->commitMessageProviderUrl());
     req.model = m_settings->commitMessageModel();
     req.apiKey = apiKey;
+    req.systemPrompt = CommitMessageTool::systemPrompt();
     req.prompt = prompt;
     req.idleTimeoutSec = m_settings->commitMessageStreamIdleTimeoutSec();
     req.apiFormat = LlmHttpClient::apiFormatFromStored(m_settings->commitMessageApiFormat());
+    req.tools.append(CommitMessageTool::tool());
+    req.forceToolChoice = !noForcedToolChoice().contains(forcedChoiceKey(req));
+    m_request = req;
 
     setState(State::Authenticating);
     m_http->openStream(req);
@@ -155,10 +182,8 @@ void CommitMessageGenerator::cancel()
 {
     if (m_state == State::Idle || m_state == State::Cancelling) return;
     setState(State::Cancelling);
+    m_retryPending = false;
     m_http->cancel();
-    // Flush any buffered tokens so user sees them; then go Idle. Tokens
-    // arriving after this point are ignored via state guard in appendChunk.
-    flushPending();
     setState(State::Idle);
     m_target.clear();
     m_currentRepoKey.clear();
@@ -170,6 +195,14 @@ void CommitMessageGenerator::cancelIfTarget(CommitComposer *composer)
     if (m_target.data() == composer) cancel();
 }
 
+void CommitMessageGenerator::resetReply()
+{
+    m_textReply.clear();
+    m_stopReason.clear();
+    m_toolArgs.clear();
+    m_haveCall = false;
+}
+
 void CommitMessageGenerator::onFirstByte()
 {
     if (m_state == State::Cancelling || m_state == State::Idle) return;
@@ -178,54 +211,93 @@ void CommitMessageGenerator::onFirstByte()
 
 void CommitMessageGenerator::onToken(const QString &chunk)
 {
-    if (m_state != State::Authenticating && m_state != State::Streaming) return;
-    if (m_state == State::Authenticating) setState(State::Streaming);
-    appendChunk(chunk);
+    // Text is never the message; keep a little of it to explain the error.
+    if (m_textReply.size() < 400) m_textReply.append(chunk);
 }
 
-void CommitMessageGenerator::appendChunk(const QString &chunk)
+void CommitMessageGenerator::onToolCall(const QString &name, const QByteArray &argumentsJson)
 {
-    if (!m_firstChunkSeen) {
-        m_firstChunkSeen = true;
-        // Prepend a newline so generated body sits below the user's subject.
-        if (m_hadSubjectHint) m_pendingTokens.append(QChar::LineFeed);
-    }
-    m_pendingTokens.append(chunk);
-    if (!m_flushTimer.isActive()) m_flushTimer.start();
+    // First submit_commit_message wins; other calls are ignored.
+    if (m_haveCall || name != QLatin1String(CommitMessageTool::kToolName)) return;
+    m_haveCall = true;
+    m_toolArgs = argumentsJson;
 }
 
-void CommitMessageGenerator::flushPending()
+void CommitMessageGenerator::onStopReason(const QString &reason)
 {
-    if (m_pendingTokens.isEmpty()) return;
-    if (!m_target || (m_state != State::Streaming
-                      && m_state != State::Authenticating
-                      && m_state != State::Cancelling)) {
-        m_pendingTokens.clear();
-        return;
-    }
-    QPlainTextEdit *edit = m_target->edit();
-    if (!edit) {
-        m_pendingTokens.clear();
-        return;
-    }
-    QTextCursor cursor(edit->document());
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertText(m_pendingTokens);
-    m_pendingTokens.clear();
+    m_stopReason = reason;
 }
 
 void CommitMessageGenerator::onStreamEnded()
 {
-    flushPending();
+    if (m_state != State::Authenticating && m_state != State::Streaming) return;
+
+    const QString tool = QLatin1String(CommitMessageTool::kToolName);
+    QString error;
+    QString message;
+
+    if (m_stopReason == QLatin1String("max_tokens") || m_stopReason == QLatin1String("length")) {
+        error = tr("The response was cut off (token limit reached) before the commit message was complete");
+    } else if (!m_haveCall) {
+        const QString text = clipped(m_textReply, 120);
+        error = text.isEmpty()
+            ? tr("The model did not call %1").arg(tool)
+            : tr("The model replied with text instead of calling %1: \u201c%2\u201d").arg(tool, text);
+    } else {
+        const CommitMessageTool::Parsed parsed = CommitMessageTool::parseArguments(m_toolArgs);
+        if (parsed.ok()) message = parsed.message;
+        else error = parsed.error;
+    }
+
+    if (!error.isEmpty()) {
+        setState(State::Error);
+        emit errorOccurred(error);
+        teardownAfterError();
+        return;
+    }
+
+    insertMessage(message);
     setState(State::Idle);
     m_target.clear();
     m_currentRepoKey.clear();
 }
 
+void CommitMessageGenerator::insertMessage(const QString &message)
+{
+    if (!m_target) return;
+    QPlainTextEdit *edit = m_target->edit();
+    if (!edit) return;
+    // One edit block: Ctrl+Z restores whatever the user had typed.
+    QTextCursor cursor(edit->document());
+    cursor.beginEditBlock();
+    cursor.select(QTextCursor::Document);
+    cursor.insertText(message);
+    cursor.endEditBlock();
+}
+
 void CommitMessageGenerator::onStreamError(int httpStatus, const QString &message)
 {
-    Q_UNUSED(httpStatus);
-    flushPending();              // preserve any partial text in the composer
+    if (m_state != State::Authenticating && m_state != State::Streaming) return;
+
+    // Some OpenAI-compatible servers reject a named tool_choice. Resend once
+    // without it (the system prompt still demands the call) and remember the
+    // endpoint for the session so later clicks skip the failing request.
+    if (m_request.forceToolChoice && (httpStatus == 400 || httpStatus == 422)
+        && message.contains(QLatin1String("tool_choice"), Qt::CaseInsensitive)) {
+        noForcedToolChoice().insert(forcedChoiceKey(m_request));
+        m_request.forceToolChoice = false;
+        m_retryPending = true;
+        resetReply();
+        // The client may still be unwinding the failed reply: reopen on the
+        // next loop turn, never from inside its errorOccurred emission.
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_retryPending) return;
+            m_retryPending = false;
+            m_http->openStream(m_request);
+        });
+        return;
+    }
+
     setState(State::Error);
     emit errorOccurred(message);
     teardownAfterError();
