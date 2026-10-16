@@ -20,7 +20,6 @@
 #define AI_DOCK_SESSION_STRIP_H
 
 #include <QColor>
-#include <QIcon>
 #include <QPoint>
 #include <QString>
 #include <QVector>
@@ -39,7 +38,6 @@ class AiDockSessionStrip : public QWidget
 
 public:
     static constexpr int kSpacingPx = 4;
-    static constexpr char kAgentButtonName[] = "nn_aiAgentButton";
 
     struct SlotSnapshot
     {
@@ -63,18 +61,6 @@ public:
 
     void setSlots(int count, int current, const QVector<SlotSnapshot> &snapshots);
 
-    // The current session's agent, after the numbers: its configured name and
-    // icon; while switching it reads "→ target". Empty name hides it.
-    struct AgentButton
-    {
-        QString name;
-        QIcon icon;
-        QString tooltip;
-        QString switchingTo;
-    };
-    void setAgentButton(const AgentButton &agent);
-    QString agentButtonText() const;
-
     int slotCount() const { return m_count; }
     int currentIndex() const { return m_current; }
     QString slotTooltip(int index) const { return tooltipFor(index); }
@@ -90,8 +76,6 @@ signals:
     void closeRequested(int index);
     // A drag released over another number: move session `from` to position `to`.
     void moveRequested(int from, int to);
-    // The agent button was clicked; the owner shows the Switch agent menu.
-    void agentMenuRequested(const QPoint &globalPos);
 
 protected:
     void changeEvent(QEvent *event) override;
@@ -116,9 +100,6 @@ private:
 
     QHBoxLayout *m_layout = nullptr;
     QVector<QToolButton *> m_buttons;
-    QToolButton *m_agentButton = nullptr;
-    AgentButton m_agent;
-    void restyleAgentButton();
     QVector<SlotSnapshot> m_snapshots;
     int m_count = 0;
     int m_current = 0;

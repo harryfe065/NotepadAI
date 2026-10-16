@@ -523,6 +523,8 @@ qt_add_executable(NotepadAI
 	widgets/UsageWindowBar.h
 	widgets/AiDockSessionStrip.cpp
 	widgets/AiDockSessionStrip.h
+	widgets/AiDockTitleBar.cpp
+	widgets/AiDockTitleBar.h
     widgets/DockMiddleClickCloser.cpp
 	widgets/DockMiddleClickCloser.h
     widgets/DockTabContextMenu.cpp

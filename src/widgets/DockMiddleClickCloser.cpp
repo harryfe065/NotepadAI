@@ -60,10 +60,9 @@ protected:
 
         // The default QDockWidget title bar is drawn into the top strip of
         // PM_TitleBarHeight pixels of the dock itself (not a child widget),
-        // so middle-button releases there reach this filter directly. We do
-        // not currently support QDockWidget::setTitleBarWidget(); no dock
-        // in the project uses it. If a custom title bar widget is ever set,
-        // mouse events on it would target that child and never reach here.
+        // so middle-button releases there reach this filter directly. A
+        // custom title bar widget (AiDockTitleBar) gets the event instead and
+        // closes the dock itself.
         QStyleOptionDockWidget opt;
         opt.initFrom(dock);
         const int titleHeight = dock->style()->pixelMetric(QStyle::PM_TitleBarHeight, &opt, dock);

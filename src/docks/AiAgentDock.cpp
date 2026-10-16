@@ -32,6 +32,7 @@
 #include "dialogs/SendWithGoalDialog.h"
 #include "widgets/AcpSessionView.h"
 #include "widgets/AiDockSessionStrip.h"
+#include "widgets/AiDockTitleBar.h"
 #include "remote/ExecutionContext.h"
 
 #include <QCloseEvent>
@@ -95,6 +96,11 @@ AiAgentDock::AiAgentDock(QString sessionId,
     setAllowedAreas(Qt::AllDockWidgetAreas);
 
     buildUi();
+    // The agent button lives in the title bar, not on the tab (which only
+    // has room for the project name and session numbers).
+    m_titleBar = new AiDockTitleBar(this);
+    setTitleBarWidget(m_titleBar);
+    connect(m_titleBar, &AiDockTitleBar::agentMenuRequested, this, &AiAgentDock::onAgentMenuRequested);
     addSlot(std::move(sessionId), std::move(agentName), model, connection, true);
 
     connect(this, &QDockWidget::topLevelChanged, this, [this](bool) {
@@ -1142,7 +1148,6 @@ void AiAgentDock::ensureStrip()
     });
     connect(m_strip, &AiDockSessionStrip::closeRequested, this, &AiAgentDock::closeSlot);
     connect(m_strip, &AiDockSessionStrip::moveRequested, this, &AiAgentDock::moveSlot);
-    connect(m_strip, &AiDockSessionStrip::agentMenuRequested, this, &AiAgentDock::onAgentMenuRequested);
     connect(m_strip, &QObject::destroyed, this, [this]() {
         m_strip = nullptr;
         m_tabBarForStrip = nullptr;
@@ -1275,6 +1280,7 @@ void AiAgentDock::reinstallStrip()
 
 void AiAgentDock::pushStripSnapshots()
 {
+    refreshAgentButton();
     if (!m_strip || m_slots.isEmpty())
         return;
     QVector<AiDockSessionStrip::SlotSnapshot> snaps;
@@ -1293,12 +1299,17 @@ void AiAgentDock::pushStripSnapshots()
         snaps.append(std::move(snap));
     }
     m_strip->setSlots(m_slots.size(), m_current, snaps);
+}
 
+void AiAgentDock::refreshAgentButton()
+{
+    if (!m_titleBar || m_slots.isEmpty())
+        return;
     // The open session's agent, by its configured name (adapters all report
     // "Claude Code", which cannot tell two accounts apart).
     const Slot &open = m_slots.at(qBound(0, m_current, int(m_slots.size()) - 1));
     const AcpAgentDefinition def = slotAgent(open);
-    AiDockSessionStrip::AgentButton button;
+    AiDockTitleBar::AgentButton button;
     button.name = def.name;
     button.icon = acpAgentIcon(def, palette());
     button.switchingTo = open.switchingTo;
@@ -1311,7 +1322,7 @@ void AiAgentDock::pushStripSnapshots()
     }
     tip += QLatin1Char('\n') + tr("Click to continue this session with another agent");
     button.tooltip = tip;
-    m_strip->setAgentButton(button);
+    m_titleBar->setAgentButton(button);
 }
 
 QTabBar *AiAgentDock::hostTabBar(int *tabIndex) const

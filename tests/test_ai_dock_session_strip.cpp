@@ -40,7 +40,6 @@ private slots:
     void size_matchesHint_buttonsDoNotShrink();
     void tabBar_tabSizeHint_includesFullStripWidth();
     void deferredDelete_afterMove_detachesFromNewBar();
-    void agentButton_showsNameThenSwitchTarget_clickAsksForMenu();
 };
 
 static QVector<AiDockSessionStrip::SlotSnapshot> threeSnapshots(bool secondBusy)
@@ -54,15 +53,9 @@ static QVector<AiDockSessionStrip::SlotSnapshot> threeSnapshots(bool secondBusy)
     return snaps;
 }
 
-// The session numbers only (the agent button is a sibling).
 static QList<QToolButton *> stripButtons(AiDockSessionStrip *strip)
 {
-    QList<QToolButton *> numbers;
-    for (QToolButton *btn : strip->findChildren<QToolButton *>(Qt::FindDirectChildrenOnly)) {
-        if (btn->objectName() != QLatin1String(AiDockSessionStrip::kAgentButtonName))
-            numbers.append(btn);
-    }
-    return numbers;
+    return strip->findChildren<QToolButton *>(Qt::FindDirectChildrenOnly);
 }
 
 void TestAiDockSessionStrip::captions_areOneBasedDigits()
@@ -344,40 +337,6 @@ void TestAiDockSessionStrip::deferredDelete_afterMove_detachesFromNewBar()
     QCOMPARE(local.tabButton(0, QTabBar::RightSide), nullptr);
     local.removeTab(0);
     QCOMPARE(local.count(), 0);
-}
-
-// Switch agent: the button after the numbers names the open session's agent,
-// reads "→ target" while switching, and leaves the numbers' layout alone.
-void TestAiDockSessionStrip::agentButton_showsNameThenSwitchTarget_clickAsksForMenu()
-{
-    AiDockSessionStrip strip;
-    strip.setSlots(3, 0, threeSnapshots(false));
-    const int numbersOnly = strip.sizeHint().width();
-    auto *agent = strip.findChild<QToolButton *>(QLatin1String(AiDockSessionStrip::kAgentButtonName));
-    QVERIFY(agent);
-    QVERIFY(agent->isHidden()); // no agent pushed yet: reserves nothing
-
-    AiDockSessionStrip::AgentButton button;
-    button.name = QStringLiteral("CC 0x317374");
-    button.tooltip = QStringLiteral("Agent: CC 0x317374");
-    strip.setAgentButton(button);
-    QVERIFY(!agent->isHidden());
-    QVERIFY(strip.agentButtonText().startsWith(QStringLiteral("CC 0x317374")));
-    QCOMPARE(agent->toolTip(), button.tooltip);
-    QVERIFY(strip.sizeHint().width() > numbersOnly);
-    QCOMPARE(stripButtons(&strip).size(), 3);
-    QCOMPARE(stripButtons(&strip).at(2)->text(), QStringLiteral("3"));
-
-    button.switchingTo = QStringLiteral("CC muse");
-    strip.setAgentButton(button);
-    QVERIFY(strip.agentButtonText().startsWith(QStringLiteral("→ CC muse")));
-
-    QSignalSpy menu(&strip, &AiDockSessionStrip::agentMenuRequested);
-    agent->click();
-    QCOMPARE(menu.count(), 1);
-
-    strip.setAgentButton({});
-    QVERIFY(agent->isHidden());
 }
 
 QTEST_MAIN(TestAiDockSessionStrip)

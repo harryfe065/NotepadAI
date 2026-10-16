@@ -38,6 +38,7 @@ class AcpConnection;
 class AcpSessionModel;
 class AcpSessionView;
 class AiDockSessionStrip;
+class AiDockTitleBar;
 class ApplicationSettings;
 class GoalAgent;
 class QCloseEvent;
@@ -254,6 +255,8 @@ private:
     void scheduleStripReinstall();
     void reinstallStrip();
     void pushStripSnapshots();
+    // The open session's agent on the title bar's agent button.
+    void refreshAgentButton();
     void showLocalTabBar();
     void hideLocalTabBar();
     void notifySiblingsRefreshStrip();
@@ -281,6 +284,7 @@ private:
     QStackedWidget *m_stack = nullptr;
     QTabBar *m_localTabBar = nullptr;
     QPointer<AiDockSessionStrip> m_strip;
+    AiDockTitleBar *m_titleBar = nullptr; // owned via setTitleBarWidget
     QPointer<QTabBar> m_tabBarForStrip;
     bool m_stripReinstallQueued = false;
 

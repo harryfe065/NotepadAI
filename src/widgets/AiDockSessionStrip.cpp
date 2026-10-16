@@ -109,68 +109,6 @@ AiDockSessionStrip::AiDockSessionStrip(QWidget *parent)
     // layout lock a 0-width geometry that the tab then treats as the
     // reserved button width. Fixed = the button row is the only size.
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-
-    m_agentButton = new QToolButton(this);
-    m_agentButton->setObjectName(QLatin1String(kAgentButtonName));
-    m_agentButton->setAutoRaise(true);
-    m_agentButton->setFocusPolicy(Qt::TabFocus);
-    m_agentButton->setCursor(Qt::PointingHandCursor);
-    m_agentButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_agentButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    m_agentButton->hide();
-    connect(m_agentButton, &QToolButton::clicked, this, [this]() {
-        emit agentMenuRequested(m_agentButton->mapToGlobal(QPoint(0, m_agentButton->height())));
-    });
-    m_layout->addWidget(m_agentButton);
-}
-
-void AiDockSessionStrip::setAgentButton(const AgentButton &agent)
-{
-    if (agent.name == m_agent.name && agent.tooltip == m_agent.tooltip
-        && agent.switchingTo == m_agent.switchingTo
-        && agent.icon.cacheKey() == m_agent.icon.cacheKey()) {
-        return;
-    }
-    m_agent = agent;
-    restyleAgentButton();
-    syncIntrinsicSize();
-    notifyHostTabBar();
-}
-
-QString AiDockSessionStrip::agentButtonText() const
-{
-    return m_agentButton ? m_agentButton->text() : QString();
-}
-
-void AiDockSessionStrip::restyleAgentButton()
-{
-    if (!m_agentButton)
-        return;
-    if (m_agent.name.isEmpty()) {
-        m_agentButton->hide();
-        return;
-    }
-    // Long names must not stretch the tab: elide to a fixed budget.
-    constexpr int kMaxNameWidthDip = 160;
-    const QString label = m_agent.switchingTo.isEmpty()
-        ? m_agent.name
-        : QStringLiteral("→ ") + m_agent.switchingTo + QStringLiteral("…");
-    const QString elided = m_agentButton->fontMetrics().elidedText(label, Qt::ElideRight, kMaxNameWidthDip);
-    m_agentButton->setText(elided + QStringLiteral(" ▾"));
-    m_agentButton->setIcon(m_agent.icon);
-    const int iconPx = m_agentButton->fontMetrics().height();
-    m_agentButton->setIconSize(QSize(iconPx, iconPx));
-    m_agentButton->setToolTip(m_agent.tooltip);
-    m_agentButton->setAccessibleName(m_agent.name);
-    // Same toolbar chrome as the numbers (ui-dna): border only on hover.
-    m_agentButton->setStyleSheet(
-        QStringLiteral("QToolButton { color: palette(button-text); padding: 0px %1px; "
-                       "border: 1px solid transparent; background: transparent; }"
-                       "QToolButton:hover { background: palette(midlight); "
-                       "border: 1px solid palette(mid); }")
-            .arg(kSpacingPx));
-    m_agentButton->setMinimumSize(m_agentButton->sizeHint());
-    m_agentButton->show();
 }
 
 void AiDockSessionStrip::setSlots(int count, int current, const QVector<SlotSnapshot> &snapshots)
@@ -219,21 +157,13 @@ QSize AiDockSessionStrip::sizeHint() const
 {
     int w = 0;
     int h = 0;
-    int shown = 0;
     for (const QToolButton *btn : m_buttons) {
         const QSize sh = btn->sizeHint();
         w += sh.width();
         h = qMax(h, sh.height());
-        ++shown;
     }
-    if (m_agentButton && !m_agentButton->isHidden()) {
-        const QSize sh = m_agentButton->sizeHint();
-        w += sh.width();
-        h = qMax(h, sh.height());
-        ++shown;
-    }
-    if (shown > 1)
-        w += kSpacingPx * (shown - 1);
+    if (m_buttons.size() > 1)
+        w += kSpacingPx * (m_buttons.size() - 1);
     return QSize(w, h);
 }
 
@@ -245,10 +175,8 @@ QSize AiDockSessionStrip::minimumSizeHint() const
 void AiDockSessionStrip::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
-    if (event && event->type() == QEvent::PaletteChange) {
+    if (event && event->type() == QEvent::PaletteChange)
         restyleButtons();
-        restyleAgentButton();
-    }
 }
 
 bool AiDockSessionStrip::event(QEvent *event)
@@ -350,7 +278,7 @@ bool AiDockSessionStrip::handleDrag(int index, QEvent *event)
 
 int AiDockSessionStrip::dropPositionAt(int stripX) const
 {
-    const int last = int(m_buttons.size()) - 1; // the agent button is not a drop slot
+    const int last = m_layout->count() - 1;
     for (int k = 0; k <= last; ++k) {
         if (stripX < m_layout->itemAt(k)->geometry().right() + kSpacingPx / 2)
             return k;
@@ -401,7 +329,7 @@ void AiDockSessionStrip::rebuildButtons()
         btn->setCursor(Qt::PointingHandCursor);
         btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         btn->installEventFilter(this);
-        m_layout->insertWidget(int(m_buttons.size()), btn);
+        m_layout->addWidget(btn);
         m_buttons.append(btn);
     }
     for (int i = 0; i < m_buttons.size(); ++i) {

@@ -1193,8 +1193,20 @@ foreach(_acp_dock_tgt
         ${CMAKE_SOURCE_DIR}/src/AcpSwitchAgent.cpp
         ${CMAKE_SOURCE_DIR}/src/AcpSwitchAgent.h
         ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.cpp
-        ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.h)
+        ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.h
+        ${CMAKE_SOURCE_DIR}/src/widgets/AiDockTitleBar.cpp
+        ${CMAKE_SOURCE_DIR}/src/widgets/AiDockTitleBar.h)
 endforeach()
+
+# --- AiDockTitleBar: AI dock title bar with the Switch agent button ---
+qt_add_executable(test_ai_dock_title_bar test_ai_dock_title_bar.cpp)
+target_include_directories(test_ai_dock_title_bar PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_ai_dock_title_bar PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+target_sources(test_ai_dock_title_bar PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/widgets/AiDockTitleBar.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/AiDockTitleBar.h
+)
+add_test(NAME AiDockTitleBar COMMAND test_ai_dock_title_bar)
 
 # --- AcpImageAttachmentList: validation, queue, drag/drop ---
 qt_add_executable(test_acp_image_attachment_limits test_acp_image_attachment_limits.cpp)
