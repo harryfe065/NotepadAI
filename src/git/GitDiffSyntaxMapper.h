@@ -26,6 +26,7 @@
 #include <QVector>
 
 #include <memory>
+#include <utility>
 
 // Computes a "syntax overlay" for a parsed unified diff: per-row lexer style
 // bytes (for the diff body, indexed by display row) plus word-level
@@ -41,9 +42,8 @@
 // won't be styled correctly), but ships the feature without new IO and
 // matches GitHub's diff-view behavior closely for the common case.
 //
-// Pure namespace, no QObject. Lex runs sync on the UI thread inside
-// GitDiffFetcher::onDiffReady (the fetcher is already UI-thread async via
-// QProcess).
+// Pure namespace, no QObject, no Scintilla document: runs on the pool, one
+// call per file (DiffDocumentBuilder), with one State per worker thread.
 namespace GitDiffSyntaxMapper {
 
 // Hard caps. Conservative for v1 and meant to be raised based on the bench
@@ -56,9 +56,10 @@ namespace GitDiffSyntaxMapper {
 //   kMaxLcsCellsPerOverlay  — cumulative DP cells across all blocks in one
 //                             map() call. Bounds total UI-thread work.
 //   kLexerStyleBase         — lexer styles are offset by this so they never
-//                             collide with the 7 fixed GitDiffPainter styles
-//                             (0..6) or Scintilla's predefined styles
-//                             (STYLE_LASTPREDEFINED == 39).
+//                             collide with the fixed diff styles (0..31) or
+//                             Scintilla's predefined styles
+//                             (STYLE_LASTPREDEFINED == 39). DiffLanguages
+//                             remaps them into per-language slots.
 inline constexpr int       kMaxBytesPerSide        = 256 * 1024;
 inline constexpr qint32    kMaxTokensPerSide       = 4096;
 inline constexpr qsizetype kMaxLcsCellsPerOverlay  = 4'000'000;
@@ -73,9 +74,19 @@ struct WordSpan {
     qint32 colEnd;
 };
 
+// Keyword lists and properties a language sets on its lexer (Lua
+// `L.keywords` / `L.properties`), copied on the UI thread so the lexer can be
+// configured on any thread.
+struct LexerSetup {
+    QVector<QByteArray> keywords;                               // index = keyword set
+    QVector<std::pair<QByteArray, QByteArray>> properties;
+};
+
 struct Input {
     QString  oldLexerName;        // Lexilla lexer name for OLD; empty -> no lex on OLD side
     QString  newLexerName;        // Lexilla lexer name for NEW; empty -> no lex on NEW side
+    const LexerSetup *oldSetup = nullptr;          // optional, borrowed
+    const LexerSetup *newSetup = nullptr;
     const GitDiffParser::Result *parsed = nullptr; // borrowed, non-owning
 };
 
@@ -93,15 +104,15 @@ struct Overlay {
 
 Overlay map(const Input &in);
 
-// Reusable workspace for map(). Owned by the caller (typically
-// GitDiffFetcher) so its peak buffers — worst case ~8MB for the DP table
-// at kMaxLcsCellsPerOverlay — are freed when the Git dock closes.
+// Reusable workspace for map(). DiffDocumentBuilder keeps one per worker
+// thread (thread_local); peak buffers — worst case ~8MB for the DP table
+// at kMaxLcsCellsPerOverlay — shrink back by the rule below.
 //
 // Lazy: nothing is allocated until the first non-trivial block is
 // processed. High-water-mark within a call. Auto-shrink after a call
 // whose peak usage stays below 25% of the buffer it currently holds.
 //
-// Not thread-safe: map() is called only on the UI thread.
+// Not thread-safe: one State per thread.
 struct State {
     State();
     ~State();

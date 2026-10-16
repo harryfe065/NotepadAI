@@ -60,8 +60,8 @@ void LineNumbers::adjustMarginWidth()
 
 void LineNumbers::notify(const NotificationData *pscn)
 {
-    // Update::Content covers programmatic text replacement (e.g. GitDiffPainter
-    // rebuilding the diff preview via SCI_APPENDTEXT), which doesn't fire
+    // Update::Content covers programmatic text replacement (e.g. the
+    // file-at-revision tab filled via SCI_APPENDTEXT), which doesn't fire
     // VScroll on its own — without it the margin would stay at whatever width
     // it had before, and the user would only see line numbers appear after
     // their first scroll.

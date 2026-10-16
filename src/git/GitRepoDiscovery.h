@@ -75,7 +75,7 @@ public:
     static QStringList statusArgv(const QString &cwd);
     static QStringList stageArgv(const QString &cwd);
     static QStringList commitArgv(const QString &cwd);
-    static QStringList diffArgv(const QString &cwd, bool stagedSide);
+    static QStringList diffArgv(const QString &cwd, bool stagedSide, bool ignoreWhitespace = false);
     static QString nextRepoAfterRemove(const QString &current, const QString &removed, const QString &main);
     static QString nextRepoAfterMergeConflict(const QString &main);
     static QString nextRepoAfterFailedRemove(const QString &current);

@@ -208,6 +208,12 @@ signals:
 
     DEFINE_SETTING(SyntaxHighlightDiffEnabled, syntaxHighlightDiffEnabled, bool)
 
+    // Diff views (DiffView): toolbar toggles, file tree width and visibility.
+    DEFINE_SETTING(DiffIgnoreWhitespace, diffIgnoreWhitespace, bool)
+    DEFINE_SETTING(DiffWrapLines, diffWrapLines, bool)
+    DEFINE_SETTING(DiffTreeWidth, diffTreeWidth, int)
+    DEFINE_SETTING(DiffTreeVisible, diffTreeVisible, bool)
+
     // Files-tab git decoration master toggle. When false, the workspace
     // tree shows default text colour regardless of git status.
     DEFINE_SETTING(FileTreeGitColors, fileTreeGitColors, bool)

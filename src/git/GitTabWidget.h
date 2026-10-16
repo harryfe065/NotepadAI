@@ -56,6 +56,8 @@ public:
     void setWorkspaceRoot(const QString &root);
     void initializeIfNeeded();
     void setOperationManager(GitOperationManager *mgr);
+    // Selects `sha` in History if it is loaded (a parent opened from the commit view).
+    void selectHistoryCommit(const QByteArray &sha);
 
     GitController *controller() const { return m_controller; }
 

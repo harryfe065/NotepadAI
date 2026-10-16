@@ -177,6 +177,10 @@ CREATE_SETTING(QuickBrowser, LastProxyPort, lastProxyPort, int, 0)
 CREATE_SETTING(QuickBrowser, LastProxyBypassList, lastProxyBypassList, QString, QStringLiteral(""))
 
 CREATE_SETTING(Git, SyntaxHighlightDiffEnabled, syntaxHighlightDiffEnabled, bool, true)
+CREATE_SETTING(Git, DiffIgnoreWhitespace, diffIgnoreWhitespace, bool, false)
+CREATE_SETTING(Git, DiffWrapLines, diffWrapLines, bool, false)
+CREATE_SETTING(Git, DiffTreeWidth, diffTreeWidth, int, 256)
+CREATE_SETTING(Git, DiffTreeVisible, diffTreeVisible, bool, true)
 
 // Files-tab decoration master toggle — see file-tree-git-decorations spec.
 // Default ON so users see the feature out of the box. No PreferencesDialog

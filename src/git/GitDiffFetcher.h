@@ -20,49 +20,50 @@
 #define GIT_DIFF_FETCHER_H
 
 #include "GitDiffCache.h"
-#include "GitDiffParser.h"
-#include "GitDiffSyntaxMapper.h"
 #include "GitStatusEntry.h"
 
 #include <QHash>
 #include <QObject>
 #include <QString>
 
+#include <functional>
 #include <memory>
 
 class GitController;
 
 // Async wrapper around GitController::requestDiff that:
-//   1) checks the LRU cache before issuing a process spawn
-//   2) for untracked files, generates a synthetic diff from disk content
+//   1) checks the LRU cache of built diff documents before spawning git
+//   2) for untracked files, hands back a producer that synthesises the diff
+//      from disk content (run on the pool by DiffView, never the UI thread)
 //   3) clears the cache when status changes
-//   4) computes the syntax overlay (lex + word-diff) sync on the UI thread
-//      once the diff bytes arrive, caching it alongside the parsed result.
 //
-// Emits parsedReady when a parsed Result (with optional overlay) is ready
-// to render (from cache, from a completed git diff, or from on-disk
-// synthesis).
+// Parsing, lexing and building happen in DiffView's pool job; the host
+// stores the finished document back with remember().
 class GitDiffFetcher : public QObject
 {
     Q_OBJECT
 public:
     explicit GitDiffFetcher(GitController *controller, QObject *parent = nullptr);
 
-    // Request a diff for the given entry. Cancels any in-flight request and
-    // emits parsedReady once for the new request.
-    void request(const GitStatusEntry &entry);
+    // Request a diff for the given entry. Emits documentReady (cache hit) or
+    // patchReady once for the new request.
+    void request(const GitStatusEntry &entry, bool ignoreWhitespace);
+
+    // Caches the document built for (relPath, stagedSide).
+    void remember(const QString &relPath, bool stagedSide, std::shared_ptr<const DiffDoc::Document> doc);
 
     GitDiffCache *cache() { return &m_cache; }
 
 signals:
-    void parsedReady(const QString &relPath, bool stagedSide,
-                     const std::shared_ptr<const GitDiffParser::Result> &parsed,
-                     const std::shared_ptr<const GitDiffSyntaxMapper::Overlay> &overlay);
+    void documentReady(const QString &relPath, bool stagedSide, const std::shared_ptr<const DiffDoc::Document> &doc);
+    // `patch` is the diff, or empty with `produce` set (runs off the UI thread).
+    void patchReady(const QString &relPath, bool stagedSide, const QByteArray &patch,
+                    const std::function<QByteArray()> &produce);
     void failed(const QString &relPath, bool stagedSide, const QString &message);
 
 private slots:
-    void onDiffReady(const QString &relPath, bool stagedSide, const QByteArray &diff);
-    void onDiffFailed(const QString &relPath, bool stagedSide, const QString &message);
+    void onDiffReady(const QString &relPath, bool stagedSide, const QByteArray &diff, quint64 token);
+    void onDiffFailed(const QString &relPath, bool stagedSide, const QString &message, quint64 token);
     void onStatusUpdated();
 
 private:
@@ -71,18 +72,12 @@ private:
 
     struct Pending {
         bool stagedSide = false;
-        bool isUntracked = false;
-        GitStatusEntry entry;
+        quint64 token = 0;                // the latest request; older replies are stale
     };
     QHash<QString, Pending> m_inflight;   // keyed by relPath
+    quint64 m_nextToken = 0;
 
-    // Reusable scratch for token-LCS / DP table / token intern map. Auto-
-    // shrinks when peak usage drops below 25% of the buffer. Lives here so
-    // its worst-case buffers are freed when the fetcher (and hence the Git
-    // dock) dies.
-    GitDiffSyntaxMapper::State m_mapperState;
-
-    // Generates a synthetic "all added" diff for an untracked file.
+    // Generates a synthetic "all added" diff for an untracked file. Thread-safe.
     static QByteArray synthDiffForUntracked(const QString &repoRoot, const QString &relPath);
 };
 

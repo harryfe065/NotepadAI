@@ -340,15 +340,17 @@ QStringList GitRepoDiscovery::commitArgv(const QString &cwd)
              QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-") };
 }
 
-QStringList GitRepoDiscovery::diffArgv(const QString &cwd, bool stagedSide)
+QStringList GitRepoDiscovery::diffArgv(const QString &cwd, bool stagedSide, bool ignoreWhitespace)
 {
     QStringList argv{ QStringLiteral("-c"), QStringLiteral("core.quotepath=false"),
                       QStringLiteral("-C"), QDir::cleanPath(cwd),
                       QStringLiteral("diff") };
     if (stagedSide) argv.append(QStringLiteral("--cached"));
-    argv.append({ QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"),
-                  QStringLiteral("--src-prefix=a/"), QStringLiteral("--dst-prefix=b/"),
-                  QStringLiteral("--") });
+    // -M regardless of diff.renames: a staged rename diffs as one file.
+    argv.append({ QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"), QStringLiteral("-M"),
+                  QStringLiteral("--src-prefix=a/"), QStringLiteral("--dst-prefix=b/") });
+    if (ignoreWhitespace) argv.append(QStringLiteral("-w"));
+    argv.append(QStringLiteral("--"));
     return argv;
 }
 

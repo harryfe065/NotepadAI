@@ -25,17 +25,15 @@
 
 #include <cstdint>
 
-// Parsed output of `git -c color.ui=never show --first-parent --no-color -p <sha>`
-// plus the numstat side-channel for binary detection.
+// Parsed output of one `git show --diff-merges=first-parent -p
+// --format=<header>%x1e <sha>` (GitCommitFetcher).
 //
-// `diffBytes` is the unified diff portion only (everything after the message
-// trailing blank line). The header fields (author, message, etc.) are extracted
-// from `--no-patch --format=...` and stored as separate fields so the renderer
-// doesn't have to re-parse the show preamble.
+// The header fields (author, message, etc.) come from the format part, before
+// the RS byte; `diffBytes` is the unified diff after it (a merge's diff is
+// against its first parent).
 //
-// `truncated` is true when the producing process exceeded the configured
-// stdout cap (default 5 MB); the renderer surfaces a footer banner offering
-// re-fetch without cap.
+// `truncated` is true when the output exceeded the stdout cap (default 5 MB);
+// the commit card says so.
 struct GitCommitDetail {
     QByteArray sha;                 // full 40 hex
     QByteArray parents;             // space-separated parent SHAs
@@ -56,16 +54,7 @@ struct GitCommitDetail {
     };
     QVector<Trailer> trailers;
 
-    // Per-file numstat. isBinary populated from `-\t-\t<path>` records.
-    struct FileStat {
-        QByteArray path;
-        qint32     added = -1;
-        qint32     deleted = -1;
-        bool       isBinary = false;
-    };
-    QVector<FileStat> fileStats;
-
-    // Raw unified diff bytes (from --first-parent for merge commits).
+    // Raw unified diff bytes (against the first parent for merge commits).
     QByteArray diffBytes;
     bool       truncated = false;
 

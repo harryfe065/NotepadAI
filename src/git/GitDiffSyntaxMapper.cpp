@@ -185,6 +185,7 @@ private:
 // ---------------------------------------------------------------------------
 void lexSliceIntoRows(const QByteArray &slice,
                       const QString &lexerName,
+                      const GitDiffSyntaxMapper::LexerSetup *setup,
                       const QVector<int> &rowsInSlice,
                       QVector<QByteArray> &outPerRow)
 {
@@ -192,6 +193,13 @@ void lexSliceIntoRows(const QByteArray &slice,
 
     Scintilla::ILexer5 *lexer = CreateLexer(lexerName.toLatin1().constData());
     if (!lexer) return;
+    if (setup) {
+        for (const auto &[key, value] : setup->properties)
+            lexer->PropertySet(key.constData(), value.constData());
+        for (int set = 0; set < setup->keywords.size(); ++set)
+            if (!setup->keywords[set].isEmpty())
+                lexer->WordListSet(set, setup->keywords[set].constData());
+    }
 
     LexerDocument doc(slice);
     lexer->Lex(0, static_cast<Sci_Position>(slice.size()), 0, &doc);
@@ -810,10 +818,10 @@ Overlay map(const Input &in, State &state)
         }
 
         if (oldBytesTotal <= kMaxBytesPerSide) {
-            lexSliceIntoRows(oldSlice, in.oldLexerName, oldRows, out.styleBytesPerRow);
+            lexSliceIntoRows(oldSlice, in.oldLexerName, in.oldSetup, oldRows, out.styleBytesPerRow);
         }
         if (newBytesTotal <= kMaxBytesPerSide) {
-            lexSliceIntoRows(newSlice, in.newLexerName, newRows, out.styleBytesPerRow);
+            lexSliceIntoRows(newSlice, in.newLexerName, in.newSetup, newRows, out.styleBytesPerRow);
         }
     }
 

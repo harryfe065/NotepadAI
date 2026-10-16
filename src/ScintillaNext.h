@@ -101,6 +101,11 @@ public:
 
     int allocateIndicator(const QString &name);
 
+    // Space around the text viewport for chrome placed by the owner of the
+    // editor (diff views: toolbar and file tree). Children placed in it stay
+    // the owner's job.
+    void setChromeMargins(const QMargins &margins) { setViewportMargins(margins); }
+
     template<typename Func>
     void forEachMatch(const QString &text, Func callback) { forEachMatch(text.toUtf8(), callback); }
 

@@ -201,6 +201,10 @@ signals:
     void gitFileAtShaEditorCreated(ScintillaNext *editor);
     void gitFileAtShaEditorFocus(ScintillaNext *editor);
     void gitCommitDetailFailed(const QByteArray &sha, const QString &message);
+    // From the diff preview / commit view: open the working-tree file at
+    // `line` (1-based), or reveal it in the file tree.
+    void gitOpenFileAtLineRequested(const QString &filePath, int line);
+    void gitRevealRequested(const QString &filePath);
 
     // Emitted from closeEvent BEFORE the dock destructs (WA_DeleteOnClose).
     // MainWindow snapshots state into FolderAsWorkspace/WorkspaceStates here
@@ -375,6 +379,8 @@ private:
     // paths that arrive as pre-built absolute strings (onGitTabFileActivated).
     QString resolvedFilePath(const QModelIndex &proxyIdx) const;
     QString resolvedPath(const QString &posixPath) const;
+    // A repo-relative path from the diff / commit views, resolved like above.
+    QString gitRepoFilePath(const QString &relPath) const;
 
     void ensureGitTab();
     GitDiffViewController *ensureGitDiffViewController();

@@ -67,6 +67,9 @@ public:
     void setAllBranches(bool all);
     bool allBranches() const;
 
+    // Select `sha`'s row if it is loaded (no commit-detail request).
+    void selectCommit(const QByteArray &sha);
+
 signals:
     // User clicked a commit row — host opens a commit detail tab.
     void openCommitDetailRequested(const QByteArray &sha);

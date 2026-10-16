@@ -910,8 +910,11 @@ void Window::SetPositionRelative(PRectangle rc, const Window *relativeTo)
 
 PRectangle Window::GetClientPosition() const
 {
-	// The client position is the window position
-	return GetPosition();
+	// NotepadAI patch: the client area starts at (0, 0), as on the other
+	// platforms. The frame geometry of the editor's viewport is offset by the
+	// scroll area's viewport margins (diff views reserve them for chrome), and
+	// Editor treats this rectangle as viewport coordinates.
+	return wid ? PRectangle(0, 0, window(wid)->width(), window(wid)->height()) : PRectangle(0, 0, 1000, 1000);
 }
 
 void Window::Show(bool show)

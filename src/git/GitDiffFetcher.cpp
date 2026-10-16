@@ -18,18 +18,11 @@
 
 #include "GitDiffFetcher.h"
 
-#include "ApplicationSettings.h"
 #include "FileEncodingDetector.h"
 #include "GitController.h"
-#include "GitDiffSyntaxMapper.h"
-#include "NotepadNextApplication.h"
 
-#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
-#include <QPointer>
-#include <QTimer>
 
 GitDiffFetcher::GitDiffFetcher(GitController *controller, QObject *parent)
     : QObject(parent), m_controller(controller)
@@ -96,90 +89,55 @@ QByteArray GitDiffFetcher::synthDiffForUntracked(const QString &repoRoot, const 
     return out;
 }
 
-void GitDiffFetcher::request(const GitStatusEntry &entry)
+void GitDiffFetcher::request(const GitStatusEntry &entry, bool ignoreWhitespace)
 {
     if (entry.relPath.isEmpty()) return;
 
     const QString repo = m_controller->currentRepo();
     const GitDiffCache::Key key = GitDiffCache::keyFor(repo, entry.relPath, entry.stagedSide);
-    if (auto cached = m_cache.get(key)) {
-        emit parsedReady(entry.relPath, entry.stagedSide, cached.parsed, cached.overlay);
+    if (auto cached = m_cache.get(key); cached && cached.doc) {
+        emit documentReady(entry.relPath, entry.stagedSide, cached.doc);
         return;
     }
 
-    Pending pending;
-    pending.stagedSide = entry.stagedSide;
-    pending.isUntracked = (entry.section == GitStatusEntry::Untracked);
-    pending.entry = entry;
-    m_inflight.insert(entry.relPath, pending);
-
-    if (pending.isUntracked) {
-        // Build synthetic diff on the UI thread; for v1 this is fine — the
-        // 4 MiB read budget keeps the worst case <30 ms on SSD.
-        QPointer<GitDiffFetcher> guard(this);
-        QString rel = entry.relPath;
-        bool staged = entry.stagedSide;
-        QTimer::singleShot(0, this, [guard, repo, rel, staged]() {
-            if (!guard) return;
-            const QByteArray diff = synthDiffForUntracked(repo, rel);
-            guard->onDiffReady(rel, staged, diff);
-        });
+    if (entry.section == GitStatusEntry::Untracked) {
+        // Read and decode the file in DiffView's pool job.
+        m_inflight.remove(entry.relPath);
+        const QString rel = entry.relPath;
+        emit patchReady(rel, entry.stagedSide, QByteArray(),
+                        [repo, rel] { return synthDiffForUntracked(repo, rel); });
         return;
     }
 
-    m_controller->requestDiff(entry.relPath, entry.stagedSide);
+    // Requests run in order and all reply: a repeat for the same path (e.g.
+    // after Hide whitespace) supersedes the earlier one by token.
+    const quint64 token = ++m_nextToken;
+    m_inflight.insert(entry.relPath, Pending{entry.stagedSide, token});
+    m_controller->requestDiff(entry.relPath, entry.stagedSide, entry.origRelPath, ignoreWhitespace, token);
 }
 
-void GitDiffFetcher::onDiffReady(const QString &relPath, bool stagedSide, const QByteArray &diff)
+void GitDiffFetcher::remember(const QString &relPath, bool stagedSide, std::shared_ptr<const DiffDoc::Document> doc)
 {
-    Q_UNUSED(stagedSide);
+    if (!doc || !doc->input || !doc->input->parsed) return;
+    const auto key = GitDiffCache::keyFor(m_controller->currentRepo(), relPath, stagedSide);
+    const qsizetype bytes = doc->text.size();
+    m_cache.put(key, GitDiffCache::Entry{doc->input->parsed, std::move(doc)}, bytes);
+}
+
+void GitDiffFetcher::onDiffReady(const QString &relPath, bool stagedSide, const QByteArray &diff, quint64 token)
+{
     const auto it = m_inflight.find(relPath);
     if (it == m_inflight.end()) return;  // not ours / stale
-    if (it->stagedSide != stagedSide) return;
-
-    auto parsed = std::make_shared<const GitDiffParser::Result>(GitDiffParser::parse(diff));
-
-    // Compute the syntax overlay sync on the UI thread. Empty/null overlay
-    // means the painter falls back to fixed-style rendering (solid line
-    // backgrounds, no token colors). Honor the user opt-out setting.
-    std::shared_ptr<const GitDiffSyntaxMapper::Overlay> overlay;
-    if (!parsed->isBinary && !parsed->kinds.isEmpty()) {
-        auto *app = qobject_cast<NotepadNextApplication*>(QCoreApplication::instance());
-        bool enabled = true;
-        if (app && app->getSettings()) {
-            enabled = app->getSettings()->syntaxHighlightDiffEnabled();
-        }
-        if (enabled && app) {
-            // Resolve lexers from the entry paths. For renames the OLD side
-            // uses origRelPath if present; otherwise both sides use relPath.
-            const GitStatusEntry &entry = it->entry;
-            const QString oldPath = entry.origRelPath.isEmpty() ? relPath : entry.origRelPath;
-            const QString oldLang = app->detectLanguageFromPath(oldPath);
-            const QString newLang = app->detectLanguageFromPath(relPath);
-            const QString oldLex  = app->resolveLexerName(oldLang);
-            const QString newLex  = app->resolveLexerName(newLang);
-
-            GitDiffSyntaxMapper::Input in;
-            in.parsed = parsed.get();
-            in.oldLexerName = oldLex;
-            in.newLexerName = newLex;
-            auto computed = GitDiffSyntaxMapper::map(in, m_mapperState);
-            if (computed.ok) {
-                overlay = std::make_shared<const GitDiffSyntaxMapper::Overlay>(std::move(computed));
-            }
-        }
-    }
-
-    const auto key = GitDiffCache::keyFor(m_controller->currentRepo(), relPath, stagedSide);
-    m_cache.put(key, GitDiffCache::Entry{ parsed, overlay }, diff.size());
+    if (it->stagedSide != stagedSide || it->token != token) return;
     m_inflight.erase(it);
-    emit parsedReady(relPath, stagedSide, parsed, overlay);
+    emit patchReady(relPath, stagedSide, diff, {});
 }
 
-void GitDiffFetcher::onDiffFailed(const QString &relPath, bool stagedSide, const QString &message)
+void GitDiffFetcher::onDiffFailed(const QString &relPath, bool stagedSide, const QString &message, quint64 token)
 {
     const auto it = m_inflight.find(relPath);
-    if (it != m_inflight.end() && it->stagedSide == stagedSide) m_inflight.erase(it);
+    if (it == m_inflight.end() || it->stagedSide != stagedSide || it->token != token) return;   // stale
+    m_inflight.erase(it);
     emit failed(relPath, stagedSide, message);
 }
 

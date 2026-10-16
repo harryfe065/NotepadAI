@@ -96,3 +96,76 @@ const GitDiffPalette &GitDiffPalette::current(bool isDark)
 {
     return isDark ? dark() : light();
 }
+
+QColor GitDiffPalette::blend(const QColor &canvas, const QColor &rgba)
+{
+    const int a = rgba.alpha();
+    auto mix = [a](int under, int over) { return (under * (255 - a) + over * a + 127) / 255; };
+    return QColor(mix(canvas.red(), rgba.red()), mix(canvas.green(), rgba.green()),
+                  mix(canvas.blue(), rgba.blue()));
+}
+
+namespace {
+
+QColor alpha(QRgb rgb, int percent)
+{
+    QColor c(rgb);
+    c.setAlpha(percent * 255 / 100);
+    return c;
+}
+
+// The canvas moved `percent` points of HSL lightness away from its own
+// lightness (towards white on dark canvases, black on light ones).
+QColor shifted(const QColor &canvas, bool dark, int percent)
+{
+    int h = 0, s = 0, l = 0, a = 0;
+    canvas.getHsl(&h, &s, &l, &a);
+    const int delta = 255 * percent / 100;
+    return QColor::fromHsl(h, s, qBound(0, dark ? l + delta : l - delta, 255), a);
+}
+
+} // namespace
+
+DiffViewColors DiffViewColors::make(bool dark)
+{
+    const GitDiffPalette &p = GitDiffPalette::current(dark);
+    const QColor canvas = p.canvasBg;
+    auto over = [&](QRgb rgb, int percent) { return GitDiffPalette::blend(canvas, alpha(rgb, percent)); };
+
+    DiffViewColors c;
+    c.canvas = canvas;
+    c.text = p.canvasFg;
+    c.muted = p.commitMetaFg;
+    if (dark) {
+        c.addLine = over(0x2EA043, 15);
+        c.addNumber = over(0x3FB950, 30);
+        c.addWord = over(0x2EA043, 40);
+        c.delLine = over(0xF85149, 10);
+        c.delNumber = over(0xF85149, 30);
+        c.delWord = over(0xF85149, 40);
+        c.hunkLine = over(0x388BFD, 10);
+        c.hunkText = QColor(0x91, 0x98, 0xA1);
+        c.plus = QColor(0x3F, 0xB9, 0x50);
+        c.minus = QColor(0xF8, 0x51, 0x49);
+    } else {
+        c.addLine = QColor(0xDA, 0xFB, 0xE1);
+        c.addNumber = QColor(0xAC, 0xEE, 0xBB);
+        c.addWord = QColor(0xAC, 0xEE, 0xBB);
+        c.delLine = QColor(0xFF, 0xEB, 0xE9);
+        c.delNumber = QColor(0xFF, 0xCE, 0xCB);
+        c.delWord = QColor(0xFF, 0xCE, 0xCB);
+        c.hunkLine = QColor(0xDD, 0xF4, 0xFF);
+        c.hunkText = QColor(0x59, 0x63, 0x6E);
+        c.plus = QColor(0x1A, 0x7F, 0x37);
+        c.minus = QColor(0xD1, 0x24, 0x2F);
+    }
+    c.squareNeutral = GitDiffPalette::blend(canvas, QColor(c.text.red(), c.text.green(), c.text.blue(), 64));
+    c.header = shifted(canvas, dark, 6);
+    c.rule = GitDiffPalette::blend(canvas, QColor(c.text.red(), c.text.green(), c.text.blue(), 48));
+    c.link = p.fgModified;
+    c.statusAdded = p.fgAdded;
+    c.statusModified = p.fgModified;
+    c.statusDeleted = p.fgMinus;
+    c.statusRenamed = p.fgRenamed;
+    return c;
+}

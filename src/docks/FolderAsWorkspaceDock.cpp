@@ -1021,6 +1021,13 @@ QString FolderAsWorkspaceDock::resolvedPath(const QString &posixPath) const
     return posixPath;
 }
 
+QString FolderAsWorkspaceDock::gitRepoFilePath(const QString &relPath) const
+{
+    const QString repo = gitTab && gitTab->controller() ? gitTab->controller()->currentRepo() : QString();
+    if (repo.isEmpty() || relPath.isEmpty()) return QString();
+    return resolvedPath(QDir(repo).filePath(relPath));
+}
+
 QString FolderAsWorkspaceDock::resolvedFilePath(const QModelIndex &proxyIdx) const
 {
     return resolvedPath(proxy->filePath(proxyIdx));
@@ -1337,6 +1344,12 @@ GitDiffViewController *FolderAsWorkspaceDock::ensureGitDiffViewController()
             this, &FolderAsWorkspaceDock::onGitDiffPreviewRendered);
     connect(gitDiffViewController, &GitDiffViewController::diffFailed,
             this, &FolderAsWorkspaceDock::onGitDiffPreviewFailed);
+    connect(gitDiffViewController, &GitDiffViewController::openFileRequested,
+            this, [this](const QString &relPath, int line) {
+                emit gitOpenFileAtLineRequested(gitRepoFilePath(relPath), line);
+            });
+    connect(gitDiffViewController, &GitDiffViewController::revealRequested,
+            this, [this](const QString &relPath) { emit gitRevealRequested(gitRepoFilePath(relPath)); });
 
     connect(app, &NotepadNextApplication::effectiveThemeChanged,
             gitDiffViewController, [this, app]() {
@@ -1415,6 +1428,16 @@ GitCommitView *FolderAsWorkspaceDock::ensureGitCommitView()
             this, &FolderAsWorkspaceDock::gitFileAtShaEditorFocus);
     connect(gitCommitView, &GitCommitView::fetchFailed,
             this, &FolderAsWorkspaceDock::gitCommitDetailFailed);
+    connect(gitCommitView, &GitCommitView::openWorkingFileRequested,
+            this, [this](const QString &relPath, int line) {
+                emit gitOpenFileAtLineRequested(gitRepoFilePath(relPath), line);
+            });
+    connect(gitCommitView, &GitCommitView::revealRequested,
+            this, [this](const QString &relPath) { emit gitRevealRequested(gitRepoFilePath(relPath)); });
+    // A parent link moved the tab: keep the history selection on it.
+    connect(gitCommitView, &GitCommitView::commitShown, this, [this](const QByteArray &sha) {
+        if (gitTab) gitTab->selectHistoryCommit(sha);
+    });
 
     connect(app, &NotepadNextApplication::effectiveThemeChanged,
             gitCommitView, [this, app]() {

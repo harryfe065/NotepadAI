@@ -19,11 +19,11 @@
 #include "GitHistoryItemDelegate.h"
 
 #include "GitHistoryModel.h"
+#include "GitRelativeTime.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QFontMetrics>
-#include <QLocale>
 #include <QPainter>
 #include <QPalette>
 
@@ -193,35 +193,5 @@ void GitHistoryItemDelegate::paint(QPainter *painter,
 
 QString GitHistoryItemDelegate::formatRelativeTime(qint64 ctime)
 {
-    if (ctime <= 0) return {};
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
-    qint64 d = now - ctime;
-    if (d < 0) d = 0;
-
-    if (d < 60) {
-        return QCoreApplication::translate("GitHistoryItemDelegate", "just now");
-    }
-    if (d < 3600) {
-        const int n = static_cast<int>(d / 60);
-        return QCoreApplication::translate("GitHistoryItemDelegate",
-                                            "%n minute(s) ago", nullptr, n);
-    }
-    if (d < 86400) {
-        const int n = static_cast<int>(d / 3600);
-        return QCoreApplication::translate("GitHistoryItemDelegate",
-                                            "%n hour(s) ago", nullptr, n);
-    }
-    if (d < 7 * 86400) {
-        const int n = static_cast<int>(d / 86400);
-        return QCoreApplication::translate("GitHistoryItemDelegate",
-                                            "%n day(s) ago", nullptr, n);
-    }
-    if (d < 30 * 86400) {
-        const int n = static_cast<int>(d / (7 * 86400));
-        return QCoreApplication::translate("GitHistoryItemDelegate",
-                                            "%n week(s) ago", nullptr, n);
-    }
-    // > ~30 days: absolute short-format date in user locale.
-    const QDateTime dt = QDateTime::fromSecsSinceEpoch(ctime);
-    return QLocale::system().toString(dt.date(), QLocale::ShortFormat);
+    return GitRelativeTime::format(ctime, QDateTime::currentSecsSinceEpoch());
 }
