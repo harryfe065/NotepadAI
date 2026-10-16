@@ -115,6 +115,63 @@ AcpUsage usageFromJson(const QJsonObject &obj)
     return u;
 }
 
+// The agent's catalogs, so a restored session shows its commands and
+// model / mode / effort pickers before its agent starts.
+QJsonObject agentMetaToJson(const QList<AcpCommandInfo> &commands, bool advertisesGoal,
+                            const QList<AcpModeInfo> &modes, const QString &currentMode,
+                            const QList<AcpModelInfo> &models, const QString &currentModel,
+                            const QList<AcpConfigOption> &options)
+{
+    QJsonArray cmds;
+    for (const AcpCommandInfo &c : commands) {
+        QJsonObject o;
+        o.insert(QStringLiteral("name"), c.name);
+        if (!c.description.isEmpty())
+            o.insert(QStringLiteral("description"), c.description);
+        if (!c.inputHint.isEmpty())
+            o.insert(QStringLiteral("hint"), c.inputHint);
+        cmds.append(o);
+    }
+    QJsonArray modeArr;
+    for (const AcpModeInfo &m : modes) {
+        modeArr.append(QJsonObject{{QStringLiteral("id"), m.id},
+                                   {QStringLiteral("name"), m.name},
+                                   {QStringLiteral("description"), m.description}});
+    }
+    QJsonArray modelArr;
+    for (const AcpModelInfo &m : models) {
+        modelArr.append(QJsonObject{{QStringLiteral("id"), m.id},
+                                    {QStringLiteral("name"), m.name},
+                                    {QStringLiteral("description"), m.description}});
+    }
+    QJsonArray optArr;
+    for (const AcpConfigOption &opt : options) {
+        QJsonArray choices;
+        for (const AcpConfigOptionChoice &ch : opt.options)
+            choices.append(QJsonObject{{QStringLiteral("value"), ch.value}, {QStringLiteral("name"), ch.name}});
+        QJsonObject o;
+        o.insert(QStringLiteral("id"), opt.id);
+        o.insert(QStringLiteral("name"), opt.name);
+        if (!opt.description.isEmpty())
+            o.insert(QStringLiteral("description"), opt.description);
+        if (!opt.category.isEmpty())
+            o.insert(QStringLiteral("category"), opt.category);
+        o.insert(QStringLiteral("currentValue"), opt.currentValue);
+        o.insert(QStringLiteral("options"), choices);
+        optArr.append(o);
+    }
+    QJsonObject meta;
+    meta.insert(QStringLiteral("commands"), cmds);
+    if (advertisesGoal)
+        meta.insert(QStringLiteral("advertisesGoal"), true);
+    meta.insert(QStringLiteral("modes"), modeArr);
+    meta.insert(QStringLiteral("currentMode"), currentMode);
+    meta.insert(QStringLiteral("models"), modelArr);
+    meta.insert(QStringLiteral("currentModel"), currentModel);
+    meta.insert(QStringLiteral("configOptions"), optArr);
+    return meta;
+}
+
 } // namespace
 
 AcpSessionModel::AcpSessionModel(QString sessionId, QString projectId, QObject *parent)
@@ -149,7 +206,17 @@ void AcpSessionModel::setHistoryStore(AcpHistoryStore *store)
 
 void AcpSessionModel::setAcpSessionId(const QString &id)
 {
+    if (m_acpSessionId == id)
+        return;
     m_acpSessionId = id;
+    schedulePersistIfNeeded();
+}
+
+void AcpSessionModel::setUserSent()
+{
+    if (m_userSent)
+        return;
+    m_userSent = true;
     schedulePersistIfNeeded();
 }
 
@@ -196,6 +263,53 @@ void AcpSessionModel::loadFromDisk()
     const QJsonValue acpId = obj.value(QStringLiteral("acpSessionId"));
     if (acpId.isString()) {
         m_acpSessionId = acpId.toString();
+    }
+    m_userSent = obj.value(QStringLiteral("userSent")).toBool(false);
+    const QJsonObject meta = obj.value(QStringLiteral("agentMeta")).toObject();
+    if (!meta.isEmpty()) {
+        for (const auto cv : meta.value(QStringLiteral("commands")).toArray()) {
+            const QJsonObject o = cv.toObject();
+            AcpCommandInfo c;
+            c.name = o.value(QStringLiteral("name")).toString();
+            c.description = o.value(QStringLiteral("description")).toString();
+            c.inputHint = o.value(QStringLiteral("hint")).toString();
+            if (!c.name.isEmpty())
+                m_availableCommands.append(c);
+        }
+        m_agentAdvertisesGoalCommand = meta.value(QStringLiteral("advertisesGoal")).toBool(false);
+        for (const auto mv : meta.value(QStringLiteral("modes")).toArray()) {
+            const QJsonObject o = mv.toObject();
+            m_availableModes.append({o.value(QStringLiteral("id")).toString(),
+                                     o.value(QStringLiteral("name")).toString(),
+                                     o.value(QStringLiteral("description")).toString()});
+        }
+        m_currentModeId = meta.value(QStringLiteral("currentMode")).toString();
+        for (const auto mv : meta.value(QStringLiteral("models")).toArray()) {
+            const QJsonObject o = mv.toObject();
+            m_availableModels.append({o.value(QStringLiteral("id")).toString(),
+                                      o.value(QStringLiteral("name")).toString(),
+                                      o.value(QStringLiteral("description")).toString()});
+        }
+        m_currentModelId = meta.value(QStringLiteral("currentModel")).toString();
+        for (const auto ov : meta.value(QStringLiteral("configOptions")).toArray()) {
+            const QJsonObject o = ov.toObject();
+            AcpConfigOption opt;
+            opt.id = o.value(QStringLiteral("id")).toString();
+            opt.name = o.value(QStringLiteral("name")).toString();
+            opt.description = o.value(QStringLiteral("description")).toString();
+            opt.category = o.value(QStringLiteral("category")).toString();
+            opt.currentValue = o.value(QStringLiteral("currentValue"));
+            for (const auto chv : o.value(QStringLiteral("options")).toArray()) {
+                const QJsonObject co = chv.toObject();
+                AcpConfigOptionChoice ch;
+                ch.value = co.value(QStringLiteral("value")).toString();
+                ch.name = co.value(QStringLiteral("name")).toString();
+                if (!ch.value.isEmpty())
+                    opt.options.append(ch);
+            }
+            if (!opt.id.isEmpty())
+                m_configOptions.append(opt);
+        }
     }
 
     // messages
@@ -305,6 +419,12 @@ QJsonObject AcpSessionModel::toHistoryJson() const
     if (!m_acpSessionId.isEmpty()) {
         obj.insert(QStringLiteral("acpSessionId"), m_acpSessionId);
     }
+    if (m_userSent) {
+        obj.insert(QStringLiteral("userSent"), true);
+    }
+    obj.insert(QStringLiteral("agentMeta"),
+               agentMetaToJson(m_availableCommands, m_agentAdvertisesGoalCommand, m_availableModes,
+                               m_currentModeId, m_availableModels, m_currentModelId, m_configOptions));
 
     QJsonArray msgs;
     for (const AcpMessage &m : m_messages) {
@@ -535,7 +655,9 @@ void AcpSessionModel::onInitialized(const AcpAgentInfo &info,
     m_currentModelId = currentModel;
     m_configOptions = configOptions;
     emit metadataChanged();
-    // No persistence for metadata-only events.
+    // Catalogs persist so a restored session shows them before its agent
+    // starts; the snapshot write is debounced and skipped while empty.
+    schedulePersistIfNeeded();
 }
 
 void AcpSessionModel::onMessageChunk(const QString &text, const QString &messageId)
@@ -902,7 +1024,7 @@ void AcpSessionModel::onAvailableCommandsUpdated(const QList<AcpCommandInfo> &co
     m_agentAdvertisesGoalCommand = commandsIncludeGoal(commands);
     ensureHostGoalCommand(m_availableCommands);
     emit availableCommandsChanged();
-    // Metadata-only — skip persistence.
+    schedulePersistIfNeeded();
 }
 
 void AcpSessionModel::onCurrentModeChanged(const QString &modeId)
@@ -935,6 +1057,7 @@ void AcpSessionModel::onConfigOptionsUpdated(const QList<AcpConfigOption> &optio
     }
 
     emit metadataChanged();
+    schedulePersistIfNeeded();
 }
 
 void AcpSessionModel::onUsageUpdated(const AcpUsage &usage)

@@ -23,10 +23,13 @@
 #include "AcpConnection.h"
 #include "AcpErrorClassifier.h"
 #include "AcpHistoryStore.h"
+#include "AcpOpenSessions.h"
 #include "AcpSessionModel.h"
+#include "AcpSwitchAgent.h"
 #include "AiAgentDock.h"
 #include "AiDockGroup.h"
 #include "ApplicationSettings.h"
+#include "ClaudeSessionFiles.h"
 #include "GrillMeMcp.h"
 #include "ProfileScope.h"
 #include "remote/ExecutionContext.h"
@@ -40,7 +43,9 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
 
@@ -142,18 +147,10 @@ AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &w
         }
     }
 
-    auto *conn = new AcpConnection(this);
-    QPointer<AcpAgentRegistry> registryGuard(m_registry);
-    conn->setAutoApprovePolicyProvider([registryGuard]() -> QString {
-        return registryGuard ? registryGuard->autoApprovePolicy() : QString();
-    });
-    // Mark the spawn remote (capture-at-spawn): the connection probes the binary
-    // on `context`'s host, then builds the SSH transport via the injected factory
-    // with projectId as the remote cwd. Set BEFORE spawn() below.
-    if (isRemote) {
-        conn->setRemoteSpawn(context, m_remoteChannelBuilder);
-    }
-    configureInteractiveQuestions(conn, agent.interactiveQuestions, isRemote);
+    // Remote (capture-at-spawn): the connection probes the binary on
+    // `context`'s host, then builds the SSH transport via the injected factory
+    // with projectId as the remote cwd.
+    AcpConnection *conn = newConnection(agent, isRemote ? context : nullptr);
 
     auto *model = new AcpSessionModel(sessionId, projectId, /*historyDirOverride=*/QString(), this);
     model->setHistoryStore(m_historyStore);
@@ -172,6 +169,7 @@ AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &w
         m_sessions.insert(sessionId, session);
         emit agentOpened(sessionId, existing);
         conn->spawn(agent, projectId);
+        schedulePersistOpenSessions();
         qCInfo(lcAcpManager) << "openAgent: appended session" << sessionId
                              << "agent" << agent.id
                              << "cwd" << projectId
@@ -180,13 +178,7 @@ AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &w
         return existing;
     }
 
-    auto *dock = new AiAgentDock(sessionId, agent.name, projectId, model, conn, m_registry, this, m_settings, /*parent=*/nullptr);
-    dock->setObjectName(aiDockObjectName(groupKey));
-    m_docksByGroup.insert(groupKey, dock);
-    connect(dock, &QObject::destroyed,
-            this, &AcpAgentManager::onDockDestroyed);
-    connect(dock, &AiAgentDock::restartRequested,
-            this, &AcpAgentManager::restartSession);
+    AiAgentDock *dock = newDock(sessionId, agent.name, projectId, sshProfileId, model, conn);
 
     Session session;
     session.connection = conn;
@@ -199,6 +191,7 @@ AiAgentDock *AcpAgentManager::openAgent(const QString &agentId, const QString &w
     // Spawn last — so the dock + model are already wired and ready to receive
     // signals by the time initialize/session/new complete.
     conn->spawn(agent, projectId);
+    schedulePersistOpenSessions();
 
     qCInfo(lcAcpManager) << "openAgent: spawned session" << sessionId
                          << "agent" << agent.id
@@ -307,6 +300,7 @@ void AcpAgentManager::closeSession(const QString &sessionId)
         return;
     }
 
+    abortSwitch(sessionId);
     Session session = it.value();
     m_sessions.erase(it);
     if (session.dock)
@@ -334,6 +328,7 @@ QString AcpAgentManager::restartSession(const QString &oldSessionId)
         qCWarning(lcAcpManager) << "restartSession: unknown id" << oldSessionId;
         return {};
     }
+    abortSwitch(oldSessionId);
     // Copy required: m_sessions is re-keyed (erase + insert) further down,
     // which invalidates `it`. We read `old` after that, so a reference into
     // it.value() would dangle.
@@ -462,6 +457,12 @@ void AcpAgentManager::shutdown()
     if (m_idleReaperTimer) {
         m_idleReaperTimer->stop();
     }
+    freezeOpenSessions();
+    const auto switching = m_switching.keys();
+    for (const QString &id : switching)
+        abortSwitch(id);
+    // A session-file copy still running would post back into a dying manager.
+    m_switchPool.waitForDone();
 
     const auto sessionIds = m_sessions.keys();
     for (const QString &id : sessionIds) {
@@ -532,6 +533,11 @@ void AcpAgentManager::wireConnectionToModel(AcpConnection *conn, AcpSessionModel
         conn->setScheduledNextFireProvider(m_scheduledNextFire);
     connect(conn, &AcpConnection::initialized,
             model, &AcpSessionModel::onInitialized);
+    // Restored sessions and Switch agent resume the agent's own session id.
+    connect(conn, &AcpConnection::initialized, model, [model, conn]() {
+        if (conn->isSessionReady())
+            model->setAcpSessionId(conn->sessionId());
+    });
     connect(conn, &AcpConnection::messageChunk,
             model, qOverload<const QString &, const QString &>(&AcpSessionModel::onMessageChunk));
     connect(conn, &AcpConnection::thoughtChunk,
@@ -577,7 +583,9 @@ void AcpAgentManager::wireConnectionToModel(AcpConnection *conn, AcpSessionModel
     // Trigger git refresh when an agent completes a file-modifying tool call
     // (Edit/Write). Most agents write files directly and only send tool_call
     // notifications — they don't use the ACP fs/write_text_file call above.
-    connect(model, &AcpSessionModel::toolCallAddedOrUpdated, this,
+    // Context `conn`: Switch agent replaces a session's connection and this
+    // must die with the old one.
+    connect(model, &AcpSessionModel::toolCallAddedOrUpdated, conn,
             [model, conn](const QString &toolCallId) {
         const auto it = model->toolCalls().constFind(toolCallId);
         if (it == model->toolCalls().constEnd())
@@ -617,4 +625,371 @@ void AcpAgentManager::teardownSession(Session &session)
     // The dock is shared across slots. closeSession already called detachSlot
     // (last slot destroys the widget). Never dock->close() here — that would
     // close a sibling slot.
+}
+
+// ---------- Shared construction ------------------------------------------
+
+AcpConnection *AcpAgentManager::newConnection(const AcpAgentDefinition &agent,
+                                              remote::ExecutionContext *remoteContext)
+{
+    auto *conn = new AcpConnection(this);
+    QPointer<AcpAgentRegistry> registryGuard(m_registry);
+    conn->setAutoApprovePolicyProvider([registryGuard]() -> QString {
+        return registryGuard ? registryGuard->autoApprovePolicy() : QString();
+    });
+    const bool isRemote = remoteContext && remoteContext->isRemote() && m_remoteChannelBuilder;
+    // Set before spawn(): the connection captures its host at spawn time.
+    if (isRemote)
+        conn->setRemoteSpawn(remoteContext, m_remoteChannelBuilder);
+    configureInteractiveQuestions(conn, agent.interactiveQuestions, isRemote);
+    return conn;
+}
+
+AiAgentDock *AcpAgentManager::newDock(const QString &sessionId, const QString &agentName,
+                                      const QString &projectId, const QString &sshProfileId,
+                                      AcpSessionModel *model, AcpConnection *conn)
+{
+    const QString groupKey = aiDockGroupKey(projectId, sshProfileId);
+    auto *dock = new AiAgentDock(sessionId, agentName, projectId, model, conn, m_registry, this, m_settings,
+                                 /*parent=*/nullptr);
+    dock->setObjectName(aiDockObjectName(groupKey));
+    dock->setSshProfileId(sshProfileId);
+    m_docksByGroup.insert(groupKey, dock);
+    m_dockOrder.append(dock);
+    connect(dock, &QObject::destroyed, this, &AcpAgentManager::onDockDestroyed);
+    connect(dock, &AiAgentDock::restartRequested, this, &AcpAgentManager::restartSession);
+    connect(dock, &AiAgentDock::slotsChanged, this, &AcpAgentManager::schedulePersistOpenSessions);
+    return dock;
+}
+
+// ---------- Switch agent ---------------------------------------------------
+
+namespace {
+
+constexpr int kSwitchTimeoutMs = 120 * 1000;
+constexpr char kMarkerAgentSwitched[] = "agent-switched";
+constexpr char kMarkerAgentSwitchFailed[] = "agent-switch-failed";
+
+struct SwitchPrep
+{
+    bool ok = false;
+    QString error;
+};
+
+// Pool thread: find the session file, check it holds the whole conversation,
+// copy it into the target's config dir when that differs.
+SwitchPrep prepareSwitch(const QString &sourceConfig, const QString &targetConfig, const QString &cwd,
+                         const QString &acpSessionId, qint64 conversationNewestMs)
+{
+    SwitchPrep prep;
+    const QString transcript = ClaudeSessionFiles::locateTranscript(sourceConfig, cwd, acpSessionId);
+    if (transcript.isEmpty()) {
+        prep.error = AcpAgentManager::tr("Claude Code has no saved conversation for this session in %1")
+                         .arg(QDir::toNativeSeparators(sourceConfig));
+        return prep;
+    }
+    const qint64 fileNewest = ClaudeSessionFiles::newestRecordMs(transcript);
+    if (!AcpSwitchAgent::transcriptIsCurrent(fileNewest, conversationNewestMs)) {
+        prep.error = AcpAgentManager::tr("Claude Code's saved conversation is older than this session "
+                                         "(its context was probably cleared)");
+        return prep;
+    }
+    if (!ClaudeSessionFiles::sameDir(sourceConfig, targetConfig)) {
+        const ClaudeSessionFiles::CopyOutcome copy = ClaudeSessionFiles::copySession(transcript, targetConfig);
+        if (!copy.ok) {
+            prep.error = AcpAgentManager::tr("could not copy the conversation: %1").arg(copy.error);
+            return prep;
+        }
+    }
+    prep.ok = true;
+    return prep;
+}
+
+} // namespace
+
+void AcpAgentManager::switchAgent(const QString &sessionId, const QString &targetAgentId)
+{
+    auto it = m_sessions.find(sessionId);
+    if (it == m_sessions.end() || !it->dock || !it->connection || !it->model || it->headless)
+        return;
+    if (m_switching.contains(sessionId))
+        return;
+    AcpConnection *source = it->connection;
+    AcpSessionModel *model = it->model;
+    AiAgentDock *dock = it->dock;
+    const AcpAgentDefinition sourceAgent = source->definition();
+    const AcpAgentDefinition target = m_registry->agent(targetAgentId);
+    if (target.id.isEmpty() || target.id == sourceAgent.id || !AcpSwitchAgent::isClaudeCodeAgent(target))
+        return;
+    if (AcpSwitchAgent::blockReason(dock->switchState(sessionId)) != AcpSwitchAgent::Block::None)
+        return;
+
+    const QString cwd = source->workingDirectory().isEmpty() ? dock->workingDirectory()
+                                                            : source->workingDirectory();
+    const QString acpId = !model->acpSessionId().isEmpty() ? model->acpSessionId() : source->sessionId();
+    // Nothing the agent saw yet (no prompt, or no agent session): just start
+    // the target fresh. Otherwise its saved conversation must move with it.
+    const bool resume = AcpSwitchAgent::hasConversation(model->messages()) && !acpId.isEmpty();
+
+    SwitchOp op;
+    op.source = source;
+    op.targetAgent = target;
+    op.sourceName = sourceAgent.name;
+    m_switching.insert(sessionId, op);
+    dock->setSessionSwitching(sessionId, target.name);
+    qCInfo(lcAcpManager) << "switchAgent:" << sessionId << sourceAgent.id << "->" << target.id
+                         << "resume" << resume;
+
+    if (!resume) {
+        startSwitchTarget(sessionId, false, QString(), cwd);
+        return;
+    }
+
+    const QProcessEnvironment processEnv = QProcessEnvironment::systemEnvironment();
+    const QString home = QDir::homePath();
+    const QString sourceConfig = ClaudeSessionFiles::configDir(sourceAgent.env, processEnv, home);
+    const QString targetConfig = ClaudeSessionFiles::configDir(target.env, processEnv, home);
+    const qint64 newest = AcpSwitchAgent::newestConversationMs(model->messages());
+    m_switchPool.start([this, sessionId, sourceConfig, targetConfig, cwd, acpId, newest]() {
+        const SwitchPrep prep = prepareSwitch(sourceConfig, targetConfig, cwd, acpId, newest);
+        QMetaObject::invokeMethod(this, [this, sessionId, prep, acpId, cwd]() {
+            if (!m_switching.contains(sessionId))
+                return; // closed, restarted or shut down meanwhile
+            if (!prep.ok) {
+                failSwitch(sessionId, prep.error);
+                return;
+            }
+            startSwitchTarget(sessionId, true, acpId, cwd);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void AcpAgentManager::startSwitchTarget(const QString &sessionId, bool resume, const QString &acpSessionId,
+                                        const QString &cwd)
+{
+    auto opIt = m_switching.find(sessionId);
+    if (opIt == m_switching.end())
+        return;
+    const AcpAgentDefinition target = opIt->targetAgent;
+    AcpConnection *conn = newConnection(target, nullptr); // local only (blockReason)
+    if (resume)
+        conn->setResumeSessionId(acpSessionId);
+    opIt->target = conn;
+
+    // Not wired to the model or view until it has resumed: a failure must
+    // leave the session exactly as it was.
+    connect(conn, &AcpConnection::initialized, this, [this, sessionId, conn]() {
+        commitSwitch(sessionId, conn);
+    });
+    connect(conn, &AcpConnection::resumeFailed, this, [this, sessionId](const QString &reason) {
+        failSwitch(sessionId, reason);
+    });
+    connect(conn, &AcpConnection::errorOccurred, this,
+            [this, sessionId](AcpErrorClassifier::AcpErrorKind, const QString &friendly) {
+                failSwitch(sessionId, friendly);
+            });
+    connect(conn, &AcpConnection::agentExited, this, [this, sessionId](int exitCode, QProcess::ExitStatus) {
+        failSwitch(sessionId, tr("the agent exited (code %1)").arg(exitCode));
+    });
+    QTimer::singleShot(kSwitchTimeoutMs, conn, [this, sessionId, conn]() {
+        failSwitch(sessionId, tr("the agent did not answer within %1 s").arg(kSwitchTimeoutMs / 1000), conn);
+    });
+    conn->spawn(target, cwd);
+}
+
+void AcpAgentManager::commitSwitch(const QString &sessionId, AcpConnection *target)
+{
+    auto opIt = m_switching.find(sessionId);
+    if (opIt == m_switching.end() || opIt->target != target)
+        return;
+    const SwitchOp op = opIt.value();
+    m_switching.erase(opIt);
+    // Drop the temporary outcome handlers (all use `this` as context).
+    disconnect(target, nullptr, this, nullptr);
+
+    auto it = m_sessions.find(sessionId);
+    if (it == m_sessions.end() || !it->dock || !it->model) {
+        target->deleteLater();
+        return;
+    }
+    AcpConnection *old = it->connection;
+    wireConnectionToModel(target, it->model);
+    it->connection = target;
+    it->dock->rebindConnection(sessionId, target, op.targetAgent.name);
+    // The model learns the new agent's catalogs (and session id); the view
+    // re-applies the session's model / mode / effort on them.
+    target->reemitInitialized();
+    it->model->appendSystemMessage(tr("Switched from %1 to %2").arg(op.sourceName, op.targetAgent.name),
+                                   QLatin1String(kMarkerAgentSwitched));
+    if (old) {
+        old->disconnect();
+        old->cancelPrompt();
+        old->deleteLater();
+    }
+    schedulePersistOpenSessions();
+    qCInfo(lcAcpManager) << "switchAgent: committed" << sessionId << "->" << op.targetAgent.id;
+}
+
+void AcpAgentManager::failSwitch(const QString &sessionId, const QString &reason, const AcpConnection *target)
+{
+    auto opIt = m_switching.find(sessionId);
+    // `target` set: only that attempt may fail (a committed one's timer must
+    // not fail a later switch of the same session).
+    if (opIt == m_switching.end() || (target && opIt->target != target))
+        return;
+    const SwitchOp op = opIt.value();
+    m_switching.erase(opIt);
+    if (op.target) {
+        op.target->disconnect(this);
+        op.target->deleteLater(); // kills the target process; the source keeps running
+    }
+    auto it = m_sessions.find(sessionId);
+    if (it == m_sessions.end())
+        return;
+    if (it->dock)
+        it->dock->setSessionSwitching(sessionId, QString());
+    if (it->model) {
+        it->model->appendSystemMessage(tr("Could not switch to %1: %2").arg(op.targetAgent.name, reason),
+                                       QLatin1String(kMarkerAgentSwitchFailed));
+    }
+    qCInfo(lcAcpManager) << "switchAgent: failed" << sessionId << reason;
+}
+
+void AcpAgentManager::abortSwitch(const QString &sessionId)
+{
+    auto opIt = m_switching.find(sessionId);
+    if (opIt == m_switching.end())
+        return;
+    if (opIt->target) {
+        opIt->target->disconnect(this);
+        opIt->target->deleteLater();
+    }
+    m_switching.erase(opIt);
+}
+
+// ---------- Restored sessions ----------------------------------------------
+
+void AcpAgentManager::schedulePersistOpenSessions()
+{
+    if (m_openSessionsFrozen || m_restoring || m_persistQueued || !m_settings)
+        return;
+    m_persistQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_persistQueued = false;
+        if (!m_openSessionsFrozen && !m_restoring)
+            persistOpenSessions();
+    });
+}
+
+void AcpAgentManager::persistOpenSessions()
+{
+    if (!m_settings)
+        return;
+    QVector<AcpOpenSessions::Group> groups;
+    for (auto it = m_dockOrder.begin(); it != m_dockOrder.end();) {
+        if (it->isNull()) {
+            it = m_dockOrder.erase(it);
+            continue;
+        }
+        AiAgentDock *dock = it->data();
+        ++it;
+        AcpOpenSessions::Group group;
+        group.cwd = dock->workingDirectory();
+        group.sshProfileId = dock->sshProfileId();
+        group.current = dock->currentIndex();
+        group.sessions = dock->openSessions();
+        if (!group.sessions.isEmpty())
+            groups.append(std::move(group));
+    }
+    m_settings->setValue(QLatin1String(AcpOpenSessions::kSettingsKey),
+                         QString::fromUtf8(AcpOpenSessions::toJson(groups)));
+}
+
+void AcpAgentManager::freezeOpenSessions()
+{
+    if (m_openSessionsFrozen)
+        return;
+    for (const QPointer<AiAgentDock> &dock : std::as_const(m_dockOrder)) {
+        if (dock)
+            dock->noteAppClosing();
+    }
+    if (!m_restoring)
+        persistOpenSessions();
+    m_openSessionsFrozen = true;
+}
+
+QList<AiAgentDock *> AcpAgentManager::restoreOpenSessions(const ContextResolver &resolve)
+{
+    QList<AiAgentDock *> docks;
+    if (!m_settings || m_openSessionsFrozen)
+        return docks;
+    const QVector<AcpOpenSessions::Group> groups = AcpOpenSessions::fromJson(
+        m_settings->value(QLatin1String(AcpOpenSessions::kSettingsKey)).toString().toUtf8());
+    m_restoring = true;
+    for (const AcpOpenSessions::Group &group : groups) {
+        remote::ExecutionContext *context = nullptr;
+        if (!group.sshProfileId.isEmpty()) {
+            context = resolve ? resolve(group.sshProfileId) : nullptr;
+            if (!context)
+                continue; // SSH profile removed
+        } else if (!QFileInfo(group.cwd).isDir()) {
+            continue; // folder removed
+        }
+        const bool isRemote = context && context->isRemote() && m_remoteChannelBuilder;
+        const QString groupKey = aiDockGroupKey(group.cwd, group.sshProfileId);
+        AiAgentDock *dock = m_docksByGroup.value(groupKey).data();
+        const bool newGroupDock = !dock;
+        for (const AcpOpenSessions::Session &saved : group.sessions) {
+            if (m_sessions.contains(saved.id))
+                continue;
+            AcpAgentDefinition agent = m_registry->agent(saved.agentId);
+            const bool agentMissing = agent.id.isEmpty();
+            if (agentMissing) {
+                agent.id = saved.agentId;
+                agent.name = saved.agentName.isEmpty() ? tr("Removed agent") : saved.agentName;
+            }
+            auto *model = new AcpSessionModel(saved.id, group.cwd, /*historyDirOverride=*/QString(), this);
+            model->setHistoryStore(m_historyStore);
+            AcpConnection *conn = newConnection(agent, isRemote ? context : nullptr);
+            wireConnectionToModel(conn, model);
+            // Its agent starts on the first prompt. A conversation resumes the
+            // agent's own session; one that cannot must say so rather than
+            // start a new session under the old transcript.
+            // A draft (host notices at most) has nothing to resume.
+            if (agentMissing)
+                conn->setCannotResume(tr("the agent \"%1\" no longer exists").arg(agent.name));
+            else if (AcpSwitchAgent::hasConversation(model->messages()) && model->acpSessionId().isEmpty())
+                conn->setCannotResume(tr("this conversation was saved without its agent session"));
+            else if (AcpSwitchAgent::hasConversation(model->messages()))
+                conn->setResumeSessionId(model->acpSessionId());
+            conn->prepareDormant(agent, group.cwd);
+
+            Session session;
+            session.connection = conn;
+            session.model = model;
+            if (!dock) {
+                dock = newDock(saved.id, agent.name, group.cwd, group.sshProfileId, model, conn);
+            } else {
+                dock->addSlot(saved.id, agent.name, model, conn, /*makeCurrent=*/true);
+            }
+            session.dock = dock;
+            m_sessions.insert(saved.id, session);
+        }
+        if (dock) {
+            // By id: skipped sessions or slots already in the dock shift indexes.
+            const QString currentId = group.sessions.at(group.current).id;
+            for (int i = 0; i < dock->slotCount(); ++i) {
+                if (dock->sessionIdAt(i) == currentId) {
+                    dock->switchTo(i);
+                    break;
+                }
+            }
+            if (newGroupDock)
+                docks.append(dock);
+        }
+    }
+    m_restoring = false;
+    schedulePersistOpenSessions();
+    qCInfo(lcAcpManager) << "restoreOpenSessions: restored" << docks.size() << "dock(s)";
+    return docks;
 }

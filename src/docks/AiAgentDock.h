@@ -29,6 +29,9 @@
 
 #include <cstdint>
 
+#include "AcpOpenSessions.h"
+#include "AcpSwitchAgent.h"
+
 class AcpAgentManager;
 class AcpAgentRegistry;
 class AcpConnection;
@@ -137,12 +140,31 @@ public:
                 QString newSessionId,
                 QString newAgentName);
 
+    // Switch agent (AcpAgentManager::switchAgent): the session keeps its slot,
+    // model and transcript and continues on `connection`.
+    void rebindConnection(const QString &sessionId, AcpConnection *connection, QString agentName);
+    // Lock the session while it moves to `targetName` (empty = done).
+    void setSessionSwitching(const QString &sessionId, const QString &targetName);
+    // What blocks a switch right now (Remote / SourceNotClaudeCode included).
+    AcpSwitchAgent::SessionState switchState(const QString &sessionId) const;
+
+    // Restored sessions: this dock's sessions in order, and its SSH profile.
+    QVector<AcpOpenSessions::Session> openSessions() const;
+    void setSshProfileId(const QString &id) { m_sshProfileId = id; }
+    QString sshProfileId() const { return m_sshProfileId; }
+    // NotepadAI is closing: sessions whose goal is running say it stopped.
+    void noteAppClosing();
+
 signals:
     // Emitted when the user clicks Restart on the "Agent exited" banner.
     // Carries the CURRENT (about-to-be-replaced) session id so the manager
     // can clean up history etc. Connected by AcpAgentManager.
     void restartRequested(const QString &oldSessionId);
     void inputFocused();
+
+    // Sessions were added, closed, reordered, opened or moved to another
+    // agent: the manager re-persists the open-session list.
+    void slotsChanged();
 
     // Emitted whenever a new entry is appended to the goal debug log. Lets
     // the per-session debug dialog stream goal events live without polling.
@@ -158,6 +180,8 @@ public slots:
 protected:
     QSize sizeHint() const override;
     void closeEvent(QCloseEvent *event) override;
+    // The agent button's icon is tinted from the palette: re-push on a change.
+    void changeEvent(QEvent *event) override;
 
     // Test seam — override in tests to bypass the modal QMessageBox.
     // Returns true if the user confirmed closing while a prompt is running.
@@ -183,6 +207,7 @@ private slots:
     void onDeferredGoalDispatched();
     void onDeferredGoalRemoved();
     void onPromptQueueChanged();
+    void onAgentMenuRequested(const QPoint &globalPos);
 
 private:
     struct Slot {
@@ -196,6 +221,7 @@ private:
         qint64 busySinceMs = 0;
         bool agentExited = false;
         bool nativeAutoCompact = false;
+        QString switchingTo; // Switch agent in progress: the target's name
     };
 
     void buildUi();
@@ -214,6 +240,9 @@ private:
     Slot *slotForConnection(const QObject *connection);
     int indexOfSession(const QString &sessionId) const;
     QString resolvedAgentName(const Slot &slot) const;
+    // The slot's agent as configured (registry entry when it still exists).
+    AcpAgentDefinition slotAgent(const Slot &slot) const;
+    AcpSwitchAgent::SessionState switchState(const Slot &slot) const;
     bool slotBusy(const Slot &slot) const;
     bool slotWorking(const Slot &slot) const;
     bool slotWaiting(const Slot &slot) const;
@@ -232,6 +261,7 @@ private:
     QTabBar *hostTabBar(int *tabIndex) const;
 
     QString m_workingDirectory;
+    QString m_sshProfileId;
     AcpAgentRegistry *m_registry;     // non-owning
     AcpAgentManager *m_agentManager;  // non-owning
     ApplicationSettings *m_appSettings; // non-owning

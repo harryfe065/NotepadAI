@@ -198,6 +198,9 @@ public slots:
     void restoreWindowState();
     void restoreWindowGeometry();
     void restoreOpenWorkspaces();
+    // AI sessions open at the last exit come back as restored sessions (their
+    // agents start on the first prompt). Call after restoreOpenWorkspaces.
+    void restoreAiSessions();
     void raiseSavedActiveWorkspace();
 
     // Workspace-state persistence (per-dock inner tab + expanded folders +

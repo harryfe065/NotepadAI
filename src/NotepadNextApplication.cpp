@@ -464,6 +464,10 @@ bool NotepadNextApplication::init()
         // editor-session setting. --new-window instances skip this entirely since
         // they are ephemeral by design.
         window->restoreOpenWorkspaces();
+
+        window->restoreAiSessions();
+    } else if (aiAgentManager_) {
+        aiAgentManager_->disableOpenSessions();
     }
 
     {
@@ -855,6 +859,11 @@ MainWindow *NotepadNextApplication::createNewWindow()
         // since the assumption is MainWindow::aboutToClose() infers the application is shutting
         // down but the editors are still active.
         connect(window, &MainWindow::aboutToClose, this, &NotepadNextApplication::saveSession);
+        // Record the open AI sessions before closing tears their docks down.
+        connect(window, &MainWindow::aboutToClose, this, [this]() {
+            if (aiAgentManager_)
+                aiAgentManager_->freezeOpenSessions();
+        });
 
         // Timer to autosave the session
         connect(&autoSaveTimer, &QTimer::timeout, this, &NotepadNextApplication::saveSession);

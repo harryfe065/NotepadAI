@@ -481,6 +481,37 @@ target_sources(test_acp_agent_brand PRIVATE
 )
 add_test(NAME AcpAgentBrand COMMAND test_acp_agent_brand)
 
+# --- ClaudeSessionFiles: Claude Code session locate / freshness / copy (Switch agent) ---
+qt_add_executable(test_claude_session_files test_claude_session_files.cpp)
+target_include_directories(test_claude_session_files PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_claude_session_files PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_claude_session_files PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.cpp
+    ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.h
+)
+add_test(NAME ClaudeSessionFiles COMMAND test_claude_session_files)
+
+# --- AcpSwitchAgent: idle gate, eligible targets, transcript freshness ---
+qt_add_executable(test_acp_switch_agent test_acp_switch_agent.cpp)
+target_include_directories(test_acp_switch_agent PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_switch_agent PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_switch_agent PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpSwitchAgent.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpSwitchAgent.h
+    ${CMAKE_SOURCE_DIR}/src/AcpAgentBrand.h
+)
+add_test(NAME AcpSwitchAgent COMMAND test_acp_switch_agent)
+
+# --- AcpOpenSessions: persisted open-session list for restored sessions ---
+qt_add_executable(test_acp_open_sessions test_acp_open_sessions.cpp)
+target_include_directories(test_acp_open_sessions PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_open_sessions PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_open_sessions PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpOpenSessions.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpOpenSessions.h
+)
+add_test(NAME AcpOpenSessions COMMAND test_acp_open_sessions)
+
 # --- AcpProtocol::acpExtractFrames: stdio newline-delimited JSON framing ---
 qt_add_executable(test_acp_jsonrpc_framing test_acp_jsonrpc_framing.cpp)
 target_include_directories(test_acp_jsonrpc_framing PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -1146,6 +1177,23 @@ foreach(_goal_http_tgt
         target_sources(${_goal_http_tgt} PRIVATE
             ${CMAKE_SOURCE_DIR}/src/ai/CredentialStore_Linux.cpp)
     endif()
+endforeach()
+
+# Switch agent + restored sessions: manager, dock and its agent button.
+foreach(_acp_dock_tgt
+        test_acp_agent_manager
+        test_acp_agent_exit_restart
+        test_acp_dock_close_event
+        test_acp_session_view_wake)
+    target_sources(${_acp_dock_tgt} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/AcpAgentIcons.cpp
+        ${CMAKE_SOURCE_DIR}/src/AcpAgentIcons.h
+        ${CMAKE_SOURCE_DIR}/src/AcpOpenSessions.cpp
+        ${CMAKE_SOURCE_DIR}/src/AcpOpenSessions.h
+        ${CMAKE_SOURCE_DIR}/src/AcpSwitchAgent.cpp
+        ${CMAKE_SOURCE_DIR}/src/AcpSwitchAgent.h
+        ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.cpp
+        ${CMAKE_SOURCE_DIR}/src/ClaudeSessionFiles.h)
 endforeach()
 
 # --- AcpImageAttachmentList: validation, queue, drag/drop ---

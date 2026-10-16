@@ -20,10 +20,15 @@
 #define ACP_AGENT_MANAGER_H
 
 #include <QHash>
+#include <QList>
 #include <QLoggingCategory>
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QThreadPool>
+#include <QVector>
+
+#include <functional>
 
 #include "AcpConnection.h" // AcpConnection::RemoteChannelBuilder
 
@@ -143,6 +148,26 @@ public:
     // oldSessionId is unknown / the dock is already gone.
     QString restartSession(const QString &oldSessionId);
 
+    // Switch agent (GLOSSARY, ADR 0003): continue `sessionId` under another
+    // Claude Code agent. Copies Claude Code's session file into the target's
+    // config dir (pool thread), starts the target with session/resume, and
+    // only once it resumed rebinds the session and stops the old agent. Any
+    // failure leaves the old agent running and appends an error notice. No-op
+    // unless AcpSwitchAgent::blockReason() allows it.
+    void switchAgent(const QString &sessionId, const QString &targetAgentId);
+
+    // Restored sessions: rebuild every session open at the last exit
+    // (`Ai/OpenSessions`) with its transcript and a dormant connection that
+    // resumes on the first prompt. Returns the new docks (parentless, for the
+    // caller to attach). `resolve` maps an SSH profile id to its context.
+    using ContextResolver = std::function<remote::ExecutionContext *(const QString &sshProfileId)>;
+    QList<AiAgentDock *> restoreOpenSessions(const ContextResolver &resolve);
+    // The main window is closing: write the open-session list now and ignore
+    // the teardown that follows, so it is not emptied.
+    void freezeOpenSessions();
+    // --new-window instances never restore nor write the list.
+    void disableOpenSessions() { m_openSessionsFrozen = true; }
+
     AcpConnection *connectionFor(const QString &sessionId) const;
     AcpSessionModel *modelFor(const QString &sessionId) const;
     bool sessionIsBusy(const QString &sessionId) const;
@@ -183,6 +208,34 @@ private:
     void wireConnectionToModel(AcpConnection *conn, AcpSessionModel *model);
     void teardownSession(Session &session);
     void finishHeadlessSession(const QString &sessionId, bool ok);
+    AcpConnection *newConnection(const AcpAgentDefinition &agent, remote::ExecutionContext *remoteContext);
+    AiAgentDock *newDock(const QString &sessionId, const QString &agentName, const QString &projectId,
+                         const QString &sshProfileId, AcpSessionModel *model, AcpConnection *conn);
+
+    // Switch agent steps (see switchAgent).
+    struct SwitchOp
+    {
+        QPointer<AcpConnection> target; // null while the session file is copied
+        QPointer<AcpConnection> source;
+        AcpAgentDefinition targetAgent;
+        QString sourceName;
+    };
+    void startSwitchTarget(const QString &sessionId, bool resume, const QString &acpSessionId,
+                           const QString &cwd);
+    void commitSwitch(const QString &sessionId, AcpConnection *target);
+    void failSwitch(const QString &sessionId, const QString &reason, const AcpConnection *target = nullptr);
+    void abortSwitch(const QString &sessionId);
+    QHash<QString, SwitchOp> m_switching;
+    // Session-file copies; owned so shutdown can wait for them.
+    QThreadPool m_switchPool;
+
+    // Open-session list (restored sessions).
+    void schedulePersistOpenSessions();
+    void persistOpenSessions();
+    QVector<QPointer<AiAgentDock>> m_dockOrder; // creation order, for a stable list
+    bool m_persistQueued = false;
+    bool m_openSessionsFrozen = false;
+    bool m_restoring = false;
 
     AcpAgentRegistry *m_registry = nullptr;
     ApplicationSettings *m_settings = nullptr;

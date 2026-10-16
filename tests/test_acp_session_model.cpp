@@ -45,6 +45,7 @@ private slots:
     void subagentCallsNestUnderTheirAgentCall();
     void lateSubagentAttributionKeepsTimeline();
     void subagentChildrenSurviveRoundTrip();
+    void restoreFieldsSurviveRoundTrip();
     void terminalPlaceholderStrippedOnReceive();
     void terminalOutputDeltasAccumulate();
     void ompWriteSynthesizesDiffAndPreservesOnComplete();
@@ -365,6 +366,55 @@ void TestAcpSessionModel::subagentChildrenSurviveRoundTrip()
     QCOMPARE(b.subagentChildren(QStringLiteral("agent")),
              (QStringList{QStringLiteral("z"), QStringLiteral("m"), QStringLiteral("a"), QStringLiteral("q")}));
     QCOMPARE(b.toolCalls().value(QStringLiteral("q")).parentToolCallId, QStringLiteral("agent"));
+}
+
+// A restored session resumes the agent's session id, stays out of draft, and
+// shows its pickers and slash commands before its agent starts.
+void TestAcpSessionModel::restoreFieldsSurviveRoundTrip()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel a(QStringLiteral("r1"), QStringLiteral("proj"), tmp.path());
+    AcpProtocol::AcpConfigOption effort;
+    effort.id = QStringLiteral("effort");
+    effort.name = QStringLiteral("Effort");
+    effort.category = QStringLiteral("thought_level");
+    effort.currentValue = QStringLiteral("high");
+    effort.options = {{QStringLiteral("low"), QStringLiteral("Low")}, {QStringLiteral("high"), QStringLiteral("High")}};
+    a.onInitialized({}, {{QStringLiteral("compact"), QStringLiteral("Compact"), QString()}},
+                    {{QStringLiteral("default"), QStringLiteral("Default"), QString()},
+                     {QStringLiteral("plan"), QStringLiteral("Plan"), QString()}},
+                    QStringLiteral("plan"),
+                    {{QStringLiteral("opus"), QStringLiteral("Opus"), QString()}}, QStringLiteral("opus"),
+                    {effort});
+    a.setAcpSessionId(QStringLiteral("ef4daa04"));
+    a.appendUserMessage(QStringLiteral("hi"), {});
+    a.setUserSent();
+
+    QFile f(tmp.path() + QStringLiteral("/r2.json"));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QJsonDocument(a.toHistoryJson()).toJson());
+    f.close();
+
+    AcpSessionModel b(QStringLiteral("r2"), QStringLiteral("proj"), tmp.path());
+    QCOMPARE(b.acpSessionId(), QStringLiteral("ef4daa04"));
+    QVERIFY(b.userSent());
+    QCOMPARE(b.currentModeId(), QStringLiteral("plan"));
+    QCOMPARE(b.availableModes().size(), 2);
+    QCOMPARE(b.currentModelId(), QStringLiteral("opus"));
+    QCOMPARE(b.availableModels().size(), 1);
+    QCOMPARE(b.configOptions().size(), 1);
+    QCOMPARE(b.configOptions().at(0).currentValue.toString(), QStringLiteral("high"));
+    QCOMPARE(b.configOptions().at(0).options.size(), 2);
+    QCOMPARE(b.configOptions().at(0).category, QStringLiteral("thought_level"));
+    bool hasCompact = false;
+    for (const auto &c : b.availableCommands())
+        hasCompact = hasCompact || c.name == QLatin1String("compact");
+    QVERIFY(hasCompact);
+    QVERIFY(!b.agentAdvertisesGoalCommand());
+
+    // A session that never had a user send stays a draft.
+    AcpSessionModel c(QStringLiteral("r3"), QStringLiteral("proj"), tmp.path());
+    QVERIFY(!c.userSent());
 }
 
 void TestAcpSessionModel::terminalPlaceholderStrippedOnReceive()

@@ -18,7 +18,9 @@
 
 #include "AiAgentDock.h"
 
+#include "AcpAgentIcons.h"
 #include "AcpAgentManager.h"
+#include "AcpAgentRegistry.h"
 #include "AcpConnection.h"
 #include "AcpSessionModel.h"
 #include "AiDockGroup.h"
@@ -36,6 +38,7 @@
 #include <QCoreApplication>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
@@ -178,6 +181,7 @@ void AiAgentDock::addSlot(QString sessionId,
     refreshTitle();
     refreshProjectTooltip();
     scheduleStripReinstall();
+    emit slotsChanged();
 }
 
 void AiAgentDock::wireSlotSignals(Slot &slot)
@@ -480,6 +484,142 @@ void AiAgentDock::rebind(const QString &oldSessionId,
     syncSlotBusy(*slot);
     refreshTitle();
     pushStripSnapshots();
+    emit slotsChanged();
+}
+
+void AiAgentDock::rebindConnection(const QString &sessionId, AcpConnection *connection, QString agentName)
+{
+    Slot *slot = slotById(sessionId);
+    if (!slot)
+        return;
+    unwireSlot(*slot);
+    // A finished goal still points at the old connection; switching needs an
+    // idle session, so it is never a running one.
+    destroySlotGoal(*slot);
+    slot->connection = connection;
+    slot->agentName = std::move(agentName);
+    slot->agentExited = false;
+    slot->switchingTo.clear();
+    if (slot->view) {
+        slot->view->setSwitching({});
+        slot->view->rebindConnection(connection);
+    }
+    wireSlotSignals(*slot);
+    syncSlotBusy(*slot);
+    pushStripSnapshots();
+    emit slotsChanged();
+}
+
+void AiAgentDock::setSessionSwitching(const QString &sessionId, const QString &targetName)
+{
+    Slot *slot = slotById(sessionId);
+    if (!slot)
+        return;
+    slot->switchingTo = targetName;
+    if (slot->view)
+        slot->view->setSwitching(targetName);
+    pushStripSnapshots();
+}
+
+AcpSwitchAgent::SessionState AiAgentDock::switchState(const QString &sessionId) const
+{
+    const Slot *slot = slotById(sessionId);
+    return slot ? switchState(*slot) : AcpSwitchAgent::SessionState{};
+}
+
+AcpSwitchAgent::SessionState AiAgentDock::switchState(const Slot &slot) const
+{
+    AcpSwitchAgent::SessionState st;
+    if (slot.connection) {
+        const remote::ExecutionContext *ctx = slot.connection->executionContext();
+        st.remote = ctx && ctx->isRemote();
+        st.sourceIsClaudeCode = AcpSwitchAgent::isClaudeCodeAgent(slot.connection->definition());
+        st.backgroundWork = slot.connection->agentWorkPending()
+            || slot.connection->backgroundTaskCount() > 0;
+    }
+    st.switching = !slot.switchingTo.isEmpty();
+    st.turnRunning = slot.model && slot.model->isProcessing();
+    st.goalActive = slot.goal && slot.goal->status() == GoalAgent::Active;
+    st.waitingForUser = slotWaiting(slot);
+    st.queuedPrompts = slot.view ? slot.view->queuedPromptCount() : 0;
+    return st;
+}
+
+AcpAgentDefinition AiAgentDock::slotAgent(const Slot &slot) const
+{
+    AcpAgentDefinition def = slot.connection ? slot.connection->definition() : AcpAgentDefinition{};
+    if (m_registry && !def.id.isEmpty()) {
+        const AcpAgentDefinition live = m_registry->agent(def.id);
+        if (!live.id.isEmpty())
+            def = live;
+    }
+    if (def.name.isEmpty())
+        def.name = slot.agentName;
+    return def;
+}
+
+QVector<AcpOpenSessions::Session> AiAgentDock::openSessions() const
+{
+    QVector<AcpOpenSessions::Session> out;
+    out.reserve(m_slots.size());
+    for (const Slot &slot : m_slots) {
+        const AcpAgentDefinition def = slotAgent(slot);
+        out.append({slot.sessionId, def.id, def.name});
+    }
+    return out;
+}
+
+void AiAgentDock::noteAppClosing()
+{
+    for (Slot &slot : m_slots) {
+        if (slot.goal && slot.goal->status() == GoalAgent::Active && slot.model)
+            slot.model->appendSystemMessage(tr("Goal stopped when NotepadAI closed"));
+    }
+}
+
+void AiAgentDock::onAgentMenuRequested(const QPoint &globalPos)
+{
+    Slot *slot = currentSlot();
+    if (!slot || !slot->connection || !m_registry || !m_agentManager)
+        return;
+    const QString sessionId = slot->sessionId;
+    const AcpSwitchAgent::SessionState st = switchState(*slot);
+    const AcpSwitchAgent::Block block = AcpSwitchAgent::blockReason(st);
+    const QString currentId = slot->connection->definition().id;
+    const int backgroundCount = slot->connection->backgroundTaskCount();
+
+    QMenu menu(this);
+    menu.setToolTipsVisible(true);
+    // Why nothing can be picked comes first.
+    if (block != AcpSwitchAgent::Block::None)
+        menu.addAction(AcpSwitchAgent::blockText(block, backgroundCount))->setEnabled(false);
+    if (block != AcpSwitchAgent::Block::Remote && block != AcpSwitchAgent::Block::SourceNotClaudeCode) {
+        menu.addSection(tr("Continue this session with"));
+        const QString tip = tr("Copies the conversation into this agent's Claude Code folder and resumes it "
+                               "there.\nThinking from Sonnet / Haiku 5.5 does not carry across accounts, and "
+                               "the first reply starts without a cache.");
+        const QList<AcpAgentDefinition> targets = AcpSwitchAgent::claudeCodeAgents(m_registry->agents());
+        for (const AcpAgentDefinition &agent : targets) {
+            QAction *action = menu.addAction(acpAgentIcon(agent, palette()), agent.name);
+            if (agent.id == currentId) {
+                action->setCheckable(true);
+                action->setChecked(true);
+                action->setEnabled(false);
+                continue;
+            }
+            action->setData(agent.id);
+            action->setToolTip(tip);
+            action->setEnabled(block == AcpSwitchAgent::Block::None);
+        }
+    }
+    const QAction *chosen = menu.exec(globalPos);
+    if (!chosen)
+        return;
+    const QString targetId = chosen->data().toString();
+    // The menu ran a nested event loop: the slot may be gone.
+    if (targetId.isEmpty() || !slotById(sessionId))
+        return;
+    m_agentManager->switchAgent(sessionId, targetId);
 }
 
 AiAgentDock::~AiAgentDock()
@@ -677,6 +817,13 @@ void AiAgentDock::closeEvent(QCloseEvent *event)
     event->ignore();
 }
 
+void AiAgentDock::changeEvent(QEvent *event)
+{
+    QDockWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange)
+        pushStripSnapshots();
+}
+
 void AiAgentDock::refreshSessionStripPlacement()
 {
     scheduleStripReinstall();
@@ -814,6 +961,7 @@ bool AiAgentDock::moveSlot(int from, int to)
         m_stack->setCurrentWidget(open);
     pushStripSnapshots();
     refreshActivityIcon();
+    emit slotsChanged();
     return true;
 }
 
@@ -821,11 +969,14 @@ void AiAgentDock::switchTo(int index)
 {
     if (index < 0 || index >= m_slots.size())
         return;
+    const bool changed = m_current != index;
     m_current = index;
     m_stack->setCurrentIndex(index);
     m_slots[index].hasActivity = false;
     pushStripSnapshots();
     refreshActivityIcon();
+    if (changed)
+        emit slotsChanged();
 }
 
 void AiAgentDock::closeSlot(int index)
@@ -882,6 +1033,7 @@ void AiAgentDock::detachSlotAt(int index)
     }
 
     if (m_slots.isEmpty()) {
+        emit slotsChanged();
         if (!m_acceptingWidgetClose) {
             m_acceptingWidgetClose = true;
             close();
@@ -896,6 +1048,7 @@ void AiAgentDock::detachSlotAt(int index)
     pushStripSnapshots();
     scheduleStripReinstall();
     refreshActivityIcon();
+    emit slotsChanged();
 }
 
 AiAgentDock::Slot *AiAgentDock::currentSlot()
@@ -989,6 +1142,7 @@ void AiAgentDock::ensureStrip()
     });
     connect(m_strip, &AiDockSessionStrip::closeRequested, this, &AiAgentDock::closeSlot);
     connect(m_strip, &AiDockSessionStrip::moveRequested, this, &AiAgentDock::moveSlot);
+    connect(m_strip, &AiDockSessionStrip::agentMenuRequested, this, &AiAgentDock::onAgentMenuRequested);
     connect(m_strip, &QObject::destroyed, this, [this]() {
         m_strip = nullptr;
         m_tabBarForStrip = nullptr;
@@ -1139,6 +1293,25 @@ void AiAgentDock::pushStripSnapshots()
         snaps.append(std::move(snap));
     }
     m_strip->setSlots(m_slots.size(), m_current, snaps);
+
+    // The open session's agent, by its configured name (adapters all report
+    // "Claude Code", which cannot tell two accounts apart).
+    const Slot &open = m_slots.at(qBound(0, m_current, int(m_slots.size()) - 1));
+    const AcpAgentDefinition def = slotAgent(open);
+    AiDockSessionStrip::AgentButton button;
+    button.name = def.name;
+    button.icon = acpAgentIcon(def, palette());
+    button.switchingTo = open.switchingTo;
+    QString tip = tr("Agent: %1").arg(def.name);
+    if (open.model) {
+        const AcpProtocol::AcpAgentInfo &info = open.model->agentInfo();
+        const QString adapter = info.title.isEmpty() ? info.name : info.title;
+        if (!adapter.isEmpty())
+            tip += QLatin1Char('\n') + (info.version.isEmpty() ? adapter : adapter + QLatin1Char(' ') + info.version);
+    }
+    tip += QLatin1Char('\n') + tr("Click to continue this session with another agent");
+    button.tooltip = tip;
+    m_strip->setAgentButton(button);
 }
 
 QTabBar *AiAgentDock::hostTabBar(int *tabIndex) const

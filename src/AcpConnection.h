@@ -58,8 +58,35 @@ public:
     ~AcpConnection() override;
 
     // Spawn the agent child process. Asynchronous — the `initialized()` signal
-    // fires after `initialize` + `session/new` complete successfully.
+    // fires after `initialize` + `session/new` (or `session/resume`) complete.
     void spawn(const AcpAgentDefinition &agent, const QString &workingDirectory);
+
+    // Resume this agent session id (`session/resume`, no replay) instead of
+    // opening a new one on the next spawn()/wake(). Failure — the agent lacks
+    // `sessionCapabilities.resume`, the request errors, or the process dies
+    // first — emits resumeFailed() once (errorOccurred/agentExited still fire).
+    void setResumeSessionId(const QString &sessionId) { m_resumeSessionId = sessionId; }
+    QString resumeSessionId() const { return m_resumeSessionId; }
+
+    // Record what to run without starting it: a restored session's agent
+    // starts only when the user sends something (wake()).
+    void prepareDormant(const AcpAgentDefinition &agent, const QString &workingDirectory);
+    bool isDormant() const { return m_dormant; }
+    void wake();
+    // A restored conversation that cannot be resumed (agent removed, no saved
+    // agent session id): wake() then fails with `reason` instead of spawning,
+    // never silently starting a new session under the old transcript.
+    void setCannotResume(const QString &reason) { m_cannotResumeReason = reason; }
+    // Dormant and its first prompt must wait for a resume (or its failure).
+    bool needsResume() const
+    {
+        return m_dormant && (!m_resumeSessionId.isEmpty() || !m_cannotResumeReason.isEmpty());
+    }
+    // session/new or session/resume has answered.
+    bool isSessionReady() const { return !m_sessionId.isEmpty(); }
+    // initialized() again with the last session setup, for a model wired after
+    // the fact (Switch agent wires it only once the resume succeeded).
+    void reemitInitialized();
 
     // Factory for the SSH exec-channel transport (D8). It builds an
     // IAcpProcessChannel that runs the agent on the remote host (cwd = the
@@ -214,6 +241,8 @@ signals:
 
     void requestFailed(const QString &message);
     void errorOccurred(AcpErrorClassifier::AcpErrorKind kind, const QString &friendly);
+    // The session set with setResumeSessionId() could not be resumed.
+    void resumeFailed(const QString &reason);
     void debugLogAppended(const QString &line);
 
     // Emitted when the agent child process exits mid-session. Listeners
@@ -247,6 +276,11 @@ private:
     void initializeHandshake();
     void sendInitialize();
     void sendNewSession();
+    void sendResumeSession();
+    // Shared tail of session/new and session/resume: catalogs, initialized(),
+    // flush of prompts queued meanwhile.
+    void finishSessionSetup(const QJsonObject &result, const char *method);
+    void failResume(const QString &reason);
 
     int sendRequest(const char *method, const QJsonValue &params, const Callback &cb);
     void sendNotification(const char *method, const QJsonValue &params);
@@ -333,6 +367,10 @@ private:
     QString m_workingDirCanonical;
 
     QString m_sessionId;
+    QString m_resumeSessionId;
+    bool m_resumePending = false; // spawned with a resume id, not answered yet
+    bool m_dormant = false;
+    QString m_cannotResumeReason;
     AcpProtocol::AcpAgentInfo m_agentInfo;
     AcpProtocol::AcpCapabilities m_capabilities;
     QList<AcpProtocol::AcpCommandInfo> m_availableCommands;

@@ -3915,6 +3915,25 @@ void MainWindow::restoreOpenWorkspaces()
     }
 }
 
+void MainWindow::restoreAiSessions()
+{
+    PROFILE_SCOPE("MainWindow::restoreAiSessions");
+    AcpAgentManager *manager = app ? app->getAiAgentManager() : nullptr;
+    if (!manager)
+        return;
+    remote::ExecutionContextRegistry *contexts = app->getExecutionContextRegistry();
+    const QList<AiAgentDock *> docks = manager->restoreOpenSessions(
+        [contexts](const QString &profileId) -> remote::ExecutionContext * {
+            if (!contexts)
+                return nullptr;
+            if (remote::RemoteExecutionContext *ctx = contexts->remoteContext(profileId))
+                return ctx;
+            return contexts->connect(profileId);
+        });
+    for (AiAgentDock *dock : docks)
+        attachAiAgentDock(dock, /*raise=*/false);
+}
+
 void MainWindow::raiseSavedActiveWorkspace()
 {
     // Defense-in-depth on top of QMainWindow::restoreState: the saved windowState

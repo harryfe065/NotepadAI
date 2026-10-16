@@ -342,6 +342,11 @@ AcpSessionView::AcpSessionView(AcpSessionModel *model,
     , m_registry(registry)
 {
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    // A restored session keeps its draft state and, once its agent starts,
+    // its own model / mode / effort (captured from the restored catalogs).
+    m_draft = !m_model || !m_model->userSent();
+    if (!m_draft)
+        captureSelection();
     buildUi();
     wireSignals();
     hydrateFromModel();
@@ -398,7 +403,17 @@ void AcpSessionView::buildUi()
     m_bannerClose->setToolTip(tr("Close"));
     m_bannerClose->setAccessibleName(tr("Close"));
     connect(m_bannerClose, &QToolButton::clicked, this, &AcpSessionView::clearBanner);
+    // Optional action ("Restart") offered by some banners; hidden otherwise.
+    m_bannerAction = new QToolButton(m_banner);
+    m_bannerAction->setAutoRaise(true);
+    m_bannerAction->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_bannerAction->hide();
+    connect(m_bannerAction, &QToolButton::clicked, this, [this]() {
+        if (m_bannerActionFn)
+            m_bannerActionFn();
+    });
     banL->addWidget(m_bannerLabel, 1);
+    banL->addWidget(m_bannerAction, 0, Qt::AlignTop);
     banL->addWidget(m_bannerClose, 0, Qt::AlignTop);
     m_banner->setProperty("bannerKind", QStringLiteral("info"));
     m_banner->hide();
@@ -889,6 +904,11 @@ void AcpSessionView::wireSignals()
                 this, [this]() { releaseWorkHeldFold(true); });
         connect(m_connection, &AcpConnection::errorOccurred,
                 this, &AcpSessionView::onErrorOccurred);
+        // A restored session's first send waits for its agent to resume.
+        connect(m_connection, &AcpConnection::initialized,
+                this, &AcpSessionView::onConnectionReady);
+        connect(m_connection, &AcpConnection::resumeFailed,
+                this, &AcpSessionView::onResumeFailed);
         connect(m_connection, &AcpConnection::planReceived,
                 this, [this](const QList<AcpProtocol::AcpPlanEntry> &entries) {
             resetElapsed();
@@ -983,6 +1003,7 @@ void AcpSessionView::setBanner(const QString &text, BannerKind kind)
         clearBanner();
         return;
     }
+    setBannerAction({}, {}); // a banner that offers one sets it after this
     m_bannerLabel->setText(text);
     QString kindStr;
     switch (kind) {
@@ -1003,9 +1024,19 @@ void AcpSessionView::setBanner(const QString &text, BannerKind kind)
     m_banner->show();
 }
 
+void AcpSessionView::setBannerAction(const QString &label, std::function<void()> action)
+{
+    if (!m_bannerAction)
+        return;
+    m_bannerActionFn = std::move(action);
+    m_bannerAction->setText(label);
+    m_bannerAction->setVisible(!label.isEmpty() && m_bannerActionFn);
+}
+
 void AcpSessionView::clearBanner()
 {
     if (!m_banner) return;
+    setBannerAction({}, {});
     m_bannerLabel->clear();
     m_banner->setProperty("bannerKind", QStringLiteral("info"));
     m_banner->style()->unpolish(m_banner);
@@ -1040,6 +1071,10 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_savedPrefsApplied = false;
     // The conversation is gone: a restarted session is a draft again.
     m_draft = true;
+    m_carry = {};
+    m_parked = {};
+    m_resumeBlocked = false;
+    m_switchingTo.clear();
     refreshSelectorTooltips();
     ++m_scheduledRev; // the cached tooltip described the previous connection's jobs
 
@@ -1146,6 +1181,111 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     // the (presumably empty) new model state.
     wireSignals();
     hydrateFromModel();
+    updateSendButton();
+    refreshBusyPlaceholder();
+}
+
+void AcpSessionView::rebindConnection(AcpConnection *connection)
+{
+    if (connection == m_connection)
+        return;
+    // The model still holds the previous agent's selection: carry it over,
+    // unless a selection is already waiting (restored session never started,
+    // or picks made before its first prompt).
+    if (!m_carry.valid)
+        captureSelection();
+    if (m_connection) {
+        disconnect(m_connection, nullptr, this, nullptr);
+        if (m_debugDialog)
+            disconnect(m_connection, &AcpConnection::debugLogAppended, m_debugDialog, nullptr);
+    }
+    // Disconnecting by sender drops the model and registry wiring too.
+    if (m_model)
+        disconnect(m_model, nullptr, this, nullptr);
+    if (m_registry)
+        disconnect(m_registry, nullptr, this, nullptr);
+    m_connection = connection;
+    m_savedPrefsApplied = false;
+    ++m_scheduledRev;
+    m_parked = {};
+    m_resumeBlocked = false;
+    if (m_debugDialog && m_debugDialogText && m_connection) {
+        m_debugDialogText->setPlainText(m_connection->debugLog().join(QLatin1Char('\n')));
+        QPointer<AcpSessionView> self(this);
+        connect(m_connection, &AcpConnection::debugLogAppended, m_debugDialog, [self](const QString &line) {
+            if (!self || !self->m_debugDialogText)
+                return;
+            if (self->m_debugDialogOnlyGoal && self->m_debugDialogOnlyGoal->isChecked())
+                return;
+            self->m_debugDialogText->appendPlainText(line);
+        });
+    }
+    wireSignals();
+    clearBanner();
+    refreshWaiting();
+    updateSendButton();
+}
+
+void AcpSessionView::setSwitching(const QString &targetName)
+{
+    if (m_switchingTo == targetName)
+        return;
+    m_switchingTo = targetName;
+    if (!m_switchingTo.isEmpty())
+        setInputPlaceholder(tr("Switching to %1…").arg(m_switchingTo));
+    else if (!m_resumeBlocked)
+        setInputPlaceholder(tr("Send a message"));
+    updateSendButton();
+}
+
+void AcpSessionView::captureSelection()
+{
+    if (!m_model)
+        return;
+    const auto &opts = m_model->configOptions();
+    Selection sel;
+    if (const auto *modelOpt = findModelConfigOption(opts))
+        sel.model = modelOpt->currentValue.toString();
+    if (sel.model.isEmpty())
+        sel.model = m_model->currentModelId();
+    sel.mode = m_model->currentModeId();
+    if (const auto *effortOpt = findEffortConfigOption(opts))
+        sel.effort = effortOpt->currentValue.toString();
+    sel.valid = !sel.model.isEmpty() || !sel.mode.isEmpty() || !sel.effort.isEmpty();
+    m_carry = sel;
+}
+
+void AcpSessionView::onConnectionReady()
+{
+    if (!m_parked.active)
+        return;
+    ParkedSend parked = std::move(m_parked);
+    m_parked = {};
+    setInputPlaceholder(tr("Send a message"));
+    updateSendButton();
+    clearBanner();
+    dispatchPrompt(parked.text, parked.images, parked.fromGoalAgent, parked.marker, parked.wireText);
+}
+
+void AcpSessionView::onResumeFailed(const QString &reason)
+{
+    // The prompt never reached the agent: give the user's words back.
+    if (m_parked.active && !m_parked.fromGoalAgent && m_parked.marker.isEmpty() && m_input) {
+        if (m_input->toPlainText().trimmed().isEmpty())
+            m_input->setPlainText(m_parked.text);
+        if (m_attachmentList) {
+            for (const auto &img : m_parked.images) {
+                const QString ext = img.second.section(QLatin1Char('/'), 1);
+                m_attachmentList->tryAddImage(img.first, QStringLiteral("image.") + ext);
+            }
+        }
+    }
+    m_parked = {};
+    m_resumeBlocked = true;
+    setInputPlaceholder(tr("Restart to start a new session"));
+    updateSendButton();
+    setBanner(tr("Can't continue this session: %1").arg(reason), BannerKind::Error);
+    setBannerAction(tr("Restart"), [this]() { emit restartSessionRequested(); });
 }
 
 void AcpSessionView::insertTimelineWidget(QWidget *w, bool syncWidth)
@@ -2516,6 +2656,8 @@ void AcpSessionView::noteUserSend()
     if (!m_draft)
         return;
     m_draft = false;
+    if (m_model)
+        m_model->setUserSent();
     refreshSelectorTooltips();
 }
 
@@ -2896,7 +3038,14 @@ void AcpSessionView::updateSendButton()
     const QString text = m_input ? m_input->toPlainText() : QString();
     const bool hasContent = !text.trimmed().isEmpty()
         || (m_attachmentList && m_attachmentList->isNonEmpty());
-    m_sendBtn->setEnabled(hasContent);
+    m_sendBtn->setEnabled(hasContent && !composerLocked());
+}
+
+bool AcpSessionView::composerLocked() const
+{
+    // Switching agents, resuming a restored session, or a resume that failed
+    // (only Restart helps then).
+    return !m_switchingTo.isEmpty() || m_parked.active || m_resumeBlocked;
 }
 
 void AcpSessionView::refreshQueueStrip()
@@ -2932,7 +3081,7 @@ void AcpSessionView::scheduleFlushQueuedPrompt()
         guard->flushQueuedPrompt();
         if (!guard)
             return;
-        if (guard->m_model && !guard->m_model->isProcessing()
+        if (guard->m_model && !guard->m_model->isProcessing() && !guard->composerLocked()
             && guard->m_promptQueue.size() > 0) {
             guard->scheduleFlushQueuedPrompt();
         }
@@ -2941,7 +3090,7 @@ void AcpSessionView::scheduleFlushQueuedPrompt()
 
 void AcpSessionView::flushQueuedPrompt()
 {
-    if (!m_connection || !m_model)
+    if (!m_connection || !m_model || composerLocked())
         return;
     const bool processing = m_model->isProcessing();
     auto item = m_promptQueue.takeNextIfIdle(processing);
@@ -2981,6 +3130,26 @@ void AcpSessionView::dispatchPrompt(const QString &text,
 {
     if (!m_connection || !m_model)
         return;
+    // Restored session: its agent starts now and must resume the conversation
+    // before anything is sent. The prompt waits here, outside the transcript,
+    // so a failed resume can hand it back (onResumeFailed).
+    if (m_parked.active) {
+        // Anything else waits behind the parked prompt.
+        AcpPromptQueue::Item item{text, images};
+        item.fromGoalAgent = fromGoalAgent;
+        item.marker = marker;
+        item.wireText = wireText;
+        m_promptQueue.enqueue(std::move(item));
+        refreshQueueStrip();
+        return;
+    }
+    if (m_connection->needsResume()) {
+        m_parked = {text, images, fromGoalAgent, marker, wireText, true};
+        setInputPlaceholder(tr("Resuming session…"));
+        updateSendButton();
+        m_connection->wake();
+        return;
+    }
     // A typed `/advisor ...` flips the toggle just like clicking it would.
     if (m_advisorBtn) {
         if (const auto advisorOn = AcpProtocol::parseAdvisorCommand(text))
@@ -3001,7 +3170,7 @@ void AcpSessionView::dispatchPrompt(const QString &text,
 
 void AcpSessionView::onSendClicked()
 {
-    if (!m_connection || !m_model || !m_input)
+    if (!m_connection || !m_model || !m_input || composerLocked())
         return;
 
     const QString text = m_input->toPlainText().trimmed();
@@ -3114,7 +3283,11 @@ void AcpSessionView::onModelComboChanged(int index)
     if (id.isEmpty()) return;
     const QString prefKey = m_modelConfigOptionId.isEmpty()
         ? QStringLiteral("model") : m_modelConfigOptionId;
-    if (!m_modelConfigOptionId.isEmpty()) {
+    if (!m_connection->isSessionReady()) {
+        // Agent not started yet (restored session): applied once it is.
+        m_carry.model = id;
+        m_carry.valid = true;
+    } else if (!m_modelConfigOptionId.isEmpty()) {
         m_connection->setConfigOption(m_modelConfigOptionId, id);
     } else {
         m_connection->setModel(id);
@@ -3133,7 +3306,12 @@ void AcpSessionView::onModeComboChanged(int index)
     if (m_updatingSelectors || !m_connection || index < 0) return;
     const QString id = m_modeCombo->itemData(index).toString();
     if (id.isEmpty()) return;
-    m_connection->setMode(id);
+    if (m_connection->isSessionReady()) {
+        m_connection->setMode(id);
+    } else {
+        m_carry.mode = id;
+        m_carry.valid = true;
+    }
     if (m_registry && m_draft) {
         m_registry->setAgentPreference(m_connection->definition().id,
                                        QStringLiteral("mode"), id);
@@ -3145,7 +3323,12 @@ void AcpSessionView::onEffortComboChanged(int index)
     if (m_updatingSelectors || !m_connection || index < 0) return;
     if (m_effortConfigOptionId.isEmpty()) return;
     const QString val = m_effortCombo->itemData(index).toString();
-    m_connection->setConfigOption(m_effortConfigOptionId, val);
+    if (m_connection->isSessionReady()) {
+        m_connection->setConfigOption(m_effortConfigOptionId, val);
+    } else {
+        m_carry.effort = val;
+        m_carry.valid = true;
+    }
     if (m_registry && m_draft && !val.isEmpty()) {
         m_registry->setAgentPreference(m_connection->definition().id,
                                        m_effortConfigOptionId, val);
@@ -3157,6 +3340,8 @@ void AcpSessionView::applySavedPreferences()
 {
     if (m_savedPrefsApplied) return;
     if (!m_registry || !m_connection || !m_model) return;
+    // A restored session's catalogs come from history: wait for its agent.
+    if (!m_connection->isSessionReady()) return;
     // Wait until the agent's catalogs have been populated, otherwise we can't
     // tell whether a saved id is still valid.
     const bool catalogsReady = !m_model->availableModels().isEmpty()
@@ -3168,11 +3353,23 @@ void AcpSessionView::applySavedPreferences()
     const QString agentId = m_connection->definition().id;
     if (agentId.isEmpty()) return;
 
-    // Model: send only if the saved id exists in the catalog and differs.
-    // Config-option-backed pickers (Claude Code) restore via session/set_config.
+    // What to restore: the session's own selection when it continues on a new
+    // agent process (Switch agent, restored session), else the agent defaults.
     const QString modelPrefKey = m_modelConfigOptionId.isEmpty()
         ? QStringLiteral("model") : m_modelConfigOptionId;
-    const QString savedModel = m_registry->agentPreference(agentId, modelPrefKey);
+    const bool carry = m_carry.valid;
+    const Selection want = carry ? m_carry
+        : Selection{m_registry->agentPreference(agentId, modelPrefKey),
+                    m_registry->agentPreference(agentId, QStringLiteral("mode")),
+                    m_effortConfigOptionId.isEmpty()
+                        ? QString()
+                        : m_registry->agentPreference(agentId, m_effortConfigOptionId),
+                    true};
+    m_carry = {};
+
+    // Model: send only if the saved id exists in the catalog and differs.
+    // Config-option-backed pickers (Claude Code) restore via session/set_config.
+    const QString savedModel = want.model;
     const QString savedModelBase = baseModelId(savedModel);
     const QString currentModelBase = baseModelId(m_model->currentModelId());
     if (!savedModel.isEmpty() && savedModelBase != currentModelBase) {
@@ -3200,7 +3397,7 @@ void AcpSessionView::applySavedPreferences()
     }
 
     // Mode.
-    const QString savedMode = m_registry->agentPreference(agentId, QStringLiteral("mode"));
+    const QString savedMode = want.mode;
     if (!savedMode.isEmpty() && savedMode != m_model->currentModeId()) {
         for (const auto &m : m_model->availableModes()) {
             if (m.id == savedMode) {
@@ -3212,7 +3409,7 @@ void AcpSessionView::applySavedPreferences()
 
     // Effort / reasoning level: keyed by the matched config-option id.
     if (!m_effortConfigOptionId.isEmpty()) {
-        const QString savedEffort = m_registry->agentPreference(agentId, m_effortConfigOptionId);
+        const QString savedEffort = want.effort;
         if (!savedEffort.isEmpty()) {
             for (const auto &opt : m_model->configOptions()) {
                 if (opt.id != m_effortConfigOptionId) continue;

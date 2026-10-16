@@ -10,6 +10,7 @@
 
 #include <QtTest>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 
 #include "AcpProtocol.h"
@@ -66,7 +67,7 @@ private slots:
     void advisorModelFor_readsFamilyFromValueOrLabel();
     void advisorCommandText_onAndOff();
     void parseAdvisorCommand_readsTypedToggle();
-
+    void parseAgentCapabilities_specKeysAndLegacyFallback();
 
 
 };
@@ -836,6 +837,36 @@ void TestAcpProtocolSerialization::formatWaitDuration_secondsMinutesHours()
     QCOMPARE(AcpProtocol::formatWaitDuration(3725000), QStringLiteral("1h 02m"));
     // A negative clock reading (invalid QElapsedTimer) never renders garbage.
     QCOMPARE(AcpProtocol::formatWaitDuration(-5), QStringLiteral("0.0s"));
+}
+
+void TestAcpProtocolSerialization::parseAgentCapabilities_specKeysAndLegacyFallback()
+{
+    // claude-agent-acp 0.91.0 initialize result (trimmed).
+    const QJsonObject spec = QJsonDocument::fromJson(R"({
+        "protocolVersion": 1,
+        "agentCapabilities": {
+            "loadSession": true,
+            "sessionCapabilities": {"fork": {}, "list": {}, "resume": {}, "close": {}},
+            "promptCapabilities": {"image": true}
+        }
+    })").object();
+    const auto caps = AcpProtocol::parseAgentCapabilities(spec);
+    QVERIFY(caps.sessionLoad);
+    QVERIFY(caps.sessionResume);
+
+    const QJsonObject noResume = QJsonDocument::fromJson(R"({
+        "agentCapabilities": {"loadSession": true, "sessionCapabilities": {"resume": null}}
+    })").object();
+    QVERIFY(!AcpProtocol::parseAgentCapabilities(noResume).sessionResume);
+
+    const QJsonObject legacy = QJsonDocument::fromJson(R"({
+        "capabilities": {"fs": {"readTextFile": true}, "terminal": true, "sessionLoad": true}
+    })").object();
+    const auto old = AcpProtocol::parseAgentCapabilities(legacy);
+    QVERIFY(old.fsReadTextFile);
+    QVERIFY(old.terminal);
+    QVERIFY(old.sessionLoad);
+    QVERIFY(!old.sessionResume);
 }
 
 QTEST_GUILESS_MAIN(TestAcpProtocolSerialization)

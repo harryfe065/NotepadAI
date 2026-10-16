@@ -31,6 +31,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <functional>
 
 #include "AcpDiffStat.h"
 #include "AcpErrorClassifier.h"
@@ -113,6 +114,13 @@ public:
     // new model. The view widget itself survives.
     void rebind(AcpSessionModel *model, AcpConnection *connection);
 
+    // Switch agent: the same session continues on `connection`. Transcript,
+    // queue and draft state stay; the session's model / mode / effort are
+    // re-applied once the new agent's catalogs arrive.
+    void rebindConnection(AcpConnection *connection);
+    // Composer locked while the session moves to `targetName` (empty = done).
+    void setSwitching(const QString &targetName);
+
     // Started by a scheduled task: nobody answers forms until the user sends a
     // message here. A running goal makes the session unattended too.
     void setScheduledUnattended(bool on) { m_scheduledUnattended = on; }
@@ -182,6 +190,9 @@ private slots:
     void onPermissionRequested(const AcpProtocol::AcpPermissionRequest &req);
     void onRequestFailed(const QString &message);
     void onErrorOccurred(AcpErrorClassifier::AcpErrorKind kind, const QString &friendly);
+    // Session set up (new or resumed): sends a restored session's parked prompt.
+    void onConnectionReady();
+    void onResumeFailed(const QString &reason);
 
     void onSendClicked();
     void onCancelClicked();
@@ -342,9 +353,16 @@ private:
     void setInputPlaceholder(const QString &text);
 
     // Push the user's saved per-agent preferences (model/mode/effort) into
-    // the running session. Called once per session after metadata first
-    // populates the available catalogs.
+    // the running session — or the session's own carried selection when it
+    // continues on a new agent process. Called once per session after
+    // metadata first populates the available catalogs.
     void applySavedPreferences();
+    // Remember the model's current model / mode / effort for applySavedPreferences.
+    void captureSelection();
+    // Sending is impossible right now: switching agents, resuming, or resume failed.
+    bool composerLocked() const;
+    // A banner button (e.g. Restart); setBanner() clears it.
+    void setBannerAction(const QString &label, std::function<void()> action);
 
     void applyChatFont();
 
@@ -374,6 +392,8 @@ private:
     // Status banner
     QFrame *m_banner = nullptr;
     QLabel *m_bannerLabel = nullptr;
+    QToolButton *m_bannerAction = nullptr;
+    std::function<void()> m_bannerActionFn;
     QToolButton *m_bannerClose = nullptr;
 
     // ACP debug log popup (non-modal, lazily created on first click).
@@ -516,6 +536,30 @@ private:
     bool m_savedPrefsApplied = false;
     // True until the user sends something (see noteUserSend()); reset by rebind.
     bool m_draft = true;
+
+    struct Selection
+    {
+        QString model;
+        QString mode;
+        QString effort;
+        bool valid = false;
+    };
+    // The session's own selection to re-apply on its next agent process
+    // (Switch agent, restored session); consumed by applySavedPreferences.
+    Selection m_carry;
+    // Restored session: the first prompt waits here while its agent resumes.
+    struct ParkedSend
+    {
+        QString text;
+        QVector<QPair<QByteArray, QString>> images;
+        bool fromGoalAgent = false;
+        QString marker;
+        QString wireText;
+        bool active = false;
+    };
+    ParkedSend m_parked;
+    bool m_resumeBlocked = false; // resume failed: only Restart helps
+    QString m_switchingTo;        // agent the session is moving to
 
     // Auto-scroll state. The transcript is "stuck to the bottom" when the
     // user is parked at (or within a few px of) the maximum scroll value.

@@ -11,10 +11,13 @@ qt_add_executable(NotepadAI
 	AcpConversationCopy.h
 	AcpErrorClassifier.h
 	AcpHistoryStore.h
+	AcpOpenSessions.h
 	AcpPromptQueue.h
 	AcpScheduledJobs.h
 	AcpProtocol.h
 	AcpSessionModel.h
+	AcpSwitchAgent.h
+	ClaudeSessionFiles.h
 	AcpDiffStat.h
 	AcpTranscriptTruncation.h
 	AcpTurnFolding.h
@@ -137,10 +140,13 @@ qt_add_executable(NotepadAI
 	AcpConversationCopy.cpp
 	AcpErrorClassifier.cpp
 	AcpHistoryStore.cpp
+	AcpOpenSessions.cpp
 	AcpPromptQueue.cpp
 	AcpScheduledJobs.cpp
 	AcpProtocol.cpp
 	AcpSessionModel.cpp
+	AcpSwitchAgent.cpp
+	ClaudeSessionFiles.cpp
 	AcpDiffStat.cpp
 	AcpTranscriptTruncation.cpp
 	AcpTurnFolding.cpp

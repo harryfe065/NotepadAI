@@ -110,8 +110,14 @@ public:
 
     QString sessionId() const { return m_sessionId; }
     QString projectId() const { return m_projectId; }
+    // The agent's own session id (session/new result), persisted so a restored
+    // session or Switch agent can resume it.
     QString acpSessionId() const { return m_acpSessionId; }
     void setAcpSessionId(const QString &id);
+    // The user has sent something themselves: the session is no longer a draft
+    // (GLOSSARY). Persisted so a restored session keeps it.
+    bool userSent() const { return m_userSent; }
+    void setUserSent();
 
     bool isProcessing() const { return m_isProcessing; }
     // Live background tasks (Claude Code async tasks). Independent of
@@ -235,6 +241,7 @@ private:
     QString m_sessionId;
     QString m_projectId;
     QString m_acpSessionId;
+    bool m_userSent = false;
     QString m_historyDirOverride; // empty = use default AppDataLocation
 
     AcpHistoryStore *m_historyStore = nullptr; // non-owning

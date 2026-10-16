@@ -33,6 +33,25 @@ bool isPermissionRequestMethod(const QString &method)
         || method == QLatin1String(kMethodRequestPermission);
 }
 
+AcpCapabilities parseAgentCapabilities(const QJsonObject &initializeResult)
+{
+    const QJsonValue specValue = initializeResult.value(QStringLiteral("agentCapabilities"));
+    const QJsonObject caps = specValue.isObject()
+        ? specValue.toObject()
+        : initializeResult.value(QStringLiteral("capabilities")).toObject();
+    AcpCapabilities out;
+    const QJsonObject fs = caps.value(QStringLiteral("fs")).toObject();
+    out.fsReadTextFile = fs.value(QStringLiteral("readTextFile")).toBool();
+    out.fsWriteTextFile = fs.value(QStringLiteral("writeTextFile")).toBool();
+    out.terminal = caps.value(QStringLiteral("terminal")).toBool();
+    out.sessionLoad = caps.value(QStringLiteral("loadSession")).toBool()
+        || caps.value(QStringLiteral("sessionLoad")).toBool();
+    // Spec: an object means supported; absent or null means not.
+    out.sessionResume = caps.value(QStringLiteral("sessionCapabilities")).toObject()
+                            .value(QStringLiteral("resume")).isObject();
+    return out;
+}
+
 QStringList acpExtractFrames(QByteArray &buffer)
 {
     QStringList out;

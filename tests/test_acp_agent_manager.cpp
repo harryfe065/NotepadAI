@@ -21,6 +21,8 @@
 
 #include "AcpAgentDefinition.h"
 #include "AcpAgentManager.h"
+#include "AcpConnection.h"
+#include "AcpOpenSessions.h"
 #include "AcpAgentRegistry.h"
 #include "AcpHistoryStore.h"
 #include "AiAgentDock.h"
@@ -43,6 +45,7 @@ private slots:
     void runHeadlessPrompt_tearsDownWhenProcessFails();
     void runHeadlessPrompt_doesNotOpenDock_closeSessionFreesImmediately();
     void openAgent_groupsByCwd_andRaiseFlag();
+    void openSessions_persistAndRestoreDormant();
 
 private:
     QTemporaryDir tempDir;
@@ -235,6 +238,68 @@ void TestAcpAgentManager::openAgent_groupsByCwd_andRaiseFlag()
     QPointer<AiAgentDock> otherPtr(other);
     other->close();
     QTRY_VERIFY_WITH_TIMEOUT(otherPtr.isNull(), 2000);
+}
+
+// Restored sessions: the open-session list follows opens and closes, survives
+// the shutdown teardown, and a new manager rebuilds it with dormant agents.
+void TestAcpAgentManager::openSessions_persistAndRestoreDormant()
+{
+    ApplicationSettings settings;
+    const QString key = QLatin1String(AcpOpenSessions::kSettingsKey);
+    AcpAgentDefinition def;
+    def.id = QStringLiteral("test-restore");
+    def.name = QStringLiteral("CC restore");
+    def.command = QStringLiteral("definitely-not-a-real-binary-xyz");
+    QTemporaryDir workDir;
+    QVERIFY(workDir.isValid());
+
+    QStringList ids;
+    {
+        AcpAgentManager manager(&settings);
+        QVERIFY(manager.registry()->addAgent(def));
+        AiAgentDock *dock = manager.openAgent(def.id, workDir.path());
+        QVERIFY(dock);
+        manager.openAgent(def.id, workDir.path());
+        manager.openAgent(def.id, workDir.path());
+        QCOMPARE(dock->slotCount(), 3);
+        manager.closeSession(dock->sessionIdAt(0));
+        ids = {dock->sessionIdAt(0), dock->sessionIdAt(1)};
+        QTRY_COMPARE_WITH_TIMEOUT(AcpOpenSessions::fromJson(settings.value(key).toString().toUtf8())
+                                      .value(0).sessions.size(),
+                                  2, 2000);
+        manager.freezeOpenSessions();
+        manager.shutdown(); // tears every slot down: must not empty the list
+    }
+
+    const QVector<AcpOpenSessions::Group> saved =
+        AcpOpenSessions::fromJson(settings.value(key).toString().toUtf8());
+    QCOMPARE(saved.size(), 1);
+    QCOMPARE(saved.at(0).sessions.size(), 2);
+    QCOMPARE(saved.at(0).sessions.at(0).id, ids.at(0));
+    QCOMPARE(saved.at(0).sessions.at(1).agentId, def.id);
+    QCOMPARE(saved.at(0).sessions.at(1).agentName, def.name);
+
+    AcpAgentManager restored(&settings);
+    // The registry persists in the same settings: the agent is already there.
+    QVERIFY(restored.registry()->contains(def.id));
+    const QList<AiAgentDock *> docks = restored.restoreOpenSessions({});
+    QCOMPARE(docks.size(), 1);
+    QCOMPARE(docks.at(0)->slotCount(), 2);
+    QCOMPARE(docks.at(0)->sessionIdAt(0), ids.at(0));
+    QCOMPARE(docks.at(0)->sessionIdAt(1), ids.at(1));
+    for (const QString &id : std::as_const(ids)) {
+        AcpConnection *conn = restored.connectionFor(id);
+        QVERIFY(conn);
+        QVERIFY(conn->isDormant()); // no process until the first prompt
+        QCOMPARE(conn->definition().id, def.id);
+    }
+    QList<QPointer<AiAgentDock>> alive;
+    for (AiAgentDock *d : docks)
+        alive.append(d);
+    restored.shutdown();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    for (const QPointer<AiAgentDock> &d : std::as_const(alive))
+        delete d.data();
 }
 
 QTEST_MAIN(TestAcpAgentManager)

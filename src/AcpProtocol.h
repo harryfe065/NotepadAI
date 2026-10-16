@@ -44,6 +44,7 @@ constexpr int kProtocolVersion = 1;
 // JSON-RPC method names — keep colocated so a protocol revision is one PR.
 constexpr const char *kMethodInitialize          = "initialize";
 constexpr const char *kMethodSessionNew          = "session/new";
+constexpr const char *kMethodSessionResume       = "session/resume";
 constexpr const char *kMethodSessionPrompt       = "session/prompt";
 constexpr const char *kMethodSessionCancel       = "session/cancel";
 constexpr const char *kMethodSessionSetMode      = "session/set_mode";
@@ -235,7 +236,14 @@ struct AcpCapabilities
     bool fsWriteTextFile{false};
     bool terminal{false};
     bool sessionLoad{false};
+    // `agentCapabilities.sessionCapabilities.resume`: session/resume restores
+    // a session's context without replaying it (Switch agent, restored sessions).
+    bool sessionResume{false};
 };
+
+// initialize result -> capabilities. Spec key `agentCapabilities` (loadSession,
+// sessionCapabilities.resume), falling back to the legacy `capabilities`.
+AcpCapabilities parseAgentCapabilities(const QJsonObject &initializeResult);
 
 // ----- Free helpers (unit-testable in isolation) -------------------------
 

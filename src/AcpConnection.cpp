@@ -252,6 +252,8 @@ void AcpConnection::spawn(const AcpAgentDefinition &agent, const QString &workin
 {
     m_agent = agent;
     m_workingDir = workingDirectory;
+    m_dormant = false;
+    m_resumePending = !m_resumeSessionId.isEmpty();
 
     // Working-dir identity for the path sandbox. For a remote workspace the path
     // lives on another machine, so a local QFileInfo::canonicalFilePath would
@@ -373,6 +375,8 @@ void AcpConnection::spawnRemote(const AcpAgentDefinition &agent, const QString &
                                    "Install it on the remote or open a local workspace.")
                         .arg(agentName, host);
                 emit self->errorOccurred(AcpErrorClassifier::AcpErrorKind::SpawnFailed, friendly);
+                if (self)
+                    self->failResume(friendly);
                 return;
             }
             self->appendDebugLog(
@@ -381,10 +385,12 @@ void AcpConnection::spawnRemote(const AcpAgentDefinition &agent, const QString &
             IAcpProcessChannel *channel = self->m_remoteChannelBuilder(
                 self->m_execContext, agent, workingDirectory, self.data());
             if (!channel) {
-                emit self->errorOccurred(
-                    AcpErrorClassifier::AcpErrorKind::SpawnFailed,
+                const QString friendly =
                     QStringLiteral("Could not open an SSH exec channel for agent '%1' on %2.")
-                        .arg(agentName, host));
+                        .arg(agentName, host);
+                emit self->errorOccurred(AcpErrorClassifier::AcpErrorKind::SpawnFailed, friendly);
+                if (self)
+                    self->failResume(friendly);
                 return;
             }
             self->adoptChannel(channel);
@@ -453,13 +459,11 @@ void AcpConnection::sendInitialize()
                     m_agentInfo.name = agentObj.value(QStringLiteral("name")).toString();
                     m_agentInfo.title = agentObj.value(QStringLiteral("title")).toString();
                     m_agentInfo.version = agentObj.value(QStringLiteral("version")).toString();
-                    const QJsonObject caps = r.value(QStringLiteral("capabilities")).toObject();
-                    const QJsonObject fs = caps.value(QStringLiteral("fs")).toObject();
-                    m_capabilities.fsReadTextFile = fs.value(QStringLiteral("readTextFile")).toBool();
-                    m_capabilities.fsWriteTextFile = fs.value(QStringLiteral("writeTextFile")).toBool();
-                    m_capabilities.terminal = caps.value(QStringLiteral("terminal")).toBool();
-                    m_capabilities.sessionLoad = caps.value(QStringLiteral("sessionLoad")).toBool();
-                    sendNewSession();
+                    m_capabilities = AcpProtocol::parseAgentCapabilities(r);
+                    if (m_resumeSessionId.isEmpty())
+                        sendNewSession();
+                    else
+                        sendResumeSession();
                 });
 }
 
@@ -479,92 +483,166 @@ void AcpConnection::sendNewSession()
                     }
                     const QJsonObject r = result.toObject();
                     m_sessionId = r.value(QStringLiteral("sessionId")).toString();
-
-                    m_availableCommands.clear();
-                    for (const auto &v : r.value(QStringLiteral("availableCommands")).toArray()) {
-                        AcpProtocol::AcpCommandInfo cmd;
-                        if (v.isObject()) {
-                            const QJsonObject o = v.toObject();
-                            cmd.name = o.value(QStringLiteral("name")).toString();
-                            cmd.description = o.value(QStringLiteral("description")).toString();
-                            const QJsonValue inp = o.value(QStringLiteral("input"));
-                            if (inp.isObject())
-                                cmd.inputHint = inp.toObject().value(QStringLiteral("hint")).toString();
-                        } else {
-                            cmd.name = v.toString();
-                        }
-                        if (!cmd.name.isEmpty())
-                            m_availableCommands.append(cmd);
-                    }
-
-                    // ACP V1: modes/models are nested objects; older agents
-                    // (pre-spec) emitted them flat at the top level. Accept
-                    // either so we don't regress against existing agents.
-                    const QJsonObject modesObj = r.value(QStringLiteral("modes")).toObject();
-                    const QJsonArray modesArr = modesObj.contains(QStringLiteral("availableModes"))
-                        ? modesObj.value(QStringLiteral("availableModes")).toArray()
-                        : r.value(QStringLiteral("availableModes")).toArray();
-                    m_modes.clear();
-                    for (const auto &v : modesArr) {
-                        const QJsonObject o = v.toObject();
-                        AcpProtocol::AcpModeInfo m;
-                        m.id = o.value(QStringLiteral("id")).toString();
-                        m.name = o.value(QStringLiteral("name")).toString();
-                        m.description = o.value(QStringLiteral("description")).toString();
-                        m_modes.append(m);
-                    }
-                    m_currentMode = modesObj.contains(QStringLiteral("currentModeId"))
-                        ? modesObj.value(QStringLiteral("currentModeId")).toString()
-                        : r.value(QStringLiteral("currentMode")).toString();
-
-                    const QJsonObject modelsObj = r.value(QStringLiteral("models")).toObject();
-                    const QJsonArray modelsArr = modelsObj.contains(QStringLiteral("availableModels"))
-                        ? modelsObj.value(QStringLiteral("availableModels")).toArray()
-                        : r.value(QStringLiteral("availableModels")).toArray();
-                    m_models.clear();
-                    for (const auto &v : modelsArr) {
-                        const QJsonObject o = v.toObject();
-                        AcpProtocol::AcpModelInfo m;
-                        // Spec calls the field modelId; tolerate plain id.
-                        m.id = o.value(QStringLiteral("modelId")).toString();
-                        if (m.id.isEmpty()) m.id = o.value(QStringLiteral("id")).toString();
-                        m.name = o.value(QStringLiteral("name")).toString();
-                        m.description = o.value(QStringLiteral("description")).toString();
-                        m_models.append(m);
-                    }
-                    m_currentModel = modelsObj.contains(QStringLiteral("currentModelId"))
-                        ? modelsObj.value(QStringLiteral("currentModelId")).toString()
-                        : r.value(QStringLiteral("currentModel")).toString();
-
-                    m_configOptions = parseConfigOptions(r.value(QStringLiteral("configOptions")).toArray());
-
-                    // Emit BEFORE flushing any prompts queued during session/new.
-                    // The view applies the user's saved per-agent preferences
-                    // (model/mode/effort) on this signal, dispatching the
-                    // corresponding set_* requests synchronously. Flushing the
-                    // pending prompts afterwards keeps those config requests
-                    // ahead of the prompt on the wire, so the deferred prompt
-                    // is processed with the user's saved selection rather than
-                    // the agent's session defaults.
-                    emit initialized(m_agentInfo, m_availableCommands,
-                                     m_modes, m_currentMode,
-                                     m_models, m_currentModel,
-                                     m_configOptions);
-
-                    // Flush any prompts the user queued while session/new was
-                    // still in flight. Move the queue aside first so a
-                    // re-entrant sendPrompt (shouldn't happen, but be safe)
-                    // doesn't infinite-loop.
-                    if (!m_pendingPrompts.isEmpty()) {
-                        const auto pending = std::move(m_pendingPrompts);
-                        m_pendingPrompts.clear();
-                        appendDebugLog(QStringLiteral("session/new: flushing %1 deferred prompt(s)")
-                                           .arg(pending.size()));
-                        for (const auto &p : pending) {
-                            sendPrompt(p.text, p.images);
-                        }
-                    }
+                    finishSessionSetup(r, "session/new");
                 });
+}
+
+void AcpConnection::sendResumeSession()
+{
+    if (!m_capabilities.sessionResume) {
+        failResume(tr("%1 cannot resume sessions")
+                       .arg(m_agent.name.isEmpty() ? m_agent.command : m_agent.name));
+        return;
+    }
+    QJsonObject params;
+    params.insert(QStringLiteral("sessionId"), m_resumeSessionId);
+    params.insert(QStringLiteral("cwd"), m_workingDir);
+    params.insert(QStringLiteral("mcpServers"), m_mcpServers);
+
+    sendRequest(AcpProtocol::kMethodSessionResume, params,
+                [this](const QJsonValue &result, const QJsonValue &error) {
+                    if (!error.isUndefined() && !error.isNull()) {
+                        appendDebugLog(QStringLiteral("session/resume: failed %1")
+                                           .arg(rpcErrorMessage(error)));
+                        failResume(rpcErrorMessage(error));
+                        return;
+                    }
+                    m_resumePending = false;
+                    m_sessionId = m_resumeSessionId;
+                    finishSessionSetup(result.toObject(), "session/resume");
+                });
+}
+
+void AcpConnection::failResume(const QString &reason)
+{
+    if (!m_resumePending)
+        return;
+    m_resumePending = false;
+    m_pendingPrompts.clear();
+    emit resumeFailed(reason.trimmed().isEmpty() ? tr("The agent could not resume the session")
+                                                 : reason.trimmed());
+}
+
+void AcpConnection::prepareDormant(const AcpAgentDefinition &agent, const QString &workingDirectory)
+{
+    m_agent = agent;
+    m_workingDir = workingDirectory;
+    m_dormant = true;
+}
+
+void AcpConnection::wake()
+{
+    if (!m_dormant)
+        return;
+    if (!m_cannotResumeReason.isEmpty()) {
+        // Stay dormant (nothing to run); report on the next pass so the caller
+        // has finished parking its prompt.
+        if (m_resumePending)
+            return;
+        m_resumePending = true;
+        m_pendingPrompts.clear();
+        QTimer::singleShot(0, this, [this]() { failResume(m_cannotResumeReason); });
+        return;
+    }
+    spawn(m_agent, m_workingDir);
+}
+
+void AcpConnection::reemitInitialized()
+{
+    emit initialized(m_agentInfo, m_availableCommands, m_modes, m_currentMode,
+                     m_models, m_currentModel, m_configOptions);
+}
+
+void AcpConnection::finishSessionSetup(const QJsonObject &r, const char *method)
+{
+    // session/resume answers without commands; they come as an
+    // available_commands_update, which keeps the list current.
+    if (r.contains(QStringLiteral("availableCommands")))
+        m_availableCommands.clear();
+    for (const auto &v : r.value(QStringLiteral("availableCommands")).toArray()) {
+        AcpProtocol::AcpCommandInfo cmd;
+        if (v.isObject()) {
+            const QJsonObject o = v.toObject();
+            cmd.name = o.value(QStringLiteral("name")).toString();
+            cmd.description = o.value(QStringLiteral("description")).toString();
+            const QJsonValue inp = o.value(QStringLiteral("input"));
+            if (inp.isObject())
+                cmd.inputHint = inp.toObject().value(QStringLiteral("hint")).toString();
+        } else {
+            cmd.name = v.toString();
+        }
+        if (!cmd.name.isEmpty())
+            m_availableCommands.append(cmd);
+    }
+
+    // ACP V1: modes/models are nested objects; older agents
+    // (pre-spec) emitted them flat at the top level. Accept
+    // either so we don't regress against existing agents.
+    const QJsonObject modesObj = r.value(QStringLiteral("modes")).toObject();
+    const QJsonArray modesArr = modesObj.contains(QStringLiteral("availableModes"))
+        ? modesObj.value(QStringLiteral("availableModes")).toArray()
+        : r.value(QStringLiteral("availableModes")).toArray();
+    m_modes.clear();
+    for (const auto &v : modesArr) {
+        const QJsonObject o = v.toObject();
+        AcpProtocol::AcpModeInfo m;
+        m.id = o.value(QStringLiteral("id")).toString();
+        m.name = o.value(QStringLiteral("name")).toString();
+        m.description = o.value(QStringLiteral("description")).toString();
+        m_modes.append(m);
+    }
+    m_currentMode = modesObj.contains(QStringLiteral("currentModeId"))
+        ? modesObj.value(QStringLiteral("currentModeId")).toString()
+        : r.value(QStringLiteral("currentMode")).toString();
+
+    const QJsonObject modelsObj = r.value(QStringLiteral("models")).toObject();
+    const QJsonArray modelsArr = modelsObj.contains(QStringLiteral("availableModels"))
+        ? modelsObj.value(QStringLiteral("availableModels")).toArray()
+        : r.value(QStringLiteral("availableModels")).toArray();
+    m_models.clear();
+    for (const auto &v : modelsArr) {
+        const QJsonObject o = v.toObject();
+        AcpProtocol::AcpModelInfo m;
+        // Spec calls the field modelId; tolerate plain id.
+        m.id = o.value(QStringLiteral("modelId")).toString();
+        if (m.id.isEmpty()) m.id = o.value(QStringLiteral("id")).toString();
+        m.name = o.value(QStringLiteral("name")).toString();
+        m.description = o.value(QStringLiteral("description")).toString();
+        m_models.append(m);
+    }
+    m_currentModel = modelsObj.contains(QStringLiteral("currentModelId"))
+        ? modelsObj.value(QStringLiteral("currentModelId")).toString()
+        : r.value(QStringLiteral("currentModel")).toString();
+
+    m_configOptions = parseConfigOptions(r.value(QStringLiteral("configOptions")).toArray());
+
+    // Emit BEFORE flushing any prompts queued during session setup.
+    // The view applies the user's saved per-agent preferences
+    // (model/mode/effort) on this signal, dispatching the
+    // corresponding set_* requests synchronously. Flushing the
+    // pending prompts afterwards keeps those config requests
+    // ahead of the prompt on the wire, so the deferred prompt
+    // is processed with the user's saved selection rather than
+    // the agent's session defaults.
+    emit initialized(m_agentInfo, m_availableCommands,
+                     m_modes, m_currentMode,
+                     m_models, m_currentModel,
+                     m_configOptions);
+
+    // Flush any prompts the user queued while session/new was
+    // still in flight. Move the queue aside first so a
+    // re-entrant sendPrompt (shouldn't happen, but be safe)
+    // doesn't infinite-loop.
+    if (!m_pendingPrompts.isEmpty()) {
+        const auto pending = std::move(m_pendingPrompts);
+        m_pendingPrompts.clear();
+        appendDebugLog(QStringLiteral("%1: flushing %2 deferred prompt(s)")
+                           .arg(QLatin1String(method))
+                           .arg(pending.size()));
+        for (const auto &p : pending) {
+            sendPrompt(p.text, p.images);
+        }
+    }
 }
 
 // ---------- Outbound -----------------------------------------------------
@@ -647,6 +725,8 @@ void AcpConnection::sendPrompt(const QString &text, const QList<QPair<QByteArray
         m_pendingPrompts.append({text, images});
         appendDebugLog(QStringLiteral("sendPrompt: deferred — session not yet established (queue=%1)")
                            .arg(m_pendingPrompts.size()));
+        // A restored session's agent starts on its first prompt, whoever sends it.
+        wake();
         return;
     }
 
@@ -1100,6 +1180,9 @@ void AcpConnection::handleInboundNotification(const QString &method, const QJson
             if (!cmd.name.isEmpty())
                 cmds.append(cmd);
         }
+        // Kept so reemitInitialized() carries commands that arrived before
+        // a late-wired model (Switch agent) was listening.
+        m_availableCommands = cmds;
         emit availableCommandsUpdated(cmds);
     } else if (kind == QLatin1String("current_mode_update")) {
         // Spec field: currentModeId. Pre-spec agents emitted currentMode.
@@ -1599,6 +1682,7 @@ void AcpConnection::handleProcessFinished(int exitCode, QProcess::ExitStatus sta
     // Surface the exit so the dock can switch into the "Agent exited" state.
     // No auto-reconnect — the user must click Restart.
     emit agentExited(exitCode, status);
+    failResume(tr("The agent exited (code %1) before it resumed the session").arg(exitCode));
 }
 
 void AcpConnection::emitClassifiedError(const QString &raw)
@@ -1609,6 +1693,7 @@ void AcpConnection::emitClassifiedError(const QString &raw)
     appendDebugLog(QStringLiteral("error: kind=%1 raw=%2").arg(int(kind)).arg(raw));
     appendDebugLog(QStringLiteral("error: friendly=%1").arg(friendly));
     emit errorOccurred(kind, friendly);
+    failResume(friendly);
 }
 
 void AcpConnection::beginPrompt()
