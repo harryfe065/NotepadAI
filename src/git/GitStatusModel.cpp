@@ -31,8 +31,6 @@ constexpr quintptr SECTION_PARENT = quintptr(-1);
 // the edit script (each run shifts the bucket tail once).
 constexpr int kMaxStructuralRuns = 64;
 
-const QList<int> kNumstatRoles{ Qt::DisplayRole, GitStatusModel::AddedLinesRole,
-                                GitStatusModel::DeletedLinesRole, GitStatusModel::IsBinaryRole };
 
 // Everything status reports about a row, numstat excluded (that arrives
 // later and is carried over).
@@ -416,6 +414,8 @@ void GitStatusModel::mergeNumstat(const QHash<QString, GitNumstatParser::Stat> &
         auto &bucket = m_buckets[si];
         int first = -1;
         int last = -1;
+        static const QList<int> kNumstatRoles{ Qt::DisplayRole, GitStatusModel::AddedLinesRole,
+                                               GitStatusModel::DeletedLinesRole, GitStatusModel::IsBinaryRole };
         const auto flush = [&]() {
             if (first < 0) return;
             emit dataChanged(createIndex(first, 0, quintptr(si)),

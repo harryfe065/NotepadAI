@@ -19,6 +19,7 @@
 #ifndef DIFF_VIEW_H
 #define DIFF_VIEW_H
 
+#include <cstdint>
 #include "DiffDocument.h"
 #include "DiffFileTreeModel.h"
 #include "GitDiffPalette.h"
@@ -55,10 +56,10 @@ class DiffView : public QObject
 {
     Q_OBJECT
 public:
-    enum class Mode { Preview, Commit };
+    enum class Mode : std::uint8_t { Preview, Commit };
 
     // Where a file should be opened.
-    enum class Side {
+    enum class Side : std::uint8_t {
         Working,          // the working-tree file
         Revision,         // the file at the shown commit
         ParentRevision,   // the file at the commit's first parent (deleted files)
@@ -100,7 +101,7 @@ public:
     void cancel();
 
     // The pool part of show(): parse, classify, languages, build, tree.
-    static Content build(Source source, Mode mode, std::shared_ptr<const DiffLanguages::Catalog> catalog,
+    static Content build(Source source, Mode mode, const std::shared_ptr<const DiffLanguages::Catalog> &catalog,
                          qint64 nowSecs);
 
     const DiffDoc::Document *document() const { return m_doc.get(); }

@@ -459,7 +459,7 @@ bool TileMapCanvas::ensureChunk(int layerIndex, int level, bool baked, int cx, i
     chunk.used = m_tick;
     renderChunk(chunk, m_doc->layers[size_t(layerIndex)], level, baked, cx, cy);
     m_chunkBytes += chunk.image.sizeInBytes();
-    m_chunks.insert(key, std::move(chunk));
+    m_chunks.insert(key, chunk);
     return true;
 }
 

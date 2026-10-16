@@ -46,7 +46,7 @@ signals:
     void openAsTextRequested(const QString &path);
 
 protected:
-    enum class BannerKind { Neutral, Warning, Error };
+    enum class BannerKind : std::uint8_t { Neutral, Warning, Error };
 
     // reload == true keeps the view state (zoom, pan, camera, frame).
     virtual void startLoad(bool reload) = 0;

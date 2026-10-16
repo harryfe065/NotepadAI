@@ -16,6 +16,7 @@
  * along with Notepad Next.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <cstdint>
 #include "DiffView.h"
 
 #include "ApplicationSettings.h"
@@ -196,7 +197,7 @@ private:
     int m_pressX = -1;
 };
 
-enum class KeyAction { None, NextHunk, PrevHunk, NextFile, PrevFile, FocusFilter, Jump };
+enum class KeyAction : std::uint8_t { None, NextHunk, PrevHunk, NextFile, PrevFile, FocusFilter, Jump };
 
 KeyAction keyActionOf(const QKeyEvent *e, bool onEditor)
 {
@@ -497,7 +498,7 @@ void DiffView::refreshMetrics()
 // ---------------------------------------------------------------------------
 // Building and applying documents
 
-DiffView::Content DiffView::build(Source source, Mode mode, std::shared_ptr<const DiffLanguages::Catalog> catalog,
+DiffView::Content DiffView::build(Source source, Mode mode, const std::shared_ptr<const DiffLanguages::Catalog> &catalog,
                                   qint64 nowSecs)
 {
     PROFILE_SCOPE("DiffView::build");
@@ -1241,7 +1242,8 @@ void DiffView::jumpToSource()
         // Deleted rows: the next new-side row of the hunk, else one past the
         // previous one.
         for (qint32 l = line + 1; l < n && isBodyKind(m_lines[l].kind); ++l) {
-            if ((target = newSide(l)) > 0) break;
+            target = newSide(l);
+            if (target > 0) break;
         }
         if (target < 0 && li.kind != RowKind::HunkHeader) {
             for (qint32 l = line - 1; l > m_headerLines[f] && isBodyKind(m_lines[l].kind); --l) {
@@ -1363,7 +1365,7 @@ QString DiffView::relPathOf(int file) const
 
 QString DiffView::absolutePathOf(int file) const
 {
-    const QString rel = relPathOf(file);
+    QString rel = relPathOf(file);
     if (m_repoRoot.isEmpty() || rel.isEmpty()) return rel;
     if (m_repoRoot.contains(QLatin1String("://")))     // remote workspace: keep POSIX separators
         return m_repoRoot + (m_repoRoot.endsWith(QLatin1Char('/')) ? QString() : QStringLiteral("/")) + rel;

@@ -12,6 +12,9 @@ namespace {
 constexpr int kTrackHeight = 6;
 constexpr int kTrackRadius = 2;
 constexpr int kRowGap = 2;
+constexpr int kPaceTickWidth = 2;
+constexpr int kPaceTickOverhang = 2; // px above and below the track, inside kRowGap
+static_assert(kPaceTickOverhang <= kRowGap);
 } // namespace
 
 using namespace ai::claudeusage;
@@ -76,7 +79,8 @@ void UsageWindowBar::paintEvent(QPaintEvent *)
     p.drawText(QRect(0, y, w, line), Qt::AlignRight | Qt::AlignVCenter, m_percent);
     y += line + kRowGap;
 
-    // Track (20% accent) with the even-burn pace (45%) underneath the fill.
+    // Track (20% accent), usage fill, then the even-burn pace as a tick drawn
+    // over both, so usage past the pace never hides it.
     const QRectF track(0, y, w, kTrackHeight);
     QPainterPath clip;
     clip.addRoundedRect(track, kTrackRadius, kTrackRadius);
@@ -87,15 +91,17 @@ void UsageWindowBar::paintEvent(QPaintEvent *)
     p.fillPath(clip, trackColor);
 
     p.setClipPath(clip);
-    if (m_pace) {
-        QColor pace = pal.color(QPalette::Highlight);
-        pace.setAlphaF(0.45f);
-        p.fillRect(QRectF(0, y, w * (*m_pace / 100.0), kTrackHeight), pace);
-    }
     QPainterPath fill;
     fill.addRoundedRect(QRectF(0, y, w * (m_used / 100.0), kTrackHeight), kTrackRadius, kTrackRadius);
     p.fillPath(fill, fillColor);
     p.setClipping(false);
+
+    if (m_pace && w >= kPaceTickWidth) {
+        // Whole-pixel x keeps the tick crisp; clamped so it stays fully visible at 0% / 100%.
+        const int x = std::clamp(qRound(w * (*m_pace / 100.0)) - kPaceTickWidth / 2, 0, w - kPaceTickWidth);
+        p.fillRect(QRect(x, y - kPaceTickOverhang, kPaceTickWidth, kTrackHeight + 2 * kPaceTickOverhang),
+                   pal.color(QPalette::WindowText));
+    }
     y += kTrackHeight + kRowGap;
 
     p.setPen(muted);

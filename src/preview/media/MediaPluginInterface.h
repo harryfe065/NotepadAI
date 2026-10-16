@@ -19,12 +19,12 @@ class QWidget;
 // implements Host; the plugin implements one View per tab.
 namespace MediaPlugin {
 
-enum class Kind { Audio, Video, Pdf };
+enum class Kind { Audio, Video, Pdf }; // NOLINT(performance-enum-size): crosses the plugin ABI boundary, keep int
 
 class Host
 {
 public:
-    enum class Banner { Neutral, Warning, Error };
+    enum class Banner { Neutral, Warning, Error }; // NOLINT(performance-enum-size): crosses the plugin ABI boundary, keep int
 
     // Toolbar controls, left of "Open as text", in call order.
     virtual void addToolWidget(QWidget *widget) = 0;

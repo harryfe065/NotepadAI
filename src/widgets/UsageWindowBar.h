@@ -7,8 +7,8 @@
 
 #include "ai/ClaudeUsage.h"
 
-// One rate-limit row: "label ........ 26% used", a 6px track (even-burn pace
-// underlay + usage fill) and "Resets in 2h 46m · Mon 12:10 AM". Painted in one
+// One rate-limit row: "label ........ 26% used", a 6px track (usage fill +
+// even-burn pace tick) and "Resets in 2h 46m · Mon 12:10 AM". Painted in one
 // pass from the live palette, so a theme switch needs no refresh logic.
 class UsageWindowBar : public QWidget
 {

@@ -66,7 +66,7 @@ FileKindResolver::Result FileKindResolver::classifyHead(QByteArrayView head) con
 FileKindResolver::Result FileKindResolver::resolve(const QString &filePath) const
 {
     bool known = false;
-    const Result byExt = resolveByExtension(QFileInfo(filePath).suffix().toLower(), &known);
+    Result byExt = resolveByExtension(QFileInfo(filePath).suffix().toLower(), &known);
     if (known)
         return byExt;
 

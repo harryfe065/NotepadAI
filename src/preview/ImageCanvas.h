@@ -33,7 +33,7 @@ public:
     // keepView: keep zoom, pan and surface selection when the size matches
     // (file reloads). `initialPyramid` may carry the decoder's pyramid of
     // surface 0 so the first paint needs no extra pass.
-    void setDocument(ImageDocumentPtr doc, bool keepView, ImagePyramidPtr initialPyramid = {});
+    void setDocument(ImageDocumentPtr doc, bool keepView, const ImagePyramidPtr &initialPyramid = {});
     ImageDocumentPtr document() const { return m_doc; }
 
     void setSurface(int layer, int face, int mip);
@@ -115,7 +115,7 @@ private:
     const QImage *currentSurface() const;
     ImagePyramidPtr pyramidFor(int surfaceIndex);
     void requestPyramid(int surfaceIndex);
-    void storePyramid(int surfaceIndex, ImagePyramidPtr pyramid);
+    void storePyramid(int surfaceIndex, const ImagePyramidPtr &pyramid);
     void applyZoom(double zoom, QPointF anchor, bool fit);
     void viewChanged();
     void updateMathGeometry();

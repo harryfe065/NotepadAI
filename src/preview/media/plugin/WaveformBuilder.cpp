@@ -95,7 +95,7 @@ private:
 };
 
 // Raw little-endian PCM straight from the file: the cost is the read.
-void scanPcm(const QString &path, AudioFileInfo::Info info, const std::shared_ptr<Channel> &channel)
+void scanPcm(const QString &path, const AudioFileInfo::Info &info, const std::shared_ptr<Channel> &channel)
 {
     Publisher publisher(channel);
     QFile file(path);

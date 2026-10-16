@@ -149,7 +149,7 @@ QString locateTranscript(const QString &configDir, const QString &cwd, const QSt
         return {};
     const QString projects = cleaned(configDir) + QStringLiteral("/projects");
     const QString fileName = sessionId + QStringLiteral(".jsonl");
-    const QString own = projects + QLatin1Char('/') + encodeProjectDir(cwd) + QLatin1Char('/') + fileName;
+    QString own = projects + QLatin1Char('/') + encodeProjectDir(cwd) + QLatin1Char('/') + fileName;
     if (QFileInfo::exists(own))
         return own;
     QDirIterator it(projects, QDir::Dirs | QDir::NoDotAndDotDot);

@@ -19,7 +19,7 @@
 // face's tables, so a 100 MB collection is never copied once per face.
 namespace FontFile {
 
-enum class Container { Unknown, Sfnt, Collection, Woff, Woff2 };
+enum class Container : std::uint8_t { Unknown, Sfnt, Collection, Woff, Woff2 };
 
 struct Table {
     quint32 tag = 0;

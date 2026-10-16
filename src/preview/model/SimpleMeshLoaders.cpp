@@ -296,7 +296,7 @@ struct PlyElement {
 enum class PlyFormat : quint8 { Ascii, LittleEndian, BigEndian };
 
 // Vertex property roles.
-enum Role : int { X, Y, Z, NX, NY, NZ, R, G, B, A, U, V, RoleCount };
+enum Role : std::uint8_t { X, Y, Z, NX, NY, NZ, R, G, B, A, U, V, RoleCount };
 
 int roleFor(const QByteArray &name)
 {
@@ -828,7 +828,9 @@ bool meshModel(const VoxModel &model, const quint32 *palette, const std::vector<
         return grid[size_t(x) + size_t(model.sx) * (size_t(y) + size_t(model.sy) * size_t(z))];
     };
     // MagicaVoxel pivots a model about floor(size / 2).
+    // NOLINTBEGIN(bugprone-integer-division): floor(size / 2) is the intended integer division
     const float pivot[3] = {float(model.sx / 2), float(model.sy / 2), float(model.sz / 2)};
+    // NOLINTEND(bugprone-integer-division)
 
     // Indices per material slot, merged into primitives at the end.
     std::map<int, std::vector<quint32>> byMaterial;

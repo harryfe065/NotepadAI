@@ -16,7 +16,7 @@ class WaveformPeaks
 {
 public:
     // Interleaved little-endian samples; S24 is packed (3 bytes per sample).
-    enum class Format { U8, S16, S24, S32, F32, F64 };
+    enum class Format : std::uint8_t { U8, S16, S24, S32, F32, F64 };
 
     struct Peak {
         qint8 min = 0;     // -127..127 of full scale

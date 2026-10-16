@@ -51,7 +51,7 @@ struct Kerning {
 };
 
 struct Document {
-    enum class Kind { Atlas, BitmapFont };
+    enum class Kind : std::uint8_t { Atlas, BitmapFont };
 
     Kind kind = Kind::Atlas;
     QString format;             // "libGDX atlas", "BMFont (binary)", ...

@@ -153,7 +153,11 @@ void WaveformView::paintRuler(QPainter &p, const QRect &clip)
         return;
     const double step = rulerStep(width() / length, 70.0);
     const bool showMs = step < 1.0;
-    for (double t = std::floor(s0 / step) * step; t <= s1; t += step) {
+    const double t0 = std::floor(s0 / step) * step;
+    for (qint64 k = 0;; ++k) {
+        const double t = t0 + double(k) * step;
+        if (t > s1)
+            break;
         const int x = int(std::lround(secondsToX(t)));
         p.drawLine(x, kRulerHeight - 5, x, kRulerHeight - 1);
         const qint64 ms = qint64(std::llround(t * 1000));

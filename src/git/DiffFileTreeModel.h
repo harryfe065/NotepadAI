@@ -19,6 +19,7 @@
 #ifndef DIFF_FILE_TREE_MODEL_H
 #define DIFF_FILE_TREE_MODEL_H
 
+#include <cstdint>
 #include "GitDiffParser.h"
 
 #include <QAbstractItemModel>
@@ -35,7 +36,7 @@ class DiffFileTreeModel : public QAbstractItemModel
 public:
     struct Tree;
 
-    enum Roles {
+    enum Roles : std::uint16_t {
         NameRole = Qt::UserRole + 200,   // the row's own name ("src/git", "A.cpp")
         FileIndexRole,                   // index into the file table, -1 for a directory
         PathRole,                        // full path of a file, empty for a directory

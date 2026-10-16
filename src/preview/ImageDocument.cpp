@@ -69,7 +69,7 @@ inline quint8 encodeSrgb(float linear, const std::array<quint8, 4096> &lut)
 {
     if (!(linear > 0.0f)) return 0; // also catches NaN
     if (linear >= 1.0f) return 255;
-    return lut[static_cast<size_t>(linear * 4095.0f + 0.5f)];
+    return lut[static_cast<size_t>(linear * 4095.0f + 0.5f)]; // NOLINT(bugprone-incorrect-roundings): linear is in (0,1), +0.5 truncation is the cheap exact round
 }
 
 inline quint32 premul(quint32 r, quint32 g, quint32 b, quint32 a)
@@ -247,7 +247,7 @@ QImage renderCrop(const QImage &level, const QRect &rectIn, const ViewParams &pa
                     const quint32 g = encodeSrgb(float(p[1]) * scale, lut);
                     const quint32 b = encodeSrgb(float(p[2]) * scale, lut);
                     const float af = float(p[3]);
-                    const quint32 a = af >= 1.0f ? 255u : (af > 0.0f ? quint32(af * 255.0f + 0.5f) : 0u);
+                    const quint32 a = af >= 1.0f ? 255u : (af > 0.0f ? quint32(af * 255.0f + 0.5f) : 0u); // NOLINT(bugprone-incorrect-roundings): af is in (0,1), +0.5 truncation is the cheap exact round
                     switch (ch) {
                     case Channel::Rgba: o[x] = premul(r, g, b, a); break;
                     case Channel::Rgb:  o[x] = 0xff000000u | (r << 16) | (g << 8) | b; break;

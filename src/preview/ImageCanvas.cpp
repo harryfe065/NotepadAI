@@ -97,7 +97,7 @@ ImageCanvas::ImageCanvas(QWidget *parent)
 
 ImageCanvas::~ImageCanvas() = default;
 
-void ImageCanvas::setDocument(ImageDocumentPtr doc, bool keepView, ImagePyramidPtr initialPyramid)
+void ImageCanvas::setDocument(ImageDocumentPtr doc, bool keepView, const ImagePyramidPtr &initialPyramid)
 {
     const bool sameShape = m_doc && doc && m_doc->surfaces.size() == doc->surfaces.size()
                            && m_doc->width == doc->width && m_doc->height == doc->height
@@ -116,7 +116,7 @@ void ImageCanvas::setDocument(ImageDocumentPtr doc, bool keepView, ImagePyramidP
         m_viewInitialised = false;
     }
     if (m_doc && initialPyramid && currentSurfaceIndex() == 0)
-        m_pyramids.insert(0, std::move(initialPyramid));
+        m_pyramids.insert(0, initialPyramid);
 
     updateMathGeometry();
     if (!m_viewInitialised && m_doc && !size().isEmpty()) {
@@ -301,7 +301,7 @@ ImagePyramidPtr ImageCanvas::pyramidFor(int surfaceIndex)
     return {};
 }
 
-void ImageCanvas::storePyramid(int surfaceIndex, ImagePyramidPtr pyramid)
+void ImageCanvas::storePyramid(int surfaceIndex, const ImagePyramidPtr &pyramid)
 {
     if (m_pyramids.size() >= kMaxPyramids) {
         const int keep = currentSurfaceIndex();
@@ -310,7 +310,7 @@ void ImageCanvas::storePyramid(int surfaceIndex, ImagePyramidPtr pyramid)
             else ++it;
         }
     }
-    m_pyramids.insert(surfaceIndex, std::move(pyramid));
+    m_pyramids.insert(surfaceIndex, pyramid);
 }
 
 void ImageCanvas::requestPyramid(int surfaceIndex)

@@ -1,6 +1,7 @@
 #ifndef PREVIEWTABMANAGER_H
 #define PREVIEWTABMANAGER_H
 
+#include <cstdint>
 #include <QObject>
 #include <QHash>
 #include <QPointer>
@@ -57,7 +58,7 @@ public:
         FileKindResolver::Sniffer contentSniffer;
     };
 
-    enum class OpenMode { Transient, Pinned };
+    enum class OpenMode : std::uint8_t { Transient, Pinned };
 
     struct FilePreviewEntry {
         QString path;

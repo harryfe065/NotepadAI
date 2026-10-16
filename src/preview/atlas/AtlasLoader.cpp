@@ -249,7 +249,7 @@ std::shared_ptr<Document> parseJson(const QJsonObject &root, QString *error)
 
     auto addFrames = [&](const QJsonValue &frames, int page, bool godot) {
         if (frames.isArray()) {
-            for (const QJsonValue &fv : frames.toArray()) {
+            for (const auto &fv : frames.toArray()) {
                 if (int(doc->frames.size()) > kMaxItems)
                     return;
                 addJsonFrame(*doc, page, QString(), fv.toObject(), godot);
@@ -262,7 +262,7 @@ std::shared_ptr<Document> parseJson(const QJsonObject &root, QString *error)
     };
 
     if (root.contains(QLatin1String("textures"))) {
-        for (const QJsonValue &tv : root.value(QLatin1String("textures")).toArray()) {
+        for (const auto &tv : root.value(QLatin1String("textures")).toArray()) {
             const QJsonObject t = tv.toObject();
             Page page;
             page.file = t.value(QLatin1String("image")).toString();

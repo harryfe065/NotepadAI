@@ -63,7 +63,7 @@ private:
 void LdtkBuilder::readDefs(const QJsonObject &defs)
 {
     const QJsonArray tilesets = defs.value(QLatin1String("tilesets")).toArray();
-    for (const QJsonValue &tv : tilesets) {
+    for (const auto &tv : tilesets) {
         if (m_doc.tilesets.size() >= 30000)   // Instance::tileset is 16-bit
             break;
         const QJsonObject t = tv.toObject();
@@ -104,16 +104,16 @@ void LdtkBuilder::readDefs(const QJsonObject &defs)
     }
 
     const QJsonArray layers = defs.value(QLatin1String("layers")).toArray();
-    for (const QJsonValue &lv : layers) {
+    for (const auto &lv : layers) {
         const QJsonObject l = lv.toObject();
         QHash<int, QColor> colors;
-        for (const QJsonValue &vv : l.value(QLatin1String("intGridValues")).toArray()) {
+        for (const auto &vv : l.value(QLatin1String("intGridValues")).toArray()) {
             const QJsonObject vo = vv.toObject();
             colors.insert(jint(vo, "value"), colorOf(vo.value(QLatin1String("color"))));
         }
         m_intColors.insert(jint(l, "uid", -1), colors);
     }
-    for (const QJsonValue &ev : defs.value(QLatin1String("entities")).toArray()) {
+    for (const auto &ev : defs.value(QLatin1String("entities")).toArray()) {
         const QJsonObject e = ev.toObject();
         m_entityColors.insert(jint(e, "uid", -1), colorOf(e.value(QLatin1String("color"))));
     }
@@ -145,7 +145,7 @@ void LdtkBuilder::addTiles(Layer &layer, const QJsonArray &tiles, const TilesetD
     layer.instances.reserve(layer.instances.size() + size_t(tiles.size()));
     const int step = td.grid + td.spacing;   // >= 1, clamped in readDefs
     int poll = 0;
-    for (const QJsonValue &tv : tiles) {
+    for (const auto &tv : tiles) {
         if ((++poll & kPollMask) == 0 && m_ctx.cancelled())
             return;
         const QJsonObject t = tv.toObject();
@@ -207,7 +207,7 @@ void LdtkBuilder::addIntGrid(Layer &layer, const QJsonObject &li, int layerUid, 
         in.tile = int32_t(c.rgba());
         in.w = in.h = uint16_t(grid);
         in.x = float(origin.x() + offset.x() + double(i % cw) * grid);
-        in.y = float(origin.y() + offset.y() + double(i / cw) * grid);
+        in.y = float(origin.y() + offset.y() + double(i / cw) * grid); // NOLINT(bugprone-integer-division): row index
         layer.instances.push_back(in);
     }
     m_ctx.instances += csv.size();
@@ -215,7 +215,7 @@ void LdtkBuilder::addIntGrid(Layer &layer, const QJsonObject &li, int layerUid, 
 
 void LdtkBuilder::addEntities(Layer &layer, const QJsonObject &li, QPointF origin, QPointF offset)
 {
-    for (const QJsonValue &ev : li.value(QLatin1String("entityInstances")).toArray()) {
+    for (const auto &ev : li.value(QLatin1String("entityInstances")).toArray()) {
         const QJsonObject e = ev.toObject();
         const QJsonArray px = e.value(QLatin1String("px")).toArray();
         if (px.size() < 2)
@@ -321,14 +321,14 @@ bool LdtkBuilder::build(const QJsonObject &root, bool singleLevelFile)
     if (singleLevelFile) {
         levels.push_back(root);
     } else {
-        for (const QJsonValue &lv : root.value(QLatin1String("levels")).toArray())
+        for (const auto &lv : root.value(QLatin1String("levels")).toArray())
             levels.push_back(lv.toObject());
         if (levels.empty()) {
-            for (const QJsonValue &wv : root.value(QLatin1String("worlds")).toArray()) {
+            for (const auto &wv : root.value(QLatin1String("worlds")).toArray()) {
                 const QJsonObject w = wv.toObject();
                 if (m_layout.isEmpty())
                     m_layout = jstr(w, "worldLayout");
-                for (const QJsonValue &lv : w.value(QLatin1String("levels")).toArray())
+                for (const auto &lv : w.value(QLatin1String("levels")).toArray())
                     levels.push_back(lv.toObject());
             }
         }

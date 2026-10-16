@@ -12,7 +12,7 @@
 class ModelCamera
 {
 public:
-    enum class View { Front, Back, Left, Right, Top, Bottom, Iso };
+    enum class View : std::uint8_t { Front, Back, Left, Right, Top, Bottom, Iso };
 
     // Scene bounds the camera frames and derives clip planes from.
     void setBounds(const QVector3D &min, const QVector3D &max);

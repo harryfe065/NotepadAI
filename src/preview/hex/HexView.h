@@ -42,7 +42,7 @@ public:
     static constexpr qint64 kMaxCopyBytes = 16LL * 1024 * 1024;
     static constexpr int kMaxBytesPerRow = 32;
 
-    enum class CopyFormat { Hex, Text, CArray };
+    enum class CopyFormat : std::uint8_t { Hex, Text, CArray };
     void copy(CopyFormat format);
     void copyOffset();
 

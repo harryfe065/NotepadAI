@@ -14,15 +14,16 @@
 #include <QSplitter>
 #include <QtConcurrent>
 
+#include <cstdint>
 #include <algorithm>
 
 namespace {
 
-const QString kPangram = QStringLiteral("The quick brown fox jumps over the lazy dog 0123456789");
+constexpr QStringView kPangram = u"The quick brown fox jumps over the lazy dog 0123456789";
 
 // Grid sources in the combo: all characters, one block, characters in no
 // listed block, or every glyph by id.
-enum SourceKind : int { AllCharacters = -1, OtherCharacters = -2, AllGlyphs = -3 };
+enum SourceKind : std::int8_t { AllCharacters = -1, OtherCharacters = -2, AllGlyphs = -3 };
 
 using CmapIt = std::vector<std::pair<char32_t, quint32>>::const_iterator;
 
@@ -206,14 +207,14 @@ void FontPreviewWidget::applyFace(int index, const QByteArray &bytes)
 QString FontPreviewWidget::defaultSample() const
 {
     if (m_face < 0)
-        return kPangram;
+        return kPangram.toString();
     const auto &cmap = m_doc.faces[m_face].cmap;
     auto has = [&cmap](char32_t cp) {
         return std::binary_search(cmap.begin(), cmap.end(), std::pair<char32_t, quint32>(cp, 0),
                                   [](const auto &a, const auto &b) { return a.first < b.first; });
     };
     if (std::all_of(kPangram.begin(), kPangram.end(), [&has](QChar c) { return c == u' ' || has(c.unicode()); }))
-        return kPangram;
+        return kPangram.toString();
     // A font without Latin: the first characters of its largest block.
     const auto &blocks = UnicodeBlocks::all();
     std::pair<CmapIt, CmapIt> best{cmap.end(), cmap.end()};

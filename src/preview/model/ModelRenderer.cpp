@@ -19,7 +19,7 @@ constexpr GLenum kMaxTextureMaxAnisotropy = 0x84FF; // GL_MAX_TEXTURE_MAX_ANISOT
 constexpr float kAnisotropy = 8.0f;
 
 // Texture units of the main program.
-enum Unit : int { BaseUnit, MetalUnit, RoughUnit, NormalUnit, OcclusionUnit, EmissiveUnit, JointUnit };
+enum Unit : std::uint8_t { BaseUnit, MetalUnit, RoughUnit, NormalUnit, OcclusionUnit, EmissiveUnit, JointUnit };
 
 const char *kMainVertex = R"(#version 330 core
 layout(location = 0) in vec3 a_pos;

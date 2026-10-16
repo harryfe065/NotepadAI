@@ -348,7 +348,7 @@ void Builder::buildTileset(const QJsonObject &t, const QString &dir, int firstGi
 
     const QJsonArray tiles = t.value(QLatin1String("tiles")).toArray();
     bool idsDropped = false;
-    for (const QJsonValue &tv : tiles) {
+    for (const auto &tv : tiles) {
         const QJsonObject to = tv.toObject();
         const int id = jint(to, "id", -1);
         if (id < 0)
@@ -362,14 +362,14 @@ void Builder::buildTileset(const QJsonObject &t, const QString &dir, int firstGi
             Animation a;
             a.frames.reserve(size_t(anim.size()));
             qint64 total = 0;
-            for (const QJsonValue &fv : anim) {
+            for (const auto &fv : anim) {
                 const QJsonObject fo = fv.toObject();
                 const AnimFrame f{jint(fo, "tileid"), std::clamp(jint(fo, "duration", 100), 1, 1 << 24)};
                 total += f.durationMs;
                 a.frames.push_back(f);
             }
             a.totalMs = int(std::min<qint64>(total, std::numeric_limits<int>::max()));
-            ts.animations.insert(id, std::move(a));
+            ts.animations.insert(id, a);
         }
         const QString tileImage = jstr(to, "image");
         if (!tileImage.isEmpty() && imageRel.isEmpty()) {
@@ -649,7 +649,7 @@ void Builder::addTileLayer(const QJsonObject &l, Layer &layer, QPointF offset)
         // Chunks in reading order, so overlapping tiles stack like Tiled's.
         std::vector<QJsonObject> sorted;
         sorted.reserve(size_t(chunks.size()));
-        for (const QJsonValue &cv : chunks)
+        for (const auto &cv : chunks)
             sorted.push_back(cv.toObject());
         std::stable_sort(sorted.begin(), sorted.end(), [](const QJsonObject &a, const QJsonObject &b) {
             const int ay = jint(a, "y"), by = jint(b, "y");
@@ -692,7 +692,7 @@ void Builder::addObjects(const QJsonObject &l, Layer &layer, QPointF offset)
     layer.color = parseColor(jstr(l, "color"));
     const QJsonArray objs = l.value(QLatin1String("objects")).toArray();
     layer.objects.reserve(objs.size());
-    for (const QJsonValue &ov : objs) {
+    for (const auto &ov : objs) {
         const QJsonObject o = ov.toObject();
         Object obj;
         obj.name = jstr(o, "name");
@@ -749,7 +749,7 @@ void Builder::projectObject(Object &obj, const QJsonObject &o, double x, double 
     auto points = [](const QJsonArray &a) {
         QPolygonF poly;
         poly.reserve(a.size());
-        for (const QJsonValue &v : a) {
+        for (const auto &v : a) {
             const QJsonObject po = v.toObject();
             poly << QPointF(jnum(po, "x"), jnum(po, "y"));
         }
@@ -812,7 +812,7 @@ void Builder::projectObject(Object &obj, const QJsonObject &o, double x, double 
 void Builder::addLayers(const QJsonArray &layers, const QString &prefix, QPointF offset, double opacity, bool visible,
                         int depth)
 {
-    for (const QJsonValue &lv : layers) {
+    for (const auto &lv : layers) {
         if (m_ctx.cancelled() || m_ctx.instances > kMaxInstances)
             return;
         const QJsonObject l = lv.toObject();
@@ -880,7 +880,7 @@ bool Builder::buildMap(const QJsonObject &root)
     m_isoOriginX = (m_info.isIso() && !m_info.infinite) ? double(m_info.height) * m_info.tileW / 2.0 : 0.0;
 
     const QJsonArray tilesets = root.value(QLatin1String("tilesets")).toArray();
-    for (const QJsonValue &tv : tilesets)
+    for (const auto &tv : tilesets)
         addTileset(tv.toObject(), m_ctx.baseDir);
     std::sort(m_lookup.begin(), m_lookup.end());
 
@@ -966,7 +966,7 @@ bool Builder::buildTilesetSheet(const QJsonObject &root)
         }
         // Laid out in sheet order, without the sheet's margin and spacing.
         in.x = float(double(id % cols) * ts.tileW);
-        in.y = float(double(id / cols) * ts.tileH);
+        in.y = float(double(id / cols) * ts.tileH); // NOLINT(bugprone-integer-division): row index
         if (in.tileset >= 0 && ts.animations.contains(id))
             in.flags |= Animated;
         layer.instances.push_back(in);

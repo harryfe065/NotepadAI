@@ -802,7 +802,7 @@ void AcpAgentManager::commitSwitch(const QString &sessionId, AcpConnection *targ
     auto opIt = m_switching.find(sessionId);
     if (opIt == m_switching.end() || opIt->target != target)
         return;
-    const SwitchOp op = opIt.value();
+    const SwitchOp op = std::move(opIt.value());
     m_switching.erase(opIt);
     // Drop the temporary outcome handlers (all use `this` as context).
     disconnect(target, nullptr, this, nullptr);
@@ -837,7 +837,7 @@ void AcpAgentManager::failSwitch(const QString &sessionId, const QString &reason
     // not fail a later switch of the same session).
     if (opIt == m_switching.end() || (target && opIt->target != target))
         return;
-    const SwitchOp op = opIt.value();
+    const SwitchOp op = std::move(opIt.value());
     m_switching.erase(opIt);
     if (op.target) {
         op.target->disconnect(this);
