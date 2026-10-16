@@ -697,6 +697,20 @@ target_sources(NotepadAI PRIVATE
 )
 target_link_libraries(NotepadAI PRIVATE miniz)
 
+# Asset preview tabs (add-asset-preview-framework): resolver, viewer base,
+# image/SVG viewer.
+target_sources(NotepadAI PRIVATE
+    preview/FileKindResolver.cpp preview/FileKindResolver.h
+    preview/AssetPreviewWidget.cpp preview/AssetPreviewWidget.h
+    preview/AssetPreviewTypes.cpp preview/AssetPreviewTypes.h
+    preview/ImageDocument.cpp preview/ImageDocument.h
+    preview/ImageViewMath.h
+    preview/ImageDecoder.cpp preview/ImageDecoder.h
+    preview/ImageCanvas.cpp preview/ImageCanvas.h
+    preview/ImagePreviewWidget.cpp preview/ImagePreviewWidget.h
+)
+target_link_libraries(NotepadAI PRIVATE Qt6::Svg)
+
 # Platform-conditional CredentialStore backend + native API link.
 if(WIN32)
     target_sources(NotepadAI PRIVATE ai/CredentialStore_Windows.cpp)
@@ -743,6 +757,7 @@ target_include_directories(NotepadAI
         ${CMAKE_CURRENT_SOURCE_DIR}/dialogs
         ${CMAKE_CURRENT_SOURCE_DIR}/docks
         ${CMAKE_CURRENT_SOURCE_DIR}/git
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview
         ${CMAKE_CURRENT_SOURCE_DIR}/remote
         ${CMAKE_CURRENT_SOURCE_DIR}/widgets
         ${CMAKE_CURRENT_SOURCE_DIR}

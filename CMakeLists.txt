@@ -49,6 +49,7 @@ find_package(Qt6 6.5
             PrintSupport
             Core5Compat
             Concurrent
+            Svg
 )
 
 option(NOTEPADAI_BUILD_TESTS "Build unit tests" OFF)

@@ -86,6 +86,9 @@ public:
     int editorCount() const;
     QVector<ScintillaNext *> editors() const;
     DockedEditor *getDockedEditor() const { return dockedEditor; }
+    // Preview type id for a local asset file (image, model, media), empty when
+    // the file opens as text. The routing decision shared by every open surface.
+    QString assetPreviewTypeFor(const QString &filePath) const;
     // Opens (and docks) an AI tab in `cwd` with the last-used agent, falling
     // back to the default one. Null when no agent can start there.
     AiAgentDock *openAiAgentInFolder(const QString &cwd, remote::ExecutionContext *ctx);
@@ -104,6 +107,9 @@ public slots:
     void openFileDialog();
     void openFile(const QString &filePath);
     void previewFile(const QString &filePath);
+    // Opens filePath in a text editor even when it is an asset (image, model,
+    // media) that every other open surface routes to its preview tab.
+    void openFileAsText(const QString &filePath);
 
     void openFolderAsWorkspaceDialog();
     void setFolderAsWorkspacePath(const QString &dir);
@@ -272,7 +278,11 @@ private:
     void applyCustomShortcuts();
     void initUpdateCheck();
     ScintillaNext *getInitialEditor();
-    void openFileList(const QStringList &fileNames);
+    // routeAssets: files the preview resolver claims (images, models, media)
+    // open as pinned preview tabs; false forces text editors ("Open as text").
+    void openFileList(const QStringList &fileNames, bool routeAssets = true);
+    // Transient editor tab, never routed to an asset preview.
+    void previewFileAsText(const QString &filePath);
     bool checkEditorsBeforeClose(const QVector<ScintillaNext *> &editors);
     bool checkFileForModification(ScintillaNext *editor);
     void showSaveErrorMessage(ScintillaNext *editor, QFileDevice::FileError error);

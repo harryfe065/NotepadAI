@@ -5,6 +5,7 @@
 #include "MarkdownPreviewWidget.h"
 #include "HtmlPreviewWidget.h"
 #include "FileEncodingDetector.h"
+#include "preview/AssetPreviewWidget.h"
 
 #include "DockWidget.h"
 #include "DockWidgetTab.h"
@@ -12,6 +13,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QEvent>
 #include <QPainter>
@@ -75,21 +77,39 @@ PreviewTabManager::PreviewTabManager(NotepadNextApplication *app, DockedEditor *
             m_transientPreviewTab = nullptr;
         }
     });
+
+    // Which tab was active, for the session's "current tab" when it is a preview.
+    connect(dockedEditor, &DockedEditor::previewTabActivated, this, [this](QWidget *widget) {
+        m_activePreviewWidget = widget;
+    });
+    connect(dockedEditor, &DockedEditor::editorActivated, this, [this]() {
+        m_activePreviewWidget = nullptr;
+    });
+
+    m_changeTimer.setSingleShot(true);
+    m_changeTimer.setInterval(150);
+    connect(&m_changeTimer, &QTimer::timeout, this, &PreviewTabManager::flushChangedFiles);
 }
 
 void PreviewTabManager::registerType(const QString &typeId, const TypeRegistration &reg)
 {
     m_registry.insert(typeId, reg);
+    for (const QString &ext : reg.extensions)
+        m_typeByExtension.insert(ext.toLower(), typeId);
+    if (reg.opensByDefault) {
+        m_resolver.addPreviewExtensions(typeId, reg.extensions);
+        for (const auto &sniffer : reg.sniffers)
+            m_resolver.addSniffer(typeId, sniffer);
+    }
 }
 
 const PreviewTabManager::TypeRegistration *PreviewTabManager::findRegistration(const QString &filePath) const
 {
-    QString ext = QFileInfo(filePath).suffix().toLower();
-    for (auto it = m_registry.constBegin(); it != m_registry.constEnd(); ++it) {
-        if (it.value().extensions.contains(ext))
-            return &it.value();
-    }
-    return nullptr;
+    const auto it = m_typeByExtension.constFind(QFileInfo(filePath).suffix().toLower());
+    if (it == m_typeByExtension.constEnd())
+        return nullptr;
+    const auto reg = m_registry.constFind(it.value());
+    return reg != m_registry.constEnd() ? &reg.value() : nullptr;
 }
 
 bool PreviewTabManager::canPreview(const QString &filePath) const
@@ -198,6 +218,8 @@ void PreviewTabManager::openOrFocusPreview(ScintillaNext *sourceEditor)
 
     ads::CDockWidget *dockWidget = m_dockedEditor->addPreviewTab(
         preview, title, tintIcon(reg->iconPath, m_app->palette().color(QPalette::ButtonText)));
+    if (reg->wantsFilePath)
+        wirePreviewWidget(preview, *reg, sourceEditor->getFilePath());
 
     PreviewEntry entry;
     entry.widget = preview;
@@ -321,13 +343,26 @@ void PreviewTabManager::syncScroll(ScintillaNext *sourceEditor)
 
 void PreviewTabManager::openPreviewFromFile(const QString &filePath)
 {
-    const TypeRegistration *reg = findRegistration(filePath);
-    if (!reg) return;
+    openFilePreview(filePath, QString(), OpenMode::Transient, true);
+}
+
+bool PreviewTabManager::openFilePreview(const QString &filePath, const QString &typeId, OpenMode mode,
+                                        bool replaceInitialEditor)
+{
+    const TypeRegistration *reg = nullptr;
+    if (!typeId.isEmpty()) {
+        const auto it = m_registry.constFind(typeId);
+        if (it != m_registry.constEnd())
+            reg = &it.value();
+    }
+    if (!reg)
+        reg = findRegistration(filePath);
+    if (!reg) return false;
 
     QFileInfo fi(filePath);
     // The 10 MB cap applies only to the decoded-text route. File-path-route
-    // previews (CSV) enforce their own (much larger) cap inside loadFromFile.
-    if (!reg->wantsFilePath && fi.size() > 10 * 1024 * 1024) return;
+    // previews (CSV, assets) enforce their own caps inside loadFromFile.
+    if (!reg->wantsFilePath && fi.size() > 10 * 1024 * 1024) return false;
 
     // Normalized key for the path→dock registry. Use absoluteFilePath (not
     // canonicalFilePath) so the key is well-defined even before the file is
@@ -335,14 +370,17 @@ void PreviewTabManager::openPreviewFromFile(const QString &filePath)
     const QString pathKey = fi.absoluteFilePath();
 
     // Already previewing this exact file (transient or pinned): focus it
-    // instead of creating a duplicate tab. Mirrors openOrFocusPreview().
+    // instead of creating a duplicate tab. Mirrors openOrFocusPreview(). A
+    // pinned open of the transient tab promotes it, like the preview editor.
     auto existing = m_previewsByPath.find(pathKey);
     if (existing != m_previewsByPath.end()) {
         if (existing.value()) {
+            if (mode == OpenMode::Pinned && existing.value() == m_transientPreviewTab)
+                pinTransientPreviewTab();
             existing.value()->raise();
             existing.value()->setAsCurrentTab();
             existing.value()->widget()->setFocus();
-            return;
+            return true;
         }
         // Dock died without our destroyed-handler firing yet; drop the stale key.
         m_previewsByPath.erase(existing);
@@ -351,34 +389,39 @@ void PreviewTabManager::openPreviewFromFile(const QString &filePath)
     QString text;
     if (!reg->wantsFilePath) {
         QFile f(filePath);
-        if (!f.open(QIODevice::ReadOnly)) return;
+        if (!f.open(QIODevice::ReadOnly)) return false;
         QByteArray raw = f.readAll();
         f.close();
 
-        if (raw.left(512).contains('\0')) return;
+        if (raw.left(512).contains('\0')) return false;
 
         FileEncodingDetector::decode(raw, text);
     }
 
-    // Close editor preview tab if one exists (shared transient slot)
-    if (m_dockedEditor->previewEditor())
-        m_dockedEditor->previewEditor()->close();
+    // Snapshot the pristine "New X" BEFORE adding the tab; closed after it.
+    ScintillaNext *initialEditor = replaceInitialEditor ? m_dockedEditor->initialEditor() : nullptr;
 
-    // Close existing transient preview tab (replaceable, like editor preview tab)
-    if (m_transientPreviewTab) {
-        m_transientPreviewTab->closeDockWidget();
-        m_transientPreviewTab = nullptr;
+    if (mode == OpenMode::Transient) {
+        // Close editor preview tab if one exists (shared transient slot)
+        if (m_dockedEditor->previewEditor())
+            m_dockedEditor->previewEditor()->close();
+
+        // Close existing transient preview tab (replaceable, like editor preview tab)
+        if (m_transientPreviewTab) {
+            m_transientPreviewTab->closeDockWidget();
+            m_transientPreviewTab = nullptr;
+        }
     }
 
     PreviewContentWidget *preview = reg->factory(nullptr);
-    if (!preview) return;
+    if (!preview) return false;
 
     preview->applyTheme(m_app->palette(), m_app->isEffectiveThemeDark());
 
     QString basePath = fi.absolutePath();
     if (reg->wantsFilePath) {
-        // File-path route: the widget owns mmap + its own cap. No decoded text.
-        preview->loadFromFile(filePath);
+        // File-path route: the widget owns its loading and cap. No decoded text.
+        preview->loadFromFile(pathKey);
     } else {
         preview->setContent(text, basePath);
 
@@ -392,18 +435,25 @@ void PreviewTabManager::openPreviewFromFile(const QString &filePath)
     ads::CDockWidget *dockWidget = m_dockedEditor->addPreviewTab(
         preview, title, tintIcon(reg->iconPath, iconColor));
     dockWidget->tabWidget()->setToolTip(filePath);
+    dockWidget->setProperty("nn_previewPath", pathKey);
+    dockWidget->setProperty("nn_previewType", preview->typeId());
 
-    // Italic style to indicate transient/preview state
-    QFont tabFont = dockWidget->tabWidget()->font();
-    tabFont.setItalic(true);
-    dockWidget->tabWidget()->setFont(tabFont);
+    if (mode == OpenMode::Transient) {
+        // Italic style to indicate transient/preview state
+        QFont tabFont = dockWidget->tabWidget()->font();
+        tabFont.setItalic(true);
+        dockWidget->tabWidget()->setFont(tabFont);
 
-    m_transientPreviewTab = dockWidget;
+        m_transientPreviewTab = dockWidget;
+
+        // Double-click the tab to promote it from transient to a permanent tab,
+        // mirroring DockedEditor's preview-editor pin behavior.
+        dockWidget->tabWidget()->installEventFilter(this);
+    }
     m_previewsByPath.insert(pathKey, dockWidget);
-
-    // Double-click the tab to promote it from transient to a permanent tab,
-    // mirroring DockedEditor's preview-editor pin behavior.
-    dockWidget->tabWidget()->installEventFilter(this);
+    m_filePreviewOrder.append(dockWidget);
+    if (reg->wantsFilePath)
+        wirePreviewWidget(preview, *reg, pathKey);
 
     // Clean up registry/transient-slot when this specific dock is destroyed
     // (user closes the tab, or it's replaced by the next transient preview).
@@ -415,6 +465,8 @@ void PreviewTabManager::openPreviewFromFile(const QString &filePath)
         auto it = m_previewsByPath.find(pathKey);
         if (it != m_previewsByPath.end() && it.value() == dockWidget)
             m_previewsByPath.erase(it);
+        m_filePreviewOrder.removeAll(dockWidget);
+        m_filePreviewOrder.removeAll(nullptr);
     });
 
     // Let the preview drive its own tab title (e.g. the CSV preview prefixes a
@@ -425,7 +477,119 @@ void PreviewTabManager::openPreviewFromFile(const QString &filePath)
         if (dockWidget) dockWidget->setWindowTitle(t);
     });
 
+    if (initialEditor)
+        initialEditor->close();
+
     emit previewOpened(preview);
+    return true;
+}
+
+void PreviewTabManager::wirePreviewWidget(PreviewContentWidget *preview, const TypeRegistration &reg,
+                                          const QString &path)
+{
+    if (auto *asset = qobject_cast<AssetPreviewWidget *>(preview)) {
+        connect(asset, &AssetPreviewWidget::openAsTextRequested, this, &PreviewTabManager::openAsTextRequested);
+    }
+    if (reg.watchFile) {
+        const QString key = QFileInfo(path).absoluteFilePath();
+        watchPath(key);
+        connect(preview, &QObject::destroyed, this, [this, key]() { unwatchPath(key); });
+    }
+}
+
+void PreviewTabManager::watchPath(const QString &path)
+{
+    int &count = m_watchCount[path];
+    if (count++ > 0) return;
+    if (!m_watcher) {
+        m_watcher = new QFileSystemWatcher(this);
+        connect(m_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &changed) {
+            // Coalesce: editors and exporters write in bursts (truncate, write,
+            // rename); one reload after the burst settles.
+            if (m_watchCount.contains(changed)) {
+                m_changedPending.insert(changed, 0);
+                m_changeTimer.start();
+            }
+        });
+    }
+    m_watcher->addPath(path);
+}
+
+void PreviewTabManager::unwatchPath(const QString &path)
+{
+    auto it = m_watchCount.find(path);
+    if (it == m_watchCount.end()) return;
+    if (--it.value() > 0) return;
+    m_watchCount.erase(it);
+    m_changedPending.remove(path);
+    if (m_watcher)
+        m_watcher->removePath(path);
+}
+
+void PreviewTabManager::flushChangedFiles()
+{
+    // A file being replaced (save to temp + rename) can be briefly missing;
+    // give it up to 10 ticks (1.5 s) to reappear before telling the preview.
+    constexpr int kMaxMissingTicks = 10;
+    QStringList ready;
+    for (auto it = m_changedPending.begin(); it != m_changedPending.end();) {
+        const QString &path = it.key();
+        const bool exists = QFileInfo::exists(path);
+        if (!exists && ++it.value() < kMaxMissingTicks) {
+            ++it;
+            continue;
+        }
+        // An atomic replace drops the watch on the old inode; re-arm it.
+        if (exists && m_watcher && !m_watcher->files().contains(path))
+            m_watcher->addPath(path);
+        ready.append(path);
+        it = m_changedPending.erase(it);
+    }
+    if (!m_changedPending.isEmpty())
+        m_changeTimer.start();
+
+    for (const QString &path : ready) {
+        if (auto dock = m_previewsByPath.value(path)) {
+            if (auto *preview = qobject_cast<PreviewContentWidget *>(dock->widget()))
+                preview->reloadFromDisk();
+        }
+        // Editor-bound file previews of the same path.
+        for (auto it = m_previews.cbegin(); it != m_previews.cend(); ++it) {
+            ScintillaNext *editor = it.key();
+            if (it->widget && editor->isFile()
+                && QFileInfo(editor->getFilePath()).absoluteFilePath() == path)
+                it->widget->reloadFromDisk();
+        }
+    }
+}
+
+QVector<PreviewTabManager::FilePreviewEntry> PreviewTabManager::pinnedFilePreviews() const
+{
+    QVector<FilePreviewEntry> out;
+    for (const auto &dock : m_filePreviewOrder) {
+        if (!dock || dock == m_transientPreviewTab) continue;
+        out.append({dock->property("nn_previewPath").toString(), dock->property("nn_previewType").toString()});
+    }
+    return out;
+}
+
+QString PreviewTabManager::activeFilePreviewPath() const
+{
+    if (!m_activePreviewWidget) return QString();
+    for (const auto &dock : m_filePreviewOrder) {
+        if (dock && dock->widget() == m_activePreviewWidget && dock != m_transientPreviewTab)
+            return dock->property("nn_previewPath").toString();
+    }
+    return QString();
+}
+
+bool PreviewTabManager::focusFilePreview(const QString &filePath)
+{
+    const auto dock = m_previewsByPath.value(QFileInfo(filePath).absoluteFilePath());
+    if (!dock) return false;
+    dock->raise();
+    dock->setAsCurrentTab();
+    return true;
 }
 
 void PreviewTabManager::pinTransientPreviewTab()

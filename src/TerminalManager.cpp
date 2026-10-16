@@ -24,6 +24,7 @@
 #include "DockWidget.h"
 #include "MainWindow.h"
 #include "NotepadNextApplication.h"
+#include "PreviewTabManager.h"
 #include "TerminalAiHelper.h"
 #include "TerminalCwdResolver.h"
 #include "TerminalDock.h"
@@ -967,7 +968,18 @@ bool TerminalManager::eventFilter(QObject *watched, QEvent *event)
 void TerminalManager::openFileAt(const QString &path, int line, int column)
 {
     const QString absolute = QFileInfo(path).absoluteFilePath();
-    m_mainWindow->openFile(absolute);
+    // file:line links (compiler output) mean text even for an SVG; a bare path
+    // to an asset opens its preview and leaves any text editor of it alone.
+    if (line > 0) {
+        m_mainWindow->openFileAsText(absolute);
+    } else {
+        const QString typeId = m_mainWindow->assetPreviewTypeFor(absolute);
+        if (!typeId.isEmpty() && m_app && m_app->getPreviewTabManager()
+            && m_app->getPreviewTabManager()->openFilePreview(absolute, typeId, PreviewTabManager::OpenMode::Pinned,
+                                                              true))
+            return;
+        m_mainWindow->openFileAsText(absolute);
+    }
     ScintillaNext *editor = (m_app && m_app->getEditorManager())
         ? m_app->getEditorManager()->getEditorByFilePath(absolute) : nullptr;
     if (!editor)

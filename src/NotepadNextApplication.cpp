@@ -34,6 +34,7 @@
 #include "SshAcpProcessChannel.h"
 #include "SshConnectionExecHost.h"
 #include "PreviewTabManager.h"
+#include "preview/AssetPreviewTypes.h"
 #include "MarkdownPreviewWidget.h"
 #include "HtmlPreviewWidget.h"
 #include "CsvPreviewWidget.h"
@@ -397,6 +398,8 @@ bool NotepadNextApplication::init()
             .wantsFilePath = true,
             .displayName = QStringLiteral("TSV"),
         });
+        registerAssetPreviewTypes(previewTabManager, this);
+        connect(previewTabManager, &PreviewTabManager::openAsTextRequested, window, &MainWindow::openFileAsText);
     }
 
     // If the application is activated (e.g. user switching to another program and them back) the focus
@@ -478,9 +481,9 @@ bool NotepadNextApplication::init()
         }
     }
 
-    // If the window does not have any editors (meaning the no files were
-    // specified on the command line) then create a new empty file
-    if (window->editorCount() == 0) {
+    // If the editor area is empty (no session, no CLI files; a restored or
+    // CLI-opened asset preview counts as content) then create a new empty file
+    if (window->getDockedEditor()->totalTabCount() == 0) {
         PROFILE_SCOPE("NotepadNextApplication::init.fallbackNewFile");
         window->newFile();
     }

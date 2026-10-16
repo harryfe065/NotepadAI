@@ -2722,3 +2722,24 @@ target_sources(test_acp_grill_me_permission PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.h
 )
 add_test(NAME AcpGrillMePermission COMMAND test_acp_grill_me_permission)
+
+# --- FileKindResolver: the one open-routing decision (extension, magic, NUL) ---
+qt_add_executable(test_file_kind_resolver test_file_kind_resolver.cpp)
+target_include_directories(test_file_kind_resolver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_file_kind_resolver PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_file_kind_resolver PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/FileKindResolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/FileKindResolver.h
+)
+add_test(NAME FileKindResolver COMMAND test_file_kind_resolver)
+
+# --- ImageViewMath + ImageOps: image canvas zoom/pan math, pyramid, crops ---
+qt_add_executable(test_image_view_math test_image_view_math.cpp)
+target_include_directories(test_image_view_math PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_image_view_math PRIVATE Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::Test)
+target_sources(test_image_view_math PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDocument.h
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageViewMath.h
+)
+add_test(NAME ImageViewMath COMMAND test_image_view_math)

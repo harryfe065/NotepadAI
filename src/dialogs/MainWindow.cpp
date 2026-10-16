@@ -983,7 +983,9 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
 
     connect(findInFolderDock, &FindInFolderDock::resultActivated, this,
             [this, app](const QString &filePath, int lineNumber, int matchStart, int matchEnd) {
-        openFile(filePath);
+        // A text match lives at a line: always the editor, even for an asset
+        // type (an SVG hit must not open the image viewer).
+        openFileAsText(filePath);
         ScintillaNext *editor = app->getEditorManager()->getEditorByFilePath(filePath);
         if (editor) {
             dockedEditor->switchToEditor(editor);
@@ -996,7 +998,7 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
 
     connect(findInFolderDock, &FindInFolderDock::resultClicked, this,
             [this, app](const QString &filePath, int lineNumber, int matchStart, int matchEnd) {
-        previewFile(filePath);
+        previewFileAsText(filePath);
         ScintillaNext *editor = app->getEditorManager()->getEditorByFilePath(filePath);
         if (editor) {
             dockedEditor->switchToEditor(editor);
@@ -2431,7 +2433,30 @@ ScintillaNext *MainWindow::getInitialEditor()
     return dockedEditor->initialEditor();
 }
 
-void MainWindow::openFileList(const QStringList &fileNames)
+QString MainWindow::assetPreviewTypeFor(const QString &filePath) const
+{
+    // Local-only: remote (ssh://) paths keep the editor route (D2 of
+    // add-asset-preview-framework). One resolver for every open surface.
+    if (remote::isSshUri(filePath))
+        return QString();
+    PreviewTabManager *mgr = app->getPreviewTabManager();
+    if (!mgr || !QFileInfo(filePath).isFile())
+        return QString();
+    const FileKindResolver::Result kind = mgr->resolver().resolve(filePath);
+    if (kind.kind == FileKindResolver::Kind::Preview)
+        return kind.typeId;
+    // Unrecognised binary: the hex viewer when registered, else the editor.
+    if (kind.kind == FileKindResolver::Kind::Binary && mgr->hasType(QStringLiteral("hex")))
+        return QStringLiteral("hex");
+    return QString();
+}
+
+void MainWindow::openFileAsText(const QString &filePath)
+{
+    openFileList(QStringList() << filePath, false);
+}
+
+void MainWindow::openFileList(const QStringList &fileNames, bool routeAssets)
 {
     PROFILE_SCOPE("MainWindow::openFileList");
     qInfo(Q_FUNC_INFO);
@@ -2440,10 +2465,21 @@ void MainWindow::openFileList(const QStringList &fileNames)
         return;
 
     QList<ScintillaNext *> openedEditors;
+    bool openedPreview = false;
     ScintillaNext *initialEditor = getInitialEditor();
 
     for (const QString &filePath : fileNames) {
         qInfo("%s", qUtf8Printable(filePath));
+
+        if (routeAssets) {
+            const QString typeId = assetPreviewTypeFor(filePath);
+            if (!typeId.isEmpty()
+                && app->getPreviewTabManager()->openFilePreview(filePath, typeId,
+                                                                PreviewTabManager::OpenMode::Pinned, false)) {
+                openedPreview = true;
+                continue;
+            }
+        }
 
         // Search currently open editors to see if it is already open. For an
         // ssh:// path getEditorByFilePath dedupes by URI (no local QFileInfo).
@@ -2499,14 +2535,12 @@ void MainWindow::openFileList(const QStringList &fileNames)
     }
 
     // If any were successful
-    if (!openedEditors.empty()) {
+    if (!openedEditors.empty())
         dockedEditor->switchToEditor(openedEditors.last());
 
-        if (initialEditor) {
-            initialEditor->close();
-        }
-    }
-
+    // Closed only after the new tabs exist, so the area never empties.
+    if ((!openedEditors.empty() || openedPreview) && initialEditor)
+        initialEditor->close();
 }
 
 bool MainWindow::checkEditorsBeforeClose(const QVector<ScintillaNext *> &editors)
@@ -2555,6 +2589,18 @@ void MainWindow::openFile(const QString &filePath)
 }
 
 void MainWindow::previewFile(const QString &filePath)
+{
+    // Assets (images, models, media) open in the transient preview tab, even
+    // when an editor holds the same file ("Open as text" made it; its tab stays).
+    const QString typeId = assetPreviewTypeFor(filePath);
+    if (!typeId.isEmpty()
+        && app->getPreviewTabManager()->openFilePreview(filePath, typeId,
+                                                        PreviewTabManager::OpenMode::Transient, true))
+        return;
+    previewFileAsText(filePath);
+}
+
+void MainWindow::previewFileAsText(const QString &filePath)
 {
     ScintillaNext *editor = app->getEditorManager()->getEditorByFilePath(filePath);
 
@@ -2862,6 +2908,12 @@ void MainWindow::registerWorkspaceDock(FolderAsWorkspaceDock *dock)
                     menu->addAction(previewAction);
                     addedOpenAction = true;
                 }
+            }
+            if (!assetPreviewTypeFor(absPath).isEmpty()) {
+                auto *asText = new QAction(tr("Open as Text"), menu);
+                connect(asText, &QAction::triggered, this, [this, absPath]() { openFileAsText(absPath); });
+                menu->addAction(asText);
+                addedOpenAction = true;
             }
             if (!remote::isSshUri(absPath) && isHtmlFilePath(absPath) && m_miniAppManager) {
                 auto *openInBrowser = new QAction(tr("Open in Browser"), menu);

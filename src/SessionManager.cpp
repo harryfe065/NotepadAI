@@ -25,6 +25,7 @@
 #include "EditorManager.h"
 #include "NotepadNextApplication.h"
 #include "DataPaths.h"
+#include "PreviewTabManager.h"
 
 #include "remote/ExecutionContext.h"
 #include "remote/ExecutionContextRegistry.h"
@@ -189,6 +190,20 @@ void SessionManager::saveSession(MainWindow *window)
 
     settings.setValue("CurrentEditorIndex", currentEditorIndex);
 
+    // Pinned file previews (images, models, media): path + type only, the
+    // viewer decodes again on first show. Transient previews are not kept.
+    if (PreviewTabManager *previews = app->getPreviewTabManager()) {
+        const auto entries = previews->pinnedFilePreviews();
+        settings.beginWriteArray("OpenedPreviews", static_cast<int>(entries.size()));
+        for (int i = 0; i < entries.size(); ++i) {
+            settings.setArrayIndex(i);
+            settings.setValue("FilePath", entries[i].path);
+            settings.setValue("TypeId", entries[i].typeId);
+        }
+        settings.endArray();
+        settings.setValue("CurrentPreview", previews->activeFilePreviewPath());
+    }
+
     settings.endGroup();
 }
 
@@ -243,8 +258,28 @@ void SessionManager::loadSession(MainWindow *window)
 
     settings.endArray();
 
+    // Previews open after the editors; each widget defers its decode until its
+    // tab is first shown, so a session of many images restores at no cost.
+    QString currentPreview;
+    PreviewTabManager *previews = app->getPreviewTabManager();
+    if (previews) {
+        const int previewCount = settings.beginReadArray("OpenedPreviews");
+        for (int i = 0; i < previewCount; ++i) {
+            settings.setArrayIndex(i);
+            const QString path = settings.value("FilePath").toString();
+            const QString typeId = settings.value("TypeId").toString();
+            if (path.isEmpty() || !previews->hasType(typeId) || !QFileInfo::exists(path))
+                continue;
+            previews->openFilePreview(path, typeId, PreviewTabManager::OpenMode::Pinned, false);
+        }
+        settings.endArray();
+        currentPreview = settings.value("CurrentPreview").toString();
+    }
+
     settings.endGroup();
 
+    if (!currentPreview.isEmpty() && previews->focusFilePreview(currentPreview))
+        return;
     if (currentEditor) {
         window->switchToEditor(currentEditor);
     }

@@ -23,6 +23,10 @@ public:
     // QByteArray-read + decode + setContent path. Markdown/HTML do not override.
     virtual void loadFromFile(const QString &path) { Q_UNUSED(path); }
 
+    // The file changed on disk (PreviewTabManager's shared watcher, for types
+    // registered with `watchFile`). Asset viewers reload keeping their view.
+    virtual void reloadFromDisk() {}
+
 signals:
     void titleChanged(const QString &title);
 };
