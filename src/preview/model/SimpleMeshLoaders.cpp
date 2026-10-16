@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 
 namespace SimpleMeshLoaders {
@@ -68,13 +69,6 @@ float lef32(const char *p)
 inline quint8 expand5(unsigned c)
 {
     return quint8((c << 3) | (c >> 2));
-}
-
-inline quint8 unorm8(double v)
-{
-    if (!(v > 0.0)) return 0;
-    if (v >= 1.0) return 255;
-    return quint8(v * 255.0 + 0.5);
 }
 
 // One mesh, one node, one primitive over the whole document.
@@ -341,6 +335,59 @@ struct PlyCursor {
         p += n;
         return v;
     }
+
+    // Most items of `itemSize` bytes (binary) or numbers (ASCII: a digit and
+    // a separator each, the last one may end the file) the rest can hold.
+    quint64 itemsLeft(int itemSize) const
+    {
+        const quint64 left = quint64(end - p);
+        return format == PlyFormat::Ascii ? (left + 1) / 2 : left / quint64(std::max(itemSize, 1));
+    }
+
+    // A list length: finite, non-negative and no more items than the rest of
+    // the file can hold, so walking the list is bounded by the file size.
+    bool listCount(PlyType countType, PlyType itemType, quint64 &n)
+    {
+        const double v = scalar(countType);
+        if (!ok || !(v >= 0.0) || !(v <= double(itemsLeft(plySize(itemType))))) {
+            ok = false;
+            p = end;
+            return false;
+        }
+        n = quint64(v);
+        return true;
+    }
+
+    // Walks past n items of a list whose length listCount() accepted.
+    void skipItems(PlyType t, quint64 n)
+    {
+        if (format == PlyFormat::Ascii) {
+            for (quint64 k = 0; k < n && ok; ++k)
+                scalar(t);
+        } else {
+            p += qint64(n) * plySize(t); // n <= itemsLeft(): stays in the file
+        }
+    }
+
+    // Fewest bytes one row of `e` takes; 0 when it reads nothing.
+    quint64 minRowBytes(const PlyElement &e) const
+    {
+        quint64 bytes = 0;
+        for (const PlyProperty &prop : e.props)
+            bytes += format == PlyFormat::Ascii ? 2 : quint64(plySize(prop.list ? prop.countType : prop.type));
+        return bytes;
+    }
+
+    // Whether the rest of the file can hold e.count rows (checked before
+    // anything is allocated from the header's count).
+    bool canHold(const PlyElement &e) const
+    {
+        const quint64 row = minRowBytes(e);
+        if (row == 0)
+            return true;
+        const quint64 left = quint64(end - p) + (format == PlyFormat::Ascii ? 1 : 0);
+        return e.count <= left / row;
+    }
 };
 
 } // namespace
@@ -411,10 +458,19 @@ Result loadPly(QByteArrayView bytes, const std::atomic_bool &cancel)
     for (const PlyElement &e : elements) {
         if (cancel.load(std::memory_order_relaxed))
             return ModelLoader::cancelled();
+        if (e.name != "vertex" && cur.minRowBytes(e) == 0)
+            continue; // rows without properties read nothing
         if (e.name == "vertex" && doc->vertices.empty()) {
-            const qint64 need = qint64(e.count) * qint64(sizeof(ModelVertex));
-            if (need > kCap || e.count > 0x7FFFFFFF)
-                return ModelLoader::tooLarge(need);
+            constexpr quint64 kVertexSize = sizeof(ModelVertex);
+            if (e.count > quint64(kCap) / kVertexSize) {
+                constexpr quint64 kMaxBytes = quint64(std::numeric_limits<qint64>::max());
+                return ModelLoader::tooLarge(e.count > kMaxBytes / kVertexSize ? qint64(kMaxBytes)
+                                                                               : qint64(e.count * kVertexSize));
+            }
+            if (e.count > 0 && cur.minRowBytes(e) == 0)
+                return ModelLoader::failed(QObject::tr("The PLY vertex element has no properties."));
+            if (!cur.canHold(e))
+                return ModelLoader::failed(QObject::tr("The PLY file is truncated."));
             std::vector<int> role(e.props.size(), -1);
             std::array<bool, RoleCount> present{};
             std::array<bool, RoleCount> byteColor{};
@@ -445,7 +501,7 @@ Result loadPly(QByteArrayView bytes, const std::atomic_bool &cancel)
                 }
                 if (hasColor) {
                     auto comp = [&](int r) {
-                        return byteColor[size_t(r)] ? quint8(std::clamp(val[r], 0.0, 255.0)) : unorm8(val[r]);
+                        return byteColor[size_t(r)] ? quint8(std::clamp(val[r], 0.0, 255.0)) : ModelPack::unorm8(val[r]);
                     };
                     v.color = ModelPack::colorFromBytes(comp(R), comp(G), comp(B), present[A] ? comp(A) : 255);
                 }
@@ -453,14 +509,13 @@ Result loadPly(QByteArrayView bytes, const std::atomic_bool &cancel)
 
             if (format != PlyFormat::Ascii && !e.hasList()) {
                 // Fixed stride: decode in parallel straight from the mapping.
-                std::vector<int> offset(e.props.size(), 0);
-                int stride = 0;
+                std::vector<qint64> offset(e.props.size(), 0);
+                qint64 stride = 0;
                 for (size_t i = 0; i < e.props.size(); ++i) {
                     offset[i] = stride;
                     stride += plySize(e.props[i].type);
                 }
-                if (cur.end - cur.p < qint64(stride) * qint64(e.count))
-                    return ModelLoader::failed(QObject::tr("The PLY file is truncated."));
+                // canHold() checked count * stride against the rest of the file.
                 const char *data = cur.p;
                 const bool be = format == PlyFormat::BigEndian;
                 ImageOps::parallelRows(int(e.count), qint64(e.count), [&](int r0, int r1) {
@@ -473,16 +528,16 @@ Result loadPly(QByteArrayView bytes, const std::atomic_bool &cancel)
                         store(doc->vertices[size_t(r)], val);
                     }
                 });
-                cur.p += qint64(stride) * qint64(e.count);
+                cur.p += stride * qint64(e.count);
             } else {
                 double val[RoleCount] = {};
                 for (quint64 r = 0; r < e.count && cur.ok; ++r) {
                     for (size_t i = 0; i < e.props.size(); ++i) {
                         const PlyProperty &prop = e.props[i];
                         if (prop.list) {
-                            const auto n = quint64(std::max(0.0, cur.scalar(prop.countType)));
-                            for (quint64 k = 0; k < n && cur.ok; ++k)
-                                cur.scalar(prop.type);
+                            quint64 n = 0;
+                            if (cur.listCount(prop.countType, prop.type, n))
+                                cur.skipItems(prop.type, n);
                             continue;
                         }
                         const double v = cur.scalar(prop.type);
@@ -508,7 +563,20 @@ Result loadPly(QByteArrayView bytes, const std::atomic_bool &cancel)
                     break;
                 }
             }
-            doc->indices.reserve(size_t(std::min<quint64>(e.count * 3, quint64(kCap / 4))));
+            if (!cur.canHold(e))
+                return ModelLoader::failed(QObject::tr("The PLY file is truncated."));
+            // Room left under the cap for indices; checked per face, since one
+            // face can add up to 196K of them.
+            const qint64 vertexBytes = doc->geometryBytes();
+            const quint64 indexBudget = vertexBytes < kCap ? quint64(kCap - vertexBytes) / sizeof(quint32) : 0;
+            if (indexProp >= 0) {
+                // Reserve for the triangles the rest of the file can hold:
+                // each needs at least a full row with a 3-index list.
+                const PlyProperty &ip = e.props[size_t(indexProp)];
+                const quint64 triRow = cur.minRowBytes(e) + (format == PlyFormat::Ascii ? 6 : 3 * quint64(plySize(ip.type)));
+                const quint64 left = quint64(cur.end - cur.p) + 1;
+                doc->indices.reserve(size_t(std::min({e.count, left / triRow, indexBudget / 3}) * 3));
+            }
             std::vector<quint32> poly;
             for (quint64 f = 0; f < e.count && cur.ok; ++f) {
                 for (size_t i = 0; i < e.props.size(); ++i) {
@@ -517,60 +585,54 @@ Result loadPly(QByteArrayView bytes, const std::atomic_bool &cancel)
                         cur.scalar(prop.type);
                         continue;
                     }
-                    const auto n = quint64(std::max(0.0, cur.scalar(prop.countType)));
+                    quint64 n = 0;
+                    if (!cur.listCount(prop.countType, prop.type, n))
+                        break;
                     if (int(i) != indexProp) {
-                        if (format == PlyFormat::Ascii) {
-                            for (quint64 k = 0; k < n && cur.ok; ++k)
-                                cur.scalar(prop.type);
-                        } else {
-                            const qint64 skip = qint64(n) * plySize(prop.type);
-                            if (cur.end - cur.p < skip) cur.ok = false;
-                            else cur.p += skip;
-                        }
+                        cur.skipItems(prop.type, n);
                         continue;
                     }
                     poly.resize(size_t(std::min<quint64>(n, 1u << 16)));
                     for (quint64 k = 0; k < n && cur.ok; ++k) {
-                        const auto v = quint64(std::max(0.0, cur.scalar(prop.type)));
-                        if (k < poly.size())
-                            poly[size_t(k)] = v < vertexCount ? quint32(v) : 0;
+                        const double v = cur.scalar(prop.type);
+                        if (k < poly.size()) // NaN, infinities and out-of-range indices read as vertex 0
+                            poly[size_t(k)] = v >= 0.0 && v < double(vertexCount) ? quint32(v) : 0;
                     }
+                    if (poly.size() < 3)
+                        continue;
+                    const size_t added = (poly.size() - 2) * 3;
+                    if (doc->indices.size() + added > indexBudget)
+                        return ModelLoader::tooLarge(vertexBytes
+                                                     + qint64(doc->indices.size() + added) * qint64(sizeof(quint32)));
                     for (size_t k = 1; k + 1 < poly.size(); ++k) {
                         doc->indices.push_back(poly[0]);
                         doc->indices.push_back(poly[k]);
                         doc->indices.push_back(poly[k + 1]);
                     }
                 }
-                if ((f & 0xFFFF) == 0) {
-                    if (cancel.load(std::memory_order_relaxed))
-                        return ModelLoader::cancelled();
-                    if (doc->geometryBytes() > kCap)
-                        return ModelLoader::tooLarge(doc->geometryBytes());
-                }
+                if ((f & 0xFFFF) == 0 && cancel.load(std::memory_order_relaxed))
+                    return ModelLoader::cancelled();
             }
             continue;
         }
 
         // Any other element: walk past it.
+        if (!cur.canHold(e))
+            break;
         if (format != PlyFormat::Ascii && !e.hasList()) {
-            qint64 stride = 0;
-            for (const PlyProperty &p : e.props)
-                stride += plySize(p.type);
-            if (cur.end - cur.p < stride * qint64(e.count))
-                break;
-            cur.p += stride * qint64(e.count);
+            cur.p += qint64(cur.minRowBytes(e)) * qint64(e.count); // canHold(): inside the file
             continue;
         }
         for (quint64 r = 0; r < e.count && cur.ok; ++r) {
             for (const PlyProperty &p : e.props) {
-                if (p.list) {
-                    const auto n = quint64(std::max(0.0, cur.scalar(p.countType)));
-                    for (quint64 k = 0; k < n && cur.ok; ++k)
-                        cur.scalar(p.type);
-                } else {
+                quint64 n = 0;
+                if (!p.list)
                     cur.scalar(p.type);
-                }
+                else if (cur.listCount(p.countType, p.type, n))
+                    cur.skipItems(p.type, n);
             }
+            if ((r & 0xFFFF) == 0 && cancel.load(std::memory_order_relaxed))
+                return ModelLoader::cancelled();
         }
     }
 
@@ -633,7 +695,10 @@ const quint32 kDefaultPalette[256] = {
     0xffbbbbbbu, 0xffaaaaaau, 0xff888888u, 0xff777777u, 0xff555555u, 0xff444444u, 0xff222222u, 0xff111111u,
 };
 
-constexpr qint64 kMaxVoxGrid = qint64(512) * 512 * 512;
+constexpr int kMaxVoxSide = 512;
+constexpr qint64 kMaxVoxGrid = qint64(kMaxVoxSide) * kMaxVoxSide * kMaxVoxSide;
+// Scene graph: stack pushes and document nodes, each.
+constexpr size_t kMaxVoxSceneNodes = size_t(1) << 20;
 
 struct VoxReader {
     const char *p;
@@ -678,6 +743,7 @@ struct VoxNode {
     enum class Kind : quint8 { Transform, Group, Shape } kind = Kind::Transform;
     QString name;
     bool hidden = false;
+    bool visited = false; // the scene walk takes each node once
     int layer = -1;
     int child = -1;
     std::vector<int> children;
@@ -737,9 +803,19 @@ QMatrix4x4 voxTransform(const std::map<QByteArray, QByteArray> &frame)
 
 // Greedy meshing (Lysenko): one quad per maximal rectangle of equally
 // coloured, equally lit faces in each slice. Appends to `doc`, one
-// primitive per material class used.
-void meshModel(const VoxModel &model, const quint32 *palette, const std::vector<int> &materialOf, ModelDocument &doc)
+// primitive per material class used. `geometryBytes` is the running size of
+// the document's arrays; false (the model left unfinished) as soon as a quad
+// would take it past the cap, so the refusal comes before the memory is spent.
+bool meshModel(const VoxModel &model, const quint32 *palette, const std::vector<int> &materialOf, ModelDocument &doc,
+               qint64 &geometryBytes)
 {
+    constexpr qint64 kQuadBytes = 4 * qint64(sizeof(ModelVertex)) + 6 * qint64(sizeof(quint32));
+    if (model.xyzi.isEmpty()) {
+        ModelMesh empty;
+        empty.firstPrimitive = int(doc.primitives.size());
+        doc.meshes.push_back(empty); // keeps mesh indices equal to model indices
+        return true;
+    }
     const int dims[3] = {model.sx, model.sy, model.sz};
     std::vector<quint8> grid(size_t(model.sx) * size_t(model.sy) * size_t(model.sz), 0);
     const auto *v = reinterpret_cast<const uchar *>(model.xyzi.data());
@@ -801,6 +877,9 @@ void meshModel(const VoxModel &model, const quint32 *palette, const std::vector<
                         if (!row)
                             break;
                     }
+                    geometryBytes += kQuadBytes;
+                    if (geometryBytes > kCap)
+                        return false;
                     // Quad at plane x[d], spanning [i, i+width) x [j, j+height).
                     float p0[3];
                     p0[d] = float(x[d]);
@@ -860,6 +939,7 @@ void meshModel(const VoxModel &model, const quint32 *palette, const std::vector<
     }
     mesh.primitiveCount = int(doc.primitives.size()) - mesh.firstPrimitive;
     doc.meshes.push_back(mesh);
+    return true;
 }
 
 } // namespace
@@ -906,8 +986,9 @@ Result loadVox(QByteArrayView bytes, const std::atomic_bool &cancel)
             const qint32 count = c.i32();
             if (count < 0 || !c.has(qint64(count) * 4) || pendingX <= 0 || pendingY <= 0 || pendingZ <= 0)
                 continue;
-            if (qint64(pendingX) * pendingY * pendingZ > kMaxVoxGrid)
-                return ModelLoader::failed(QObject::tr("A VOX model is larger than %1 voxels per side.").arg(512));
+            if (pendingX > kMaxVoxSide || pendingY > kMaxVoxSide || pendingZ > kMaxVoxSide
+                || qint64(pendingX) * pendingY * pendingZ > kMaxVoxGrid)
+                return ModelLoader::failed(QObject::tr("A VOX model is larger than %1 voxels per side.").arg(kMaxVoxSide));
             VoxModel m;
             m.sx = pendingX;
             m.sy = pendingY;
@@ -1024,29 +1105,45 @@ Result loadVox(QByteArrayView bytes, const std::atomic_bool &cancel)
         doc->materials.push_back(out);
     }
 
+    qint64 geometryBytes = 0;
     for (const VoxModel &m : models) {
         if (cancel.load(std::memory_order_relaxed))
             return ModelLoader::cancelled();
-        meshModel(m, palette, materialOf, *doc);
-        if (doc->geometryBytes() > kCap)
-            return ModelLoader::tooLarge(doc->geometryBytes());
+        if (!meshModel(m, palette, materialOf, *doc, geometryBytes))
+            return ModelLoader::tooLarge(geometryBytes);
     }
 
-    // Scene graph from node 0; without one, every model at the origin.
+    // Scene graph from node 0; without one, every model at the origin. Each
+    // node is taken once (a group listing itself or a cycle adds nothing), and
+    // pushes and document nodes are capped.
     if (nodes.count(0)) {
         std::vector<std::pair<int, int>> stack{{0, -1}};
-        int guard = 0;
-        while (!stack.empty() && ++guard < 1 << 20) {
+        size_t pushes = 1;
+        bool truncated = false;
+        auto push = [&](int id, int parent) {
+            if (pushes >= kMaxVoxSceneNodes) {
+                truncated = true;
+                return;
+            }
+            ++pushes;
+            stack.emplace_back(id, parent);
+        };
+        while (!stack.empty()) {
             const auto [nid, parent] = stack.back();
             stack.pop_back();
             const auto it = nodes.find(nid);
-            if (it == nodes.end())
+            if (it == nodes.end() || it->second.visited)
                 continue;
-            const VoxNode &n = it->second;
+            VoxNode &n = it->second;
+            n.visited = true;
             switch (n.kind) {
             case VoxNode::Kind::Transform: {
                 if (n.hidden || (n.layer >= 0 && hiddenLayers.count(n.layer)))
                     break;
+                if (doc->nodes.size() >= kMaxVoxSceneNodes) {
+                    truncated = true;
+                    break;
+                }
                 ModelNode node;
                 node.name = n.name;
                 node.parent = parent;
@@ -1054,17 +1151,21 @@ Result loadVox(QByteArrayView bytes, const std::atomic_bool &cancel)
                 node.matrix = n.local;
                 const int self = int(doc->nodes.size());
                 doc->nodes.push_back(node);
-                stack.emplace_back(n.child, self);
+                push(n.child, self);
                 break;
             }
             case VoxNode::Kind::Group:
                 for (auto c = n.children.rbegin(); c != n.children.rend(); ++c)
-                    stack.emplace_back(*c, parent);
+                    push(*c, parent);
                 break;
             case VoxNode::Kind::Shape:
                 for (int model : n.models) {
                     if (model < 0 || model >= int(doc->meshes.size()))
                         continue;
+                    if (doc->nodes.size() >= kMaxVoxSceneNodes) {
+                        truncated = true;
+                        break;
+                    }
                     ModelNode node;
                     node.parent = parent;
                     node.mesh = model;
@@ -1073,6 +1174,8 @@ Result loadVox(QByteArrayView bytes, const std::atomic_bool &cancel)
                 break;
             }
         }
+        if (truncated)
+            doc->warnings << QObject::tr("the scene graph is too large; only part of it is shown");
     }
     if (std::none_of(doc->nodes.begin(), doc->nodes.end(), [](const ModelNode &n) { return n.mesh >= 0; })) {
         doc->nodes.clear();

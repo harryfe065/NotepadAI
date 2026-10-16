@@ -14,13 +14,13 @@ namespace {
 
 constexpr char kDigits[] = "0123456789ABCDEF";
 
+} // namespace
+
 const QString &separator()
 {
     static const QString s = QStringLiteral("  ·  ");
     return s;
 }
-
-} // namespace
 
 int offsetDigits(qint64 size)
 {
@@ -46,29 +46,43 @@ int hexColumnPos(int i)
     return i * 3 + i / 8;
 }
 
-QString hexColumn(QByteArrayView row, int bytesPerRow)
+void splitByClass(QByteArrayView row, int bytesPerRow, ClassRuns &runs)
 {
-    QString out(hexColumnWidth(bytesPerRow), QLatin1Char(' '));
-    QChar *p = out.data();
+    const int hexWidth = hexColumnWidth(bytesPerRow);
+    for (int c = 0; c < kByteClasses; ++c) {
+        runs.hex[c].fill(QLatin1Char(' '), hexWidth);
+        runs.ascii[c].fill(QLatin1Char(' '), bytesPerRow);
+        runs.used[c] = false;
+    }
     const qsizetype n = std::min<qsizetype>(row.size(), bytesPerRow);
     for (qsizetype i = 0; i < n; ++i) {
         const auto b = quint8(row[i]);
+        const ByteClass cls = classify(b);
+        const int c = int(cls);
+        runs.used[c] = true;
+        QChar *hex = runs.hex[c].data();
         const int at = hexColumnPos(int(i));
-        p[at] = QLatin1Char(kDigits[b >> 4]);
-        p[at + 1] = QLatin1Char(kDigits[b & 0xF]);
+        hex[at] = QLatin1Char(kDigits[b >> 4]);
+        hex[at + 1] = QLatin1Char(kDigits[b & 0xF]);
+        runs.ascii[c].data()[i] = cls == ByteClass::Printable ? QLatin1Char(char(b)) : QLatin1Char('.');
+    }
+}
+
+QString hexHeader(int bytesPerRow)
+{
+    QString out(hexColumnWidth(bytesPerRow), QLatin1Char(' '));
+    for (int i = 0; i < bytesPerRow; ++i) {
+        out[hexColumnPos(i)] = QLatin1Char(kDigits[(i >> 4) & 0xF]);
+        out[hexColumnPos(i) + 1] = QLatin1Char(kDigits[i & 0xF]);
     }
     return out;
 }
 
-QString asciiColumn(QByteArrayView row, int bytesPerRow)
+QString asciiHeader(int bytesPerRow)
 {
     QString out(bytesPerRow, QLatin1Char(' '));
-    QChar *p = out.data();
-    const qsizetype n = std::min<qsizetype>(row.size(), bytesPerRow);
-    for (qsizetype i = 0; i < n; ++i) {
-        const auto b = quint8(row[i]);
-        p[i] = classify(b) == ByteClass::Printable ? QLatin1Char(char(b)) : QLatin1Char('.');
-    }
+    for (int i = 0; i < bytesPerRow; ++i)
+        out[i] = QLatin1Char(kDigits[i & 0xF]);
     return out;
 }
 

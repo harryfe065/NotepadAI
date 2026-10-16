@@ -63,6 +63,23 @@ qint64 HexSource::read(qint64 offset, char *out, qint64 len)
     const qint64 first = offset / kPageBytes;
     const qint64 last = (offset + len - 1) / kPageBytes;
 
+    // A request wider than half the cache is served in page-aligned slices:
+    // loading all its missing pages at once could evict pages of the same
+    // request (a 16 MB copy against a 4 MB cache).
+    constexpr qint64 kSlicePages = kMaxPages / 2;
+    if (last - first + 1 > kSlicePages) {
+        qint64 copied = 0;
+        while (copied < len) {
+            const qint64 at = offset + copied;
+            const qint64 slice = std::min(len - copied, kSlicePages * kPageBytes - at % kPageBytes);
+            const qint64 got = read(at, out + copied, slice);
+            if (got <= 0)
+                break;
+            copied += got;
+        }
+        return copied;
+    }
+
     // One reader call for the run of missing pages (usually one or two).
     qint64 missingFirst = -1, missingLast = -1;
     for (qint64 index = first; index <= last; ++index) {
@@ -71,19 +88,6 @@ qint64 HexSource::read(qint64 offset, char *out, qint64 len)
                 missingFirst = index;
             missingLast = index;
         }
-    }
-    // A request wider than the cache can still be served: it is loaded and
-    // copied in cache-sized slices.
-    if (missingFirst >= 0 && missingLast - missingFirst + 1 > kMaxPages) {
-        qint64 copied = 0;
-        while (copied < len) {
-            const qint64 slice = std::min(len - copied, kPageBytes * (kMaxPages / 2));
-            const qint64 got = read(offset + copied, out + copied, slice);
-            if (got <= 0)
-                break;
-            copied += got;
-        }
-        return copied;
     }
     if (missingFirst >= 0 && !load(missingFirst, missingLast))
         return 0;

@@ -9,6 +9,7 @@
 #include <QtEndian>
 
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 // File format: https://github.com/aseprite/aseprite/blob/main/docs/ase-file-specs.md
@@ -35,6 +36,17 @@ constexpr quint32 kHeaderLayerUuid = 4;
 constexpr quint16 kLayerVisible = 1;
 constexpr quint16 kLayerBackground = 8;
 constexpr quint16 kLayerReference = 64; // tracing aid, never exported
+
+// Tag names are shown in the frame label: one name is cut at this length and
+// all frame labels together stop growing past kMaxTagChars.
+constexpr int kMaxTagNameChars = 256;
+constexpr qint64 kMaxTagChars = qint64(1) << 20;
+
+static_assert(quint64(ImageDecoder::kMaxDecodedBytes) <= std::numeric_limits<mz_ulong>::max(),
+              "inflate lengths must fit miniz's length type");
+
+using ImageDecoder::addSat;
+using ImageDecoder::mulSat;
 
 // Bounds-checked little-endian reader; any overrun clears `ok` and reads 0.
 struct Reader {
@@ -108,6 +120,12 @@ bool readHeader(QByteArrayView data, Header &h)
     return r.ok && h.width > 0 && h.height > 0 && h.frames > 0 && (h.depth == 32 || h.depth == 16 || h.depth == 8);
 }
 
+// The composed frames (ARGB32, all of them); 16-bit fields, cannot overflow.
+qint64 framesBytes(const Header &h)
+{
+    return qint64(h.width) * h.height * 4 * h.frames;
+}
+
 struct Layer {
     quint16 flags = 0;
     quint16 type = 0; // 0 image, 1 group, 2 tilemap
@@ -163,19 +181,28 @@ QImage toImage(const uchar *src, int w, int h, int depth, const std::vector<quin
             }
         }
     }
-    return straight.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    // In place: no second full-size buffer.
+    return std::move(straight).convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
-bool inflateTo(const uchar *src, qsizetype srcLen, QByteArray &out, qsizetype expected)
+// Inflates exactly `expected` bytes into `out`. Callers check `expected`
+// against the memory budget; anything non-positive or past the cap (so past
+// miniz's length type) is refused rather than truncated.
+bool inflateTo(const uchar *src, qsizetype srcLen, QByteArray &out, qint64 expected)
 {
-    out.resize(expected);
-    mz_ulong len = mz_ulong(expected);
+    if (expected <= 0 || expected > ImageDecoder::kMaxDecodedBytes || srcLen < 0
+        || quint64(srcLen) > std::numeric_limits<mz_ulong>::max())
+        return false;
+    out.resize(qsizetype(expected));
+    if (out.size() != expected)
+        return false;
+    mz_ulong len = mz_ulong(out.size());
     const int rc = mz_uncompress(reinterpret_cast<unsigned char *>(out.data()), &len, src, mz_ulong(srcLen));
     // A cel stream may end a few bytes short of a full image in old files;
     // accept that (rest stays zero) but not a corrupt stream.
     if (rc != MZ_OK && rc != MZ_BUF_ERROR)
         return false;
-    if (qsizetype(len) < expected)
+    if (qsizetype(len) < out.size())
         std::fill(out.begin() + qsizetype(len), out.end(), '\0');
     return true;
 }
@@ -195,14 +222,54 @@ QPainter::CompositionMode compositionFor(quint16 blend)
     case 10: return QPainter::CompositionMode_Difference;
     case 11: return QPainter::CompositionMode_Exclusion;
     case 16: return QPainter::CompositionMode_Plus;
-    // Hue/Saturation/Color/Luminosity, Subtract, Divide: no raster-engine
-    // equivalent; drawn as Normal.
+    // Subtract and Divide are drawn by blendSeparable; Hue / Saturation /
+    // Color / Luminosity (non-separable) have no raster-engine equivalent and
+    // are drawn as Normal.
     default: return QPainter::CompositionMode_SourceOver;
     }
 }
 
+constexpr quint16 kBlendSubtract = 17;
+constexpr quint16 kBlendDivide = 18;
+
+// Separable blend modes QPainter lacks (W3C compositing: the blended colour
+// B(Cb, Cs) mixes in by the backdrop alpha, then source-over). `canvas` and
+// `src` are premultiplied ARGB32.
+void blendSeparable(QImage &canvas, const QImage &src, int ox, int oy, int opacity, quint16 mode)
+{
+    const QRect area = QRect(ox, oy, src.width(), src.height()) & canvas.rect();
+    for (int y = area.top(); y <= area.bottom(); ++y) {
+        auto *d = reinterpret_cast<quint32 *>(canvas.scanLine(y));
+        const auto *s = reinterpret_cast<const quint32 *>(src.constScanLine(y - oy));
+        for (int x = area.left(); x <= area.right(); ++x) {
+            const QRgb sp = s[x - ox];
+            const int sa = qAlpha(sp) * opacity / 255;
+            if (sa == 0)
+                continue;
+            const QRgb dp = d[x];
+            const int da = qAlpha(dp);
+            int out[3];
+            for (int ch = 0; ch < 3; ++ch) {
+                const int shift = 16 - ch * 8;
+                // Unpremultiplied channels, 0..255.
+                const int cs = qAlpha(sp) ? int((sp >> shift) & 0xFF) * 255 / qAlpha(sp) : 0;
+                const int cb = da ? int((dp >> shift) & 0xFF) * 255 / da : 0;
+                const int b = mode == kBlendSubtract ? std::max(0, cb - cs)
+                                                     : (cs == 0 ? 255 : std::min(255, cb * 255 / cs));
+                const int mixed = ((255 - da) * cs + da * b) / 255;         // Cs' = (1-ab)Cs + ab B
+                // Source-over in premultiplied form.
+                out[ch] = (mixed * sa + int((dp >> shift) & 0xFF) * (255 - sa)) / 255;
+            }
+            const int a = sa + da * (255 - sa) / 255;
+            d[x] = qRgba(out[0], out[1], out[2], a);
+        }
+    }
+}
+
 // Tilemap cel to an image: tiles blitted with their x/y/diagonal flips.
-QImage renderTilemap(const quint32 *ids, int cols, int rows, const Tileset &ts, quint32 idMask, quint32 xFlip,
+// `ids` is the inflated little-endian 32-bit tile array (cols x rows); the
+// caller has checked that the output fits the memory budget.
+QImage renderTilemap(const uchar *ids, int cols, int rows, const Tileset &ts, quint32 idMask, quint32 xFlip,
                      quint32 yFlip, quint32 dFlip)
 {
     const int tw = ts.tileW, th = ts.tileH;
@@ -211,9 +278,9 @@ QImage renderTilemap(const quint32 *ids, int cols, int rows, const Tileset &ts, 
     out.fill(0);
     for (int ty = 0; ty < rows; ++ty) {
         for (int tx = 0; tx < cols; ++tx) {
-            const quint32 v = ids[qsizetype(ty) * cols + tx];
+            const quint32 v = qFromLittleEndian<quint32>(ids + 4 * (qsizetype(ty) * cols + tx));
             const quint32 id = v & idMask;
-            if ((ts.zeroIsEmpty && id == 0) || (!ts.zeroIsEmpty && v == 0xffffffffu) || int(id) >= ts.count)
+            if ((ts.zeroIsEmpty && id == 0) || (!ts.zeroIsEmpty && v == 0xffffffffu) || id >= quint32(ts.count))
                 continue;
             const bool fx = v & xFlip, fy = v & yFlip, fd = v & dFlip;
             for (int y = 0; y < th; ++y) {
@@ -244,7 +311,7 @@ qint64 estimate(QByteArrayView data)
     Header h;
     if (!readHeader(data, h))
         return -1;
-    return qint64(h.width) * h.height * 4 * h.frames;
+    return framesBytes(h);
 }
 
 ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
@@ -252,7 +319,7 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
     Header hdr;
     if (!readHeader(data, hdr))
         return ImageDecoder::failed(QObject::tr("Not an Aseprite file."));
-    const qint64 needed = qint64(hdr.width) * hdr.height * 4 * hdr.frames;
+    const qint64 needed = framesBytes(hdr);
     if (needed > ImageDecoder::kMaxDecodedBytes)
         return ImageDecoder::tooLarge(needed);
 
@@ -266,6 +333,16 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
     for (int f = 0; f < hdr.frames; ++f)
         frameTags << QString();
     QByteArray scratch;
+    // Held until every frame is composed, against the one cap: the finished
+    // frames plus every decoded cel and tileset image (4 bytes a pixel).
+    qint64 celBytes = needed;
+    // Peak once one more image is decoded: what is held, the inflate buffer
+    // (it keeps its largest size) and the new image. Saturating.
+    auto peakWith = [&](qint64 inflated, qint64 decoded) {
+        return addSat(addSat(celBytes, std::max<qint64>(scratch.capacity(), inflated)), decoded);
+    };
+    qint64 tagChars = 0;
+    bool tagsSeen = false;
 
     auto findCel = [&cels](int frame, int layer) -> const Cel * {
         if (frame < 0 || frame >= int(cels.size())) return nullptr;
@@ -373,8 +450,8 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
             case kChunkTileset: {
                 const quint32 id = ch.u32();
                 const quint32 flags = ch.u32();
+                const quint32 count = ch.u32();
                 Tileset ts;
-                ts.count = int(ch.u32());
                 ts.tileW = ch.u16();
                 ts.tileH = ch.u16();
                 ch.s16();
@@ -382,29 +459,56 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
                 ch.string();
                 ts.zeroIsEmpty = (flags & 4) != 0;
                 if (flags & 1) ch.skip(8);
-                if ((flags & 2) && ts.tileW > 0 && ts.tileH > 0 && ts.count > 0) {
-                    const quint32 len = ch.u32();
-                    const qint64 tileBytes = qint64(ts.tileW) * ts.tileH * ts.count * bytesPerPixel(hdr.depth);
-                    if (ch.need(len) && tileBytes <= ImageDecoder::kMaxDecodedBytes
-                        && inflateTo(base + ch.pos, len, scratch, tileBytes))
-                        ts.tiles = toImage(reinterpret_cast<const uchar *>(scratch.constData()), ts.tileW,
-                                           ts.tileH * ts.count, hdr.depth, palette, hdr.transparentIndex, false);
-                }
-                if (!ts.tiles.isNull())
-                    tilesets.insert(id, ts);
+                if (!(flags & 2) || !ch.ok || ts.tileW == 0 || ts.tileH == 0 || count == 0)
+                    break;
+                const quint32 len = ch.u32();
+                // The sheet is tileW x (tileH * count). Within the budget the
+                // decoded size bounds every factor, so the sheet height fits
+                // an int (and QImage) once the check below passes.
+                const qint64 sheetH = qint64(ts.tileH) * count; // 16 x 32 bits
+                const qint64 pixels = mulSat(ts.tileW, sheetH);
+                const qint64 peak = peakWith(mulSat(pixels, bytesPerPixel(hdr.depth)), mulSat(pixels, 4));
+                if (peak > ImageDecoder::kMaxDecodedBytes)
+                    return ImageDecoder::tooLarge(peak);
+                ts.count = int(count);
+                if (!ch.need(len) || !inflateTo(base + ch.pos, len, scratch, pixels * bytesPerPixel(hdr.depth)))
+                    break;
+                ts.tiles = toImage(reinterpret_cast<const uchar *>(scratch.constData()), ts.tileW, int(sheetH),
+                                   hdr.depth, palette, hdr.transparentIndex, false);
+                if (ts.tiles.isNull())
+                    return ImageDecoder::tooLarge(peak);
+                if (const auto old = tilesets.constFind(id); old != tilesets.constEnd())
+                    celBytes -= old->tiles.sizeInBytes();
+                celBytes += ts.tiles.sizeInBytes();
+                tilesets.insert(id, ts);
                 break;
             }
             case kChunkTags: {
+                // Aseprite writes the tags once (first frame); a file repeating
+                // them in every frame would only multiply the labels.
+                if (tagsSeen)
+                    break;
+                tagsSeen = true;
                 const quint16 count = ch.u16();
                 ch.skip(8);
-                for (quint16 t = 0; t < count && ch.ok; ++t) {
+                for (quint16 t = 0; t < count && ch.ok && tagChars < kMaxTagChars; ++t) {
                     const int from = ch.u16(), to = ch.u16();
                     ch.u8();
                     ch.u16();
                     ch.skip(6 + 3 + 1);
-                    const QString name = ch.string();
-                    for (int f = from; f <= to && f < hdr.frames; ++f)
-                        frameTags[f] += frameTags[f].isEmpty() ? name : QStringLiteral(", ") + name;
+                    const QString name = ch.string().left(kMaxTagNameChars);
+                    if (name.isEmpty())
+                        continue;
+                    // Every pass counts at least 3 chars, so the budget also
+                    // bounds the loop (a tag can span 65535 frames).
+                    const int last = std::min(to, int(hdr.frames) - 1);
+                    for (int f = from; f <= last && tagChars < kMaxTagChars; ++f) {
+                        QString &label = frameTags[f];
+                        if (!label.isEmpty())
+                            label += QStringLiteral(", ");
+                        label += name;
+                        tagChars += name.size() + 2;
+                    }
                 }
                 break;
             }
@@ -423,9 +527,12 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
                 const bool background = (layer.flags & kLayerBackground) != 0;
                 if (celType == 0 || celType == 2) {
                     const int w = ch.u16(), h = ch.u16();
-                    const qint64 raw = qint64(w) * h * bytesPerPixel(hdr.depth);
-                    if (!ch.ok || w == 0 || h == 0 || raw > ImageDecoder::kMaxDecodedBytes)
+                    if (!ch.ok || w == 0 || h == 0)
                         break;
+                    const qint64 raw = qint64(w) * h * bytesPerPixel(hdr.depth); // 16 x 16 bits
+                    const qint64 peak = peakWith(celType == 2 ? raw : 0, qint64(w) * h * 4);
+                    if (peak > ImageDecoder::kMaxDecodedBytes)
+                        return ImageDecoder::tooLarge(peak);
                     const uchar *pixels = nullptr;
                     if (celType == 0) {
                         if (!ch.need(raw)) break;
@@ -450,18 +557,25 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
                     const auto ts = tilesets.constFind(layer.tileset);
                     if (!ch.ok || bits != 32 || cols == 0 || rows == 0 || ts == tilesets.constEnd())
                         break;
-                    const qint64 raw = qint64(cols) * rows * 4;
-                    if (raw > ImageDecoder::kMaxDecodedBytes
-                        || qint64(cols) * ts->tileW * rows * ts->tileH * 4 > ImageDecoder::kMaxDecodedBytes)
-                        break;
+                    const qint64 raw = qint64(cols) * rows * 4; // 16 x 16 bits
+                    // Each side is 16 x 16 bits; their product is not.
+                    const qint64 decoded = mulSat(mulSat(qint64(cols) * ts->tileW, qint64(rows) * ts->tileH), 4);
+                    const qint64 peak = peakWith(raw, decoded);
+                    if (peak > ImageDecoder::kMaxDecodedBytes)
+                        return ImageDecoder::tooLarge(peak);
                     if (!inflateTo(base + ch.pos, ch.size - ch.pos, scratch, raw)) break;
-                    std::vector<quint32> ids(size_t(cols) * rows);
-                    for (size_t i = 0; i < ids.size(); ++i)
-                        ids[i] = qFromLittleEndian<quint32>(scratch.constData() + 4 * i);
-                    cel.image = renderTilemap(ids.data(), cols, rows, *ts, idMask, xFlip, yFlip, dFlip);
+                    cel.image = renderTilemap(reinterpret_cast<const uchar *>(scratch.constData()), cols, rows, *ts,
+                                              idMask, xFlip, yFlip, dFlip);
                 }
-                if (!cel.image.isNull())
+                if (!cel.image.isNull()) {
+                    // Linked cels share their source's image; count the others.
+                    if (celType != 1) {
+                        celBytes += cel.image.sizeInBytes();
+                        if (celBytes > ImageDecoder::kMaxDecodedBytes)
+                            return ImageDecoder::tooLarge(celBytes);
+                    }
                     cels[size_t(frame)].push_back(std::move(cel));
+                }
                 break;
             }
             default:
@@ -506,12 +620,19 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
                 const int opacity = cel.opacity * layer.effectiveOpacity / 255;
                 if (opacity == 0)
                     continue;
+                if (layer.blendMode == kBlendSubtract || layer.blendMode == kBlendDivide) {
+                    p.end();
+                    blendSeparable(canvas, cel.image.convertToFormat(QImage::Format_ARGB32_Premultiplied), cel.x,
+                                   cel.y, opacity, layer.blendMode);
+                    p.begin(&canvas);
+                    continue;
+                }
                 p.setOpacity(opacity / 255.0);
                 p.setCompositionMode(compositionFor(layer.blendMode));
                 p.drawImage(cel.x, cel.y, cel.image);
             }
         }
-        doc->surfaces.push_back(canvas.convertToFormat(QImage::Format_ARGB32));
+        doc->surfaces.push_back(std::move(canvas).convertToFormat(QImage::Format_ARGB32)); // in place
     }
 
     doc->layerCount = hdr.frames;

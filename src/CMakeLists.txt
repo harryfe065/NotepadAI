@@ -736,6 +736,7 @@ target_link_libraries(NotepadAI PRIVATE Qt6::OpenGL cgltf ufbx fast_obj)
 target_sources(NotepadAI PRIVATE
     preview/tilemap/TileMapDocument.cpp preview/tilemap/TileMapDocument.h
     preview/tilemap/TileMapLoader.cpp preview/tilemap/TileMapLoader.h preview/tilemap/TileMapLoaderInternal.h
+    preview/tilemap/AssetFileUtil.h
     preview/tilemap/TiledLoader.cpp
     preview/tilemap/LdtkLoader.cpp
     preview/tilemap/TileMapCanvas.cpp preview/tilemap/TileMapCanvas.h
@@ -749,6 +750,7 @@ target_sources(NotepadAI PRIVATE
 # PDF viewers are the NotepadAIMedia plugin, loaded on first use (D1), so Qt
 # Multimedia and Qt Pdf never load at startup.
 target_sources(NotepadAI PRIVATE
+    preview/PaletteMix.h
     preview/media/MediaFormat.h
     preview/media/MediaPluginInterface.h
     preview/media/MediaPluginLoader.cpp preview/media/MediaPluginLoader.h
@@ -783,6 +785,7 @@ if(TARGET Qt6::Multimedia AND TARGET Qt6::MultimediaWidgets)
         preview/media/WaveformPeaks.cpp preview/media/WaveformPeaks.h
     )
     target_include_directories(NotepadAIMedia PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/media
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/media/plugin)
     target_link_libraries(NotepadAIMedia PRIVATE

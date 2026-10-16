@@ -42,6 +42,14 @@ inline QString bitrateText(qint64 bitsPerSecond)
     return QStringLiteral("%1 kbps").arg(qint64(bitsPerSecond / 1000));
 }
 
+// One playback volume (linear 0..1) for every audio and video tab of the
+// session, as a media player would. Header-inline: one instance per module.
+inline float &sessionVolume()
+{
+    static float volume = 0.8f;
+    return volume;
+}
+
 // File sizes as every asset info line shows them (ImageDecoder::formatBytes).
 inline QString bytesText(qint64 bytes)
 {

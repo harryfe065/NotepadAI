@@ -127,6 +127,15 @@ private:
     const TypeRegistration *findRegistration(const QString &filePath) const;
     // Content-sniff fallback of findRegistration for sniffExtensions.
     const TypeRegistration *sniffRegistration(const QString &filePath, const QString &suffixLower) const;
+
+    // sniffRegistration verdicts by path, valid while mtime and size match.
+    struct SniffVerdict {
+        qint64 modified = 0;
+        qint64 size = 0;
+        QString typeId;     // empty: no type claims the file
+    };
+    static constexpr qsizetype kMaxSniffCache = 512;
+    mutable QHash<QString, SniffVerdict> m_sniffCache;
     // Resolves an editor to its preview type: file-extension match first, then
     // Scintilla language-name fallback for unsaved buffers. Returns nullptr for
     // a wantsFilePath type on a buffer with no on-disk path (CSV/TSV need mmap),

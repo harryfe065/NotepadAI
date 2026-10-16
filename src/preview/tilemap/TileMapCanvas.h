@@ -6,9 +6,12 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
+#include <QLineF>
 #include <QTimer>
+#include <QVector>
 #include <QWidget>
 
+#include <utility>
 #include <vector>
 
 // Paints a TileMap::Document with zoom and pan on the CPU.
@@ -26,7 +29,10 @@
 //                 under 2 px there, so the exact pixels do not matter)
 //
 // Animated tiles are excluded from chunks and drawn live on top of their layer
-// (from level <= 2); objects, image layers and the grid are drawn per paint.
+// at levels <= 2, culled through the layer's animated-tile index. At coarser
+// levels, or when more than kMaxLiveAnimated could be on screen, the layer's
+// chunks bake their first frame instead (a separate chunk variant), so they
+// never vanish. Objects, image layers and the grid are drawn per paint.
 class TileMapCanvas : public QWidget
 {
     Q_OBJECT
@@ -78,6 +84,7 @@ private:
     static constexpr int kChunkImage = kChunkPx + 2 * kChunkPad;
     static constexpr qint64 kCacheBytes = qint64(192) << 20;
     static constexpr int kMaxLevel = 14;
+    static constexpr int kMaxLiveLevel = 2;      // animated tiles drawn live up to this level
 
     struct Chunk {
         QImage image;       // null = nothing in this chunk
@@ -89,7 +96,8 @@ private:
         std::vector<uint8_t> averageDone;
     };
 
-    static quint64 chunkKey(int layer, int level, int cx, int cy);
+    // `baked`: the variant with animated tiles' first frames drawn in.
+    static quint64 chunkKey(int layer, int level, bool baked, int cx, int cy);
     int levelForZoom() const;
     QPointF mapToView(const QPointF &p) const;
     QPointF viewToMap(const QPointF &p) const;
@@ -100,9 +108,9 @@ private:
     void resetCaches();
     double minZoom() const;
 
-    bool ensureChunk(int layerIndex, int level, int cx, int cy);
-    void renderChunk(Chunk &chunk, const TileMap::Layer &layer, int level, int cx, int cy);
-    void drawChunkInstance(QPainter &p, const TileMap::Instance &in, int level);
+    bool ensureChunk(int layerIndex, int level, bool baked, int cx, int cy);
+    void renderChunk(Chunk &chunk, const TileMap::Layer &layer, int level, bool baked, int cx, int cy);
+    void drawChunkInstance(QPainter &p, const TileMap::Instance &in, int tile, int level);
     const QImage &levelImage(size_t tileset, int level);
     uint32_t averageColor(size_t tileset, int tile);
     void evictChunks();
@@ -131,10 +139,17 @@ private:
     qint64 m_chunkBytes = 0;
     quint64 m_tick = 0;
     std::vector<TilesetCache> m_tilesetCache;
+    // Per-paint buffers, kept so a paint (every 33 ms while animating) does
+    // not allocate.
     std::vector<uint32_t> m_scratch;
+    std::vector<uint32_t> m_liveScratch;
+    std::vector<std::pair<int, int>> m_wanted;
+    std::vector<uint8_t> m_layerBaked;
+    QVector<QLineF> m_gridLines;
 
     QTimer m_animTimer;
     QElapsedTimer m_animClock;
+    bool m_liveShown = true;     // the last paint drew animated tiles live
 
     bool m_panning = false;
     QPointF m_lastPan;

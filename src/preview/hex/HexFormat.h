@@ -31,9 +31,23 @@ QString offsetText(qint64 offset, int digits);
 int hexColumnWidth(int bytesPerRow);
 // Character position of byte `i` in the hex column.
 int hexColumnPos(int i);
-// One row; bytes past `row` are blank, so every row has the same width.
-QString hexColumn(QByteArrayView row, int bytesPerRow);
-QString asciiColumn(QByteArrayView row, int bytesPerRow);
+// One row split by byte class for drawing: per class, the hex and ASCII
+// columns with that class's bytes in place and every other byte as spaces, so
+// each class is one text run per pane. Reuses the strings' storage.
+constexpr int kByteClasses = 4;
+struct ClassRuns {
+    QString hex[kByteClasses];
+    QString ascii[kByteClasses];
+    bool used[kByteClasses] = {};
+};
+void splitByClass(QByteArrayView row, int bytesPerRow, ClassRuns &runs);
+
+// The column header: byte numbers over the hex and ASCII panes.
+QString hexHeader(int bytesPerRow);
+QString asciiHeader(int bytesPerRow);
+
+// Info-line separator, shared by the hex tab.
+const QString &separator();
 
 // "0x1F", "1f" (hex by its letters), "4096", "+16", "-0x10" (relative to
 // `cursor`, clamped at 0). nullopt when it is not a number.

@@ -9,8 +9,8 @@ void WaveformPeaks::reset(int sampleRate, int channels)
     m_peaks.clear();
     m_rate = std::max(1, sampleRate);
     m_channels = std::max(1, channels);
-    m_framesPerBucket = std::max(1, m_rate / kBucketsPerSecond);
-    m_inBucket = 0;
+    m_bucket = 0;
+    m_bucketEnd = bucketStart(1);
     m_lo = 1.0f;
     m_hi = -1.0f;
     m_frames = 0;
@@ -29,7 +29,8 @@ void WaveformPeaks::flushBucket()
         }
         m_peaks.push_back(p);
     }
-    m_inBucket = 0;
+    ++m_bucket;
+    m_bucketEnd = bucketStart(m_bucket + 1);
     m_lo = 1.0f;
     m_hi = -1.0f;
 }
@@ -43,7 +44,7 @@ void WaveformPeaks::accumulate(qint64 frames, Sample sample)
     qint64 index = 0;
     qint64 left = frames;
     while (left > 0 && !m_truncated) {
-        const qint64 take = std::min<qint64>(left, m_framesPerBucket - m_inBucket);
+        const qint64 take = std::min<qint64>(left, m_bucketEnd - m_frames);
         const qint64 end = index + take * channels;
         float lo = m_lo, hi = m_hi;
         for (qint64 i = index; i < end; ++i) {
@@ -55,11 +56,12 @@ void WaveformPeaks::accumulate(qint64 frames, Sample sample)
         m_hi = hi;
         index = end;
         left -= take;
-        m_inBucket += int(take);
-        if (m_inBucket >= m_framesPerBucket)
+        m_frames += take;
+        if (m_frames >= m_bucketEnd)
             flushBucket();
     }
-    m_frames += frames;
+    // Frames past a truncated envelope still count toward the length.
+    m_frames += left;
 }
 
 void WaveformPeaks::add(const void *data, Format format, qint64 frames)
@@ -126,21 +128,32 @@ int WaveformPeaks::bytesPerSample(Format format)
 
 void WaveformPeaks::finish()
 {
-    if (m_inBucket > 0)
+    if (m_frames > bucketStart(m_bucket))
         flushBucket();
 }
 
-bool WaveformPeaks::range(qsizetype first, qsizetype last, float *lo, float *hi) const
+bool WaveformPeaks::fold(const Peak *peaks, qsizetype count, qsizetype first, qsizetype last, qint8 *lo,
+                         qint8 *hi)
 {
     first = std::max<qsizetype>(0, first);
-    last = std::min(last, size());
+    last = std::min(last, count);
     if (first >= last)
         return false;
     qint8 mn = 127, mx = -127;
     for (qsizetype i = first; i < last; ++i) {
-        mn = std::min(mn, m_peaks[size_t(i)].min);
-        mx = std::max(mx, m_peaks[size_t(i)].max);
+        mn = std::min(mn, peaks[i].min);
+        mx = std::max(mx, peaks[i].max);
     }
+    *lo = mn;
+    *hi = mx;
+    return true;
+}
+
+bool WaveformPeaks::range(qsizetype first, qsizetype last, float *lo, float *hi) const
+{
+    qint8 mn = 0, mx = 0;
+    if (!fold(m_peaks.data(), size(), first, last, &mn, &mx))
+        return false;
     *lo = float(mn) / 127.0f;
     *hi = float(mx) / 127.0f;
     return true;

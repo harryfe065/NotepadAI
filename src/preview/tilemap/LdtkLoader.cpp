@@ -6,7 +6,9 @@
 #include <QJsonDocument>
 #include <QObject>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 // LDtk (https://ldtk.io/json/). Every level's layers of one name are merged
 // into a single layer in world coordinates, so the layer toggles stay few even
@@ -62,23 +64,27 @@ void LdtkBuilder::readDefs(const QJsonObject &defs)
 {
     const QJsonArray tilesets = defs.value(QLatin1String("tilesets")).toArray();
     for (const QJsonValue &tv : tilesets) {
+        if (m_doc.tilesets.size() >= 30000)   // Instance::tileset is 16-bit
+            break;
         const QJsonObject t = tv.toObject();
         const int uid = jint(t, "uid", -1);
         const QString rel = jstr(t, "relPath");
         TilesetDef td;
-        td.grid = std::max(1, jint(t, "tileGridSize", 16));
-        td.padding = jint(t, "padding");
-        td.spacing = jint(t, "spacing");
+        // Clamped: the sheet arithmetic below divides by grid + spacing and
+        // must neither hit zero nor overflow on a crafted file.
+        td.grid = std::clamp(jint(t, "tileGridSize", 16), 1, kMaxTileSide);
+        td.padding = std::clamp(jint(t, "padding"), 0, kMaxGap);
+        td.spacing = std::clamp(jint(t, "spacing"), 0, kMaxGap);
 
         Tileset ts;
         ts.name = jstr(t, "identifier");
         ts.tileW = ts.tileH = td.grid;
         ts.margin = td.padding;
         ts.spacing = td.spacing;
-        int pxW = jint(t, "pxWid");
-        int pxH = jint(t, "pxHei");
+        int pxW = std::clamp(jint(t, "pxWid"), 0, 1 << 20);
+        int pxH = std::clamp(jint(t, "pxHei"), 0, 1 << 20);
         if (!rel.isEmpty()) {
-            ts.image = m_ctx.loadImage(QDir(m_ctx.baseDir).absoluteFilePath(rel));
+            ts.image = m_ctx.loadImage(m_ctx.resolve(m_ctx.baseDir, rel));
             td.loaded = !ts.image.isNull();
             if (td.loaded) {
                 pxW = ts.image.width();
@@ -87,9 +93,11 @@ void LdtkBuilder::readDefs(const QJsonObject &defs)
         } else {
             m_ctx.warnings << QObject::tr("Tileset \"%1\" is embedded in the project and cannot be shown.").arg(ts.name);
         }
-        td.columns = std::max(1, (pxW - 2 * td.padding + td.spacing) / (td.grid + td.spacing));
+        const int step = td.grid + td.spacing;   // >= 1
+        td.columns = std::max(1, (pxW - 2 * td.padding + td.spacing) / step);
         ts.columns = td.columns;
-        ts.tileCount = td.columns * std::max(1, (pxH - 2 * td.padding + td.spacing) / (td.grid + td.spacing));
+        const int rows = std::max(1, (pxH - 2 * td.padding + td.spacing) / step);
+        ts.tileCount = int(std::min<qint64>(qint64(td.columns) * rows, kMaxInstances));
         td.index = int(m_doc.tilesets.size());
         m_doc.tilesets.push_back(std::move(ts));
         m_tilesetByUid.insert(uid, td);
@@ -128,7 +136,14 @@ Layer &LdtkBuilder::layerFor(const QString &name, Layer::Kind kind)
 void LdtkBuilder::addTiles(Layer &layer, const QJsonArray &tiles, const TilesetDef &td, int tilesetIndex,
                            QPointF origin, QPointF offset)
 {
+    // Refuse before allocating when the layer would pass the cap (the caller
+    // reports it).
+    if (qint64(tiles.size()) > m_ctx.instanceBudget()) {
+        m_ctx.instances += tiles.size();
+        return;
+    }
     layer.instances.reserve(layer.instances.size() + size_t(tiles.size()));
+    const int step = td.grid + td.spacing;   // >= 1, clamped in readDefs
     int poll = 0;
     for (const QJsonValue &tv : tiles) {
         if ((++poll & kPollMask) == 0 && m_ctx.cancelled())
@@ -143,11 +158,17 @@ void LdtkBuilder::addTiles(Layer &layer, const QJsonArray &tiles, const TilesetD
         in.x = float(origin.x() + offset.x() + px.at(0).toDouble());
         in.y = float(origin.y() + offset.y() + px.at(1).toDouble());
         if (td.loaded && tilesetIndex >= 0) {
-            const int col = (int(src.at(0).toDouble()) - td.padding) / (td.grid + td.spacing);
-            const int row = (int(src.at(1).toDouble()) - td.padding) / (td.grid + td.spacing);
+            // In double first: src comes from the file and may be anything.
+            const double sx = (src.at(0).toDouble() - td.padding) / step;
+            const double sy = (src.at(1).toDouble() - td.padding) / step;
+            if (!(sx >= 0 && sy >= 0 && sx < td.columns && sy < double(kMaxInstances)))
+                continue;
+            const qint64 id = qint64(sy) * td.columns + qint64(sx);
+            if (id > std::numeric_limits<int32_t>::max())
+                continue;
             const Tileset &ts = m_doc.tilesets[static_cast<size_t>(tilesetIndex)];
             in.tileset = int16_t(tilesetIndex);
-            in.tile = row * td.columns + col;
+            in.tile = int32_t(id);
             if (ts.sheetRect(in.tile).isEmpty())
                 continue;
         } else {
@@ -165,9 +186,13 @@ void LdtkBuilder::addTiles(Layer &layer, const QJsonArray &tiles, const TilesetD
 void LdtkBuilder::addIntGrid(Layer &layer, const QJsonObject &li, int layerUid, QPointF origin, QPointF offset)
 {
     const QJsonArray csv = li.value(QLatin1String("intGridCsv")).toArray();
-    const int cw = jint(li, "__cWid"), grid = std::max(1, jint(li, "__gridSize", 16));
+    const int cw = jint(li, "__cWid"), grid = std::clamp(jint(li, "__gridSize", 16), 1, kMaxTileSide);
     if (cw <= 0)
         return;
+    if (qint64(csv.size()) > m_ctx.instanceBudget()) {
+        m_ctx.instances += csv.size();
+        return;
+    }
     const QHash<int, QColor> colors = m_intColors.value(layerUid);
     for (qsizetype i = 0; i < csv.size(); ++i) {
         const int v = csv.at(i).toInt();
@@ -217,12 +242,12 @@ void LdtkBuilder::addLevel(const QJsonObject &levelIn, QPointF origin)
     QJsonObject level = levelIn;
     const QString external = jstr(level, "externalRelPath");
     if (level.value(QLatin1String("layerInstances")).isNull() && !external.isEmpty()) {
-        const QString path = QDir(m_ctx.baseDir).absoluteFilePath(external);
+        const QString path = m_ctx.resolve(m_ctx.baseDir, external);
         const QJsonObject loaded = QJsonDocument::fromJson(m_ctx.readFile(path)).object();
-        if (loaded.isEmpty())
-            m_ctx.warnings << QObject::tr("Level file not found: %1").arg(QDir::toNativeSeparators(path));
-        else
+        if (!loaded.isEmpty())
             level = loaded;
+        else if (!path.isEmpty())
+            m_ctx.warnings << QObject::tr("Level file not found: %1").arg(QDir::toNativeSeparators(path));
     }
 
     Level frame;
@@ -235,7 +260,7 @@ void LdtkBuilder::addLevel(const QJsonObject &levelIn, QPointF origin)
 
     const QString bgRel = jstr(level, "bgRelPath");
     if (!bgRel.isEmpty()) {
-        const QImage img = m_ctx.loadImage(QDir(m_ctx.baseDir).absoluteFilePath(bgRel));
+        const QImage img = m_ctx.loadImage(m_ctx.resolve(m_ctx.baseDir, bgRel));
         if (!img.isNull()) {
             Layer &bg = layerFor(QObject::tr("Level backgrounds"), Layer::Kind::Image);
             // One image per level: stash as extra objects would lose the pixels,
@@ -321,10 +346,11 @@ bool LdtkBuilder::build(const QJsonObject &root, bool singleLevelFile)
     for (const QJsonObject &level : levels) {
         if (m_ctx.cancelled())
             return false;
+        // Linear layouts store worldX / worldY as -1: the levels are a row or
+        // a column in file order.
         QPointF origin(jnum(level, "worldX"), jnum(level, "worldY"));
-        if (linear && !level.value(QLatin1String("worldX")).isDouble()) {
+        if (linear)
             origin = horizontal ? QPointF(cursor, 0) : QPointF(0, cursor);
-        }
         cursor += (horizontal ? jnum(level, "pxWid") : jnum(level, "pxHei")) + 16;
         addLevel(level, origin);
         if (m_ctx.instances > kMaxInstances) {

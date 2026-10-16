@@ -72,6 +72,9 @@ Document parse(const QByteArray &bytes);
 // A standalone sfnt for one face, for QRawFont. Shares Document::data when
 // the file is already a single sfnt.
 QByteArray faceData(const Document &doc, int faceIndex);
+// The standalone sfnt of a collection face from the collection bytes and the
+// face's tables (O(face tables); safe on any thread).
+QByteArray buildFace(const QByteArray &collection, const QVector<Table> &tables);
 
 // Head sniffer: sfnt (0x00010000, OTTO, true), ttcf and wOFF. WOFF 2 is not
 // claimed; it is reported only when opened by extension.

@@ -1,4 +1,5 @@
 #include "GlyphGridView.h"
+#include "PaletteMix.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -16,12 +17,6 @@
 namespace {
 
 constexpr int kLabelHeight = 14;
-
-QColor mix(const QColor &a, const QColor &b, double t)
-{
-    return QColor::fromRgbF(float(a.redF() * (1 - t) + b.redF() * t), float(a.greenF() * (1 - t) + b.greenF() * t),
-                            float(a.blueF() * (1 - t) + b.blueF() * t));
-}
 
 } // namespace
 
@@ -129,7 +124,7 @@ void GlyphGridView::paintEvent(QPaintEvent *event)
     const QColor base = pal.color(QPalette::Base);
     const QColor text = pal.color(QPalette::Text);
     const QColor muted = pal.color(QPalette::PlaceholderText);
-    const QColor grid = mix(text, base, 0.88);
+    const QColor grid = paletteMix(text, base, 0.88);
     p.fillRect(event->rect(), base);
     if (m_cells.empty() || !m_glyphFont.isValid())
         return;

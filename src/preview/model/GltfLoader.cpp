@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <unordered_map>
@@ -58,6 +59,60 @@ cgltf_result readBufferFile(const cgltf_memory_options *, const cgltf_file_optio
     return cgltf_result_success;
 }
 
+// A percent-decoded relative buffer URI that stays inside the model's
+// folder tree: no absolute, rooted or UNC path, no drive, scheme or stream
+// (':'), no ".." above the folder, and no name Windows would trim ("...",
+// "a. "), so the lexical check is the one the file system applies.
+bool staysInModelFolder(QByteArrayView uri)
+{
+    if (uri.isEmpty() || uri[0] == '/' || uri[0] == '\\' || std::find(uri.begin(), uri.end(), ':') != uri.end())
+        return false;
+    int depth = 0;
+    qsizetype start = 0;
+    for (qsizetype i = 0; i <= uri.size(); ++i) {
+        if (i < uri.size() && uri[i] != '/' && uri[i] != '\\')
+            continue;
+        const QByteArrayView segment = uri.sliced(start, i - start);
+        start = i + 1;
+        if (segment.isEmpty() || segment == ".")
+            continue;
+        if (segment == "..") {
+            if (--depth < 0)
+                return false;
+            continue;
+        }
+        const char last = segment[segment.size() - 1];
+        if (last == '.' || last == ' ')
+            return false;
+        ++depth;
+    }
+    return true;
+}
+
+// Buffer URIs before cgltf follows them: external files inside the model's
+// folder only, and a data URI cannot claim more bytes than its payload
+// holds (cgltf allocates byteLength before decoding). Empty when fine.
+QString checkBufferUris(const cgltf_data *data)
+{
+    for (size_t i = 0; i < data->buffers_count; ++i) {
+        const cgltf_buffer &b = data->buffers[i];
+        if (b.data || !b.uri)
+            continue;
+        if (std::strncmp(b.uri, "data:", 5) == 0) {
+            const char *comma = std::strchr(b.uri, ',');
+            if (comma && b.size > std::strlen(comma + 1) / 4 * 3 + 2)
+                return QObject::tr("buffer %1 is shorter than its byteLength").arg(i);
+            continue;
+        }
+        QByteArray uri(b.uri);
+        uri.truncate(qsizetype(cgltf_decode_uri(uri.data())));
+        uri.truncate(qsizetype(std::strlen(uri.constData()))); // an encoded NUL ends the path that is opened
+        if (!staysInModelFolder(uri))
+            return QObject::tr("buffer \"%1\" is outside the model's folder").arg(QString::fromUtf8(b.uri));
+    }
+    return QString();
+}
+
 void releaseBufferFile(const cgltf_memory_options *, const cgltf_file_options *fileOptions, void *data)
 {
     static_cast<BufferFiles *>(fileOptions->user_data)->held.erase(data);
@@ -84,17 +139,83 @@ QMatrix4x4 fromColumnMajor(const float *m)
                       m[15]);
 }
 
-// Calls fn(i, v) for every element; v holds the element's components as
-// floats (normalized integers converted). Tightly packed float data is read
-// straight from the buffer.
-template <typename Fn>
-void forEachFloat(const cgltf_accessor *acc, Fn &&fn)
+// a * b + c; false when it overflows.
+bool mulAdd(size_t a, size_t b, size_t c, size_t &out)
 {
-    const size_t count = acc->count;
+    if (b != 0 && a > (std::numeric_limits<size_t>::max() - c) / b)
+        return false;
+    out = a * b + c;
+    return true;
+}
+
+// `count` elements of `elem` bytes, `stride` apart from `offset`, end within
+// `size` bytes. Overflow-safe (cgltf_validate's own sum wraps).
+bool rangeFits(size_t offset, size_t count, size_t stride, size_t elem, size_t size)
+{
+    if (offset > size)
+        return false;
+    if (count == 0)
+        return true;
+    size_t span = 0;
+    return mulAdd(count - 1, stride, elem, span) && span <= size - offset;
+}
+
+// Every buffer view inside its buffer, every accessor (and sparse part)
+// inside its view, and no accessor decoding to more floats than the geometry
+// cap, so no count from the JSON can drive a read, an allocation or a loop
+// past the data. Runs before cgltf_validate, which scans index data. Empty on
+// success; *tooLargeBytes is set for an oversized accessor.
+QString checkBounds(const cgltf_data *data, quint64 *tooLargeBytes)
+{
+    for (size_t i = 0; i < data->buffer_views_count; ++i) {
+        const cgltf_buffer_view &view = data->buffer_views[i];
+        if (view.buffer && !rangeFits(view.offset, 1, 0, view.size, view.buffer->size))
+            return QObject::tr("buffer view %1 runs past its buffer").arg(i);
+    }
+    for (size_t i = 0; i < data->accessors_count; ++i) {
+        const cgltf_accessor &acc = data->accessors[i];
+        const size_t elem = cgltf_calc_size(acc.type, acc.component_type);
+        const size_t comps = cgltf_num_components(acc.type);
+        if (elem == 0 || comps == 0)
+            return QObject::tr("accessor %1 has an invalid type").arg(i);
+        if (acc.buffer_view && !rangeFits(acc.offset, acc.count, acc.stride, elem, acc.buffer_view->size))
+            return QObject::tr("accessor %1 runs past its buffer view").arg(i);
+        if (acc.is_sparse) {
+            const cgltf_accessor_sparse &s = acc.sparse;
+            const size_t indexSize = cgltf_component_size(s.indices_component_type);
+            // cgltf steps through sparse values by the accessor's stride.
+            if (s.count > acc.count || !s.indices_buffer_view || !s.values_buffer_view
+                || (indexSize != 1 && indexSize != 2 && indexSize != 4)
+                || !rangeFits(s.indices_byte_offset, s.count, indexSize, indexSize, s.indices_buffer_view->size)
+                || !rangeFits(s.values_byte_offset, s.count, acc.stride, elem, s.values_buffer_view->size))
+                return QObject::tr("sparse accessor %1 runs past its buffer view").arg(i);
+        }
+        // Accessors without a buffer view are zero-filled: only this bounds them.
+        const size_t perElement = comps * sizeof(float);
+        if (acc.count > size_t(ModelLoader::kMaxGeometryBytes) / perElement) {
+            size_t bytes = 0;
+            *tooLargeBytes = mulAdd(acc.count, perElement, 0, bytes) ? quint64(bytes)
+                                                                       : std::numeric_limits<quint64>::max();
+            return QString();
+        }
+    }
+    return QString();
+}
+
+// Calls fn(i, v) for the first min(count, limit) elements; v holds the
+// element's components as floats (normalized integers converted). Tightly
+// packed float data is read straight from the buffer. Accessors are bounds
+// checked up front (checkBounds).
+template <typename Fn>
+void forEachFloat(const cgltf_accessor *acc, Fn &&fn, size_t limit = std::numeric_limits<size_t>::max())
+{
+    const size_t count = std::min<size_t>(acc->count, limit);
     const size_t comps = std::min<size_t>(cgltf_num_components(acc->type), 16);
     float v[16] = {};
-    if (acc->is_sparse || !acc->buffer_view || !cgltf_buffer_view_data(acc->buffer_view)) {
-        std::vector<float> all(count * comps);
+    if (acc->is_sparse) {
+        // Sparse values may land on any element: unpack the whole accessor
+        // (its count is capped by checkBounds).
+        std::vector<float> all(acc->count * comps);
         cgltf_accessor_unpack_floats(acc, all.data(), all.size());
         for (size_t i = 0; i < count; ++i) {
             std::copy_n(all.data() + i * comps, comps, v);
@@ -102,8 +223,15 @@ void forEachFloat(const cgltf_accessor *acc, Fn &&fn)
         }
         return;
     }
+    const uint8_t *data = acc->buffer_view ? cgltf_buffer_view_data(acc->buffer_view) : nullptr;
+    if (!data) {
+        // No buffer view: zeros (glTF), without allocating them.
+        for (size_t i = 0; i < count; ++i)
+            fn(i, static_cast<const float *>(v));
+        return;
+    }
     if (acc->component_type == cgltf_component_type_r_32f) {
-        const uint8_t *base = cgltf_buffer_view_data(acc->buffer_view) + acc->offset;
+        const uint8_t *base = data + acc->offset;
         const size_t stride = acc->stride;
         for (size_t i = 0; i < count; ++i) {
             std::memcpy(v, base + i * stride, comps * sizeof(float));
@@ -118,14 +246,15 @@ void forEachFloat(const cgltf_accessor *acc, Fn &&fn)
 }
 
 template <typename Fn>
-void forEachUint4(const cgltf_accessor *acc, Fn &&fn)
+void forEachUint4(const cgltf_accessor *acc, Fn &&fn, size_t limit = std::numeric_limits<size_t>::max())
 {
+    const size_t count = std::min<size_t>(acc->count, limit);
     cgltf_uint v[4] = {0, 0, 0, 0};
     if (!acc->is_sparse && acc->buffer_view && cgltf_buffer_view_data(acc->buffer_view)) {
         const uint8_t *base = cgltf_buffer_view_data(acc->buffer_view) + acc->offset;
         const size_t stride = acc->stride;
         if (acc->component_type == cgltf_component_type_r_8u && acc->type == cgltf_type_vec4) {
-            for (size_t i = 0; i < acc->count; ++i) {
+            for (size_t i = 0; i < count; ++i) {
                 const uint8_t *p = base + i * stride;
                 v[0] = p[0]; v[1] = p[1]; v[2] = p[2]; v[3] = p[3];
                 fn(i, static_cast<const cgltf_uint *>(v));
@@ -133,7 +262,7 @@ void forEachUint4(const cgltf_accessor *acc, Fn &&fn)
             return;
         }
         if (acc->component_type == cgltf_component_type_r_16u && acc->type == cgltf_type_vec4) {
-            for (size_t i = 0; i < acc->count; ++i) {
+            for (size_t i = 0; i < count; ++i) {
                 quint16 s[4];
                 std::memcpy(s, base + i * stride, sizeof(s));
                 v[0] = s[0]; v[1] = s[1]; v[2] = s[2]; v[3] = s[3];
@@ -141,17 +270,17 @@ void forEachUint4(const cgltf_accessor *acc, Fn &&fn)
             }
             return;
         }
-        for (size_t i = 0; i < acc->count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             cgltf_accessor_read_uint(acc, i, v, 4);
             fn(i, static_cast<const cgltf_uint *>(v));
         }
         return;
     }
     forEachFloat(acc, [&](size_t i, const float *f) {
-        for (int c = 0; c < 4; ++c)
-            v[c] = cgltf_uint(std::max(0.0f, f[c]));
+        for (int c = 0; c < 4; ++c) // NaN and negatives to 0, never an out-of-range conversion
+            v[c] = f[c] > 0.0f ? cgltf_uint(std::min(f[c], 65535.0f)) : 0;
         fn(i, static_cast<const cgltf_uint *>(v));
-    });
+    }, limit);
 }
 
 enum class Conv : quint8 { None, List, Strip, Fan, LineStrip, LineLoop };
@@ -162,8 +291,10 @@ struct PrimJob {
     quint32 vertexOffset = 0;
     quint64 indexOffset = 0;
     quint32 vertexCount = 0;
-    quint32 sourceIndexCount = 0;
-    quint32 indexCount = 0;
+    // 64-bit: strip / fan / loop expansion of a large source cannot wrap
+    // before the geometry cap is checked.
+    quint64 sourceIndexCount = 0;
+    quint64 indexCount = 0;
     Conv conv = Conv::None;
     bool skinned = false;
 };
@@ -347,7 +478,7 @@ void Converter::buildNodes()
     std::vector<std::pair<const cgltf_node *, int>> stack;
     for (auto it = roots.rbegin(); it != roots.rend(); ++it)
         stack.emplace_back(*it, -1);
-    int instancesDropped = 0;
+    quint64 instancesDropped = 0;
     while (!stack.empty()) {
         const auto [src, parent] = stack.back();
         stack.pop_back();
@@ -387,22 +518,23 @@ void Converter::buildNodes()
             }
             const size_t count = t ? t->count : r ? r->count : s ? s->count : 0;
             const size_t kept = std::min<size_t>(count, kMaxInstances);
-            instancesDropped += int(count - kept);
+            instancesDropped += count - kept;
             const size_t first = m_doc.nodes.size();
             m_doc.nodes.resize(first + kept);
             for (size_t k = 0; k < kept; ++k) {
                 m_doc.nodes[first + k].parent = self;
                 m_doc.nodes[first + k].mesh = meshIndex;
             }
+            // Only the kept instances are read.
             if (t) forEachFloat(t, [&](size_t i, const float *v) {
-                if (i < kept) m_doc.nodes[first + i].translation = QVector3D(v[0], v[1], v[2]);
-            });
+                m_doc.nodes[first + i].translation = QVector3D(v[0], v[1], v[2]);
+            }, kept);
             if (r) forEachFloat(r, [&](size_t i, const float *v) {
-                if (i < kept) m_doc.nodes[first + i].rotation = QQuaternion(v[3], v[0], v[1], v[2]).normalized();
-            });
+                m_doc.nodes[first + i].rotation = QQuaternion(v[3], v[0], v[1], v[2]).normalized();
+            }, kept);
             if (s) forEachFloat(s, [&](size_t i, const float *v) {
-                if (i < kept) m_doc.nodes[first + i].scale = QVector3D(v[0], v[1], v[2]);
-            });
+                m_doc.nodes[first + i].scale = QVector3D(v[0], v[1], v[2]);
+            }, kept);
         } else {
             node.mesh = meshIndex;
             m_doc.nodes.push_back(std::move(node));
@@ -413,7 +545,8 @@ void Converter::buildNodes()
             stack.emplace_back(src->children[c], self);
     }
     if (instancesDropped > 0)
-        m_doc.warnings << QObject::tr("%n instance(s) beyond %1 per node not shown", nullptr, instancesDropped)
+        m_doc.warnings << QObject::tr("%n instance(s) beyond %1 per node not shown", nullptr,
+                                      int(std::min<quint64>(instancesDropped, std::numeric_limits<int>::max())))
                               .arg(kMaxInstances);
 }
 
@@ -433,9 +566,8 @@ void Converter::buildSkins()
         }
         if (src.inverse_bind_matrices && src.inverse_bind_matrices->type == cgltf_type_mat4) {
             forEachFloat(src.inverse_bind_matrices, [&](size_t i, const float *v) {
-                if (i < skin.inverseBind.size())
-                    skin.inverseBind[i] = fromColumnMajor(v);
-            });
+                skin.inverseBind[i] = fromColumnMajor(v);
+            }, skin.inverseBind.size());
         }
     }
 }
@@ -443,6 +575,8 @@ void Converter::buildSkins()
 void Converter::buildAnimations()
 {
     int morphChannels = 0;
+    quint64 floatBudget = quint64(ModelLoader::kMaxGeometryBytes) / sizeof(float);
+    bool tooMuchAnimation = false;
     for (size_t a = 0; a < m_data->animations_count; ++a) {
         const cgltf_animation &src = m_data->animations[a];
         ModelAnimation anim;
@@ -474,15 +608,21 @@ void Converter::buildAnimations()
             const size_t keys = ch.sampler->input->count;
             const size_t comps = out.path == ModelChannelPath::Rotation ? 4 : 3;
             const size_t perKey = out.interpolation == ModelInterpolation::CubicSpline ? 3 : 1;
-            if (keys == 0 || ch.sampler->output->count < keys * perKey)
+            if (keys == 0 || ch.sampler->output->count / perKey < keys)
                 continue;
+            // checkBounds capped each accessor; this caps them together.
+            const quint64 floats = quint64(keys) * (1 + perKey * comps);
+            if (floats > floatBudget) {
+                tooMuchAnimation = true;
+                continue;
+            }
+            floatBudget -= floats;
             out.times.resize(keys);
-            forEachFloat(ch.sampler->input, [&](size_t i, const float *v) { out.times[i] = v[0]; });
+            forEachFloat(ch.sampler->input, [&](size_t i, const float *v) { out.times[i] = v[0]; }, keys);
             out.values.resize(keys * perKey * comps);
             forEachFloat(ch.sampler->output, [&](size_t i, const float *v) {
-                if (i < keys * perKey)
-                    std::copy_n(v, comps, out.values.begin() + qsizetype(i * comps));
-            });
+                std::copy_n(v, comps, out.values.begin() + qsizetype(i * comps));
+            }, keys * perKey);
             anim.duration = std::max(anim.duration, out.times.back());
             anim.channels.push_back(std::move(out));
         }
@@ -491,6 +631,8 @@ void Converter::buildAnimations()
     }
     if (morphChannels > 0)
         m_doc.warnings << QObject::tr("morph target animation is not shown");
+    if (tooMuchAnimation)
+        m_doc.warnings << QObject::tr("some animation data is too large to show");
 }
 
 void Converter::convert(PrimJob &job) const
@@ -507,26 +649,26 @@ void Converter::convert(PrimJob &job) const
         switch (attr.type) {
         case cgltf_attribute_type_position:
             forEachFloat(acc, [&](size_t i, const float *v) {
-                if (i < n) { out[i].px = v[0]; out[i].py = v[1]; out[i].pz = v[2]; }
-            });
+                out[i].px = v[0]; out[i].py = v[1]; out[i].pz = v[2];
+            }, n);
             break;
         case cgltf_attribute_type_normal:
             forEachFloat(acc, [&](size_t i, const float *v) {
-                if (i < n) out[i].normal = ModelPack::normal(v[0], v[1], v[2]);
-            });
+                out[i].normal = ModelPack::normal(v[0], v[1], v[2]);
+            }, n);
             break;
         case cgltf_attribute_type_texcoord:
             if (attr.index == 0)
                 forEachFloat(acc, [&](size_t i, const float *v) {
-                    if (i < n) { out[i].u = v[0]; out[i].v = v[1]; }
-                });
+                    out[i].u = v[0]; out[i].v = v[1];
+                }, n);
             break;
         case cgltf_attribute_type_color:
             if (attr.index == 0) {
                 const bool rgba = acc->type == cgltf_type_vec4;
                 forEachFloat(acc, [&](size_t i, const float *v) {
-                    if (i < n) out[i].color = ModelPack::colorFromLinear(v[0], v[1], v[2], rgba ? v[3] : 1.0f);
-                });
+                    out[i].color = ModelPack::colorFromLinear(v[0], v[1], v[2], rgba ? v[3] : 1.0f);
+                }, n);
             }
             break;
         default:
@@ -540,66 +682,75 @@ void Converter::convert(PrimJob &job) const
         ModelSkinVertex *skin = m_doc.skin.data() + job.vertexOffset;
         std::vector<quint32> j(size_t(n) * 4, 0);
         forEachUint4(joints, [&](size_t i, const cgltf_uint *v) {
-            if (i < n) std::copy_n(v, 4, j.begin() + qsizetype(i * 4));
-        });
+            std::copy_n(v, 4, j.begin() + qsizetype(i * 4));
+        }, n);
         forEachFloat(weights, [&](size_t i, const float *v) {
-            if (i < n) skin[i] = ModelPack::skinVertex(j.data() + i * 4, v, 4);
-        });
+            skin[i] = ModelPack::skinVertex(j.data() + i * 4, v, 4);
+        }, n);
     }
 
     if (job.indexCount == 0)
         return;
+    // Writes stay inside [idx, idx + indexCount) and reads inside the
+    // source, whatever the counts: each loop is bounded by both.
     quint32 *idx = m_doc.indices.data() + job.indexOffset;
-    std::vector<quint32> src;
-    const quint32 *s = nullptr;
+    const quint64 total = job.indexCount;
     if (job.conv == Conv::List && p.indices) {
-        cgltf_accessor_unpack_indices(p.indices, idx, sizeof(quint32), job.indexCount);
+        cgltf_accessor_unpack_indices(p.indices, idx, sizeof(quint32), size_t(total));
     } else {
-        src.resize(job.sourceIndexCount);
+        std::vector<quint32> src(size_t(job.sourceIndexCount));
         if (p.indices)
             cgltf_accessor_unpack_indices(p.indices, src.data(), sizeof(quint32), src.size());
         else
             std::iota(src.begin(), src.end(), 0u);
-        s = src.data();
-        const quint32 m = job.sourceIndexCount;
+        const quint32 *s = src.data();
+        const size_t m = src.size();
         quint32 *o = idx;
         switch (job.conv) {
-        case Conv::Strip:
-            for (quint32 k = 0; k + 2 < m; ++k) {
+        case Conv::Strip: {
+            const size_t tris = std::min<quint64>(total / 3, m >= 3 ? m - 2 : 0);
+            for (size_t k = 0; k < tris; ++k) {
                 const bool odd = k & 1;
                 *o++ = s[odd ? k + 1 : k];
                 *o++ = s[odd ? k : k + 1];
                 *o++ = s[k + 2];
             }
             break;
-        case Conv::Fan:
-            for (quint32 k = 1; k + 1 < m; ++k) {
+        }
+        case Conv::Fan: {
+            const size_t tris = std::min<quint64>(total / 3, m >= 3 ? m - 2 : 0);
+            for (size_t k = 1; k <= tris; ++k) {
                 *o++ = s[k];
                 *o++ = s[k + 1];
                 *o++ = s[0];
             }
             break;
-        case Conv::LineStrip:
-            for (quint32 k = 0; k + 1 < m; ++k) {
+        }
+        case Conv::LineStrip: {
+            const size_t segments = std::min<quint64>(total / 2, m >= 2 ? m - 1 : 0);
+            for (size_t k = 0; k < segments; ++k) {
                 *o++ = s[k];
                 *o++ = s[k + 1];
             }
             break;
-        case Conv::LineLoop:
-            for (quint32 k = 0; k < m; ++k) {
+        }
+        case Conv::LineLoop: {
+            const size_t segments = std::min<quint64>(total / 2, m);
+            for (size_t k = 0; k < segments; ++k) {
                 *o++ = s[k];
-                *o++ = s[(k + 1) % m];
+                *o++ = s[k + 1 < m ? k + 1 : 0];
             }
             break;
+        }
         case Conv::List:
-            std::copy_n(s, job.indexCount, o);
+            std::copy_n(s, std::min<quint64>(total, m), o);
             break;
         case Conv::None:
             break;
         }
     }
     // Out-of-range indices would read past the primitive on the GPU.
-    for (quint32 k = 0; k < job.indexCount; ++k)
+    for (quint64 k = 0; k < total; ++k)
         if (idx[k] >= n)
             idx[k] = 0;
 }
@@ -654,9 +805,12 @@ QString Converter::run(const std::atomic_bool &cancel, quint64 *tooLargeBytes)
             PrimJob job;
             job.src = &p;
             job.vertexCount = quint32(std::min<size_t>(pos->count, 0x7FFFFFFF));
-            job.sourceIndexCount = quint32(p.indices ? std::min<size_t>(p.indices->count, 0xFFFFFFFF) : job.vertexCount);
+            // 64-bit counts (checkBounds capped the accessor), so the
+            // expansions below cannot wrap; the sum is checked against the
+            // cap before anything is allocated.
+            job.sourceIndexCount = p.indices ? quint64(p.indices->count) : quint64(job.vertexCount);
             ModelPrimitive prim;
-            const quint32 m = job.sourceIndexCount;
+            const quint64 m = job.sourceIndexCount;
             switch (p.type) {
             case cgltf_primitive_type_points:
                 prim.topology = ModelTopology::Points;
@@ -700,7 +854,7 @@ QString Converter::run(const std::atomic_bool &cancel, quint64 *tooLargeBytes)
             prim.baseVertex = quint32(vertices);
             prim.vertexCount = job.vertexCount;
             prim.firstIndex = indices;
-            prim.indexCount = job.indexCount;
+            prim.indexCount = quint32(std::min<quint64>(job.indexCount, 0xFFFFFFFFu)); // exact under the cap
             prim.material = p.material ? int(cgltf_material_index(m_data, p.material)) : -1;
             prim.skin = job.skinned ? m_meshSkin[mi] : -1;
             prim.flatNormals = prim.topology == ModelTopology::Triangles
@@ -772,6 +926,9 @@ Result load(const QString &path, QByteArrayView bytes, const std::atomic_bool &c
     if (res != cgltf_result_success)
         return ModelLoader::failed(QObject::tr("Could not read the glTF: %1.").arg(resultText(res)));
 
+    QString error = checkBufferUris(data.get());
+    if (!error.isEmpty())
+        return ModelLoader::failed(QObject::tr("Could not read the glTF: %1.").arg(error));
     const QByteArray pathUtf8 = path.toUtf8();
     res = cgltf_load_buffers(&options, data.get(), pathUtf8.constData());
     if (res != cgltf_result_success)
@@ -780,28 +937,25 @@ Result load(const QString &path, QByteArrayView bytes, const std::atomic_bool &c
         if (!data->buffers[i].data && data->buffers[i].size > 0)
             return ModelLoader::failed(QObject::tr("Could not read the glTF: buffer %1 could not be loaded.").arg(i));
     }
-    // Bounds of every accessor against its buffer view, so the reads below
-    // cannot run past the data.
+    // Bounds of every view and accessor (overflow-checked, before
+    // cgltf_validate scans index data), so the reads below cannot run past
+    // the data and no count can drive an allocation past the cap.
+    quint64 tooLargeBytes = 0;
+    error = checkBounds(data.get(), &tooLargeBytes);
+    if (!error.isEmpty())
+        return ModelLoader::failed(QObject::tr("Could not read the glTF: %1.").arg(error));
+    if (tooLargeBytes)
+        return ModelLoader::finish(nullptr, QString(), tooLargeBytes, cancel);
     res = cgltf_validate(data.get());
     if (res != cgltf_result_success)
         return ModelLoader::failed(QObject::tr("Could not read the glTF: %1.").arg(resultText(res)));
 
     auto doc = std::make_shared<ModelDocument>();
-    QString error;
-    quint64 tooLargeBytes = 0;
     {
         Converter converter(path, data.get(), options, *doc);
         error = converter.run(cancel, &tooLargeBytes);
     }
-    if (cancel.load(std::memory_order_relaxed))
-        return ModelLoader::cancelled();
-    if (tooLargeBytes)
-        return ModelLoader::tooLarge(qint64(tooLargeBytes));
-    if (!error.isEmpty())
-        return ModelLoader::failed(error);
-    ModelLoader::Result r;
-    r.doc = std::move(doc);
-    return r;
+    return ModelLoader::finish(std::move(doc), error, tooLargeBytes, cancel);
 }
 
 } // namespace GltfLoader

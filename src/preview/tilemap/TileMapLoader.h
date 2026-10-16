@@ -17,7 +17,10 @@ namespace TileMapLoader {
 
 constexpr qint64 kMaxFileBytes = qint64(512) << 20;
 constexpr qint64 kProgressBytes = qint64(32) << 20;
-constexpr qint64 kMaxInstances = 25'000'000;   // 500 MB of Instance records
+// 25M x 20-byte Instance = 500 MB, plus 4 bytes each in the grid index. The
+// loaders check the running total before building a layer's instances, so a
+// refused map never allocates past it.
+constexpr qint64 kMaxInstances = 25'000'000;
 
 struct Result {
     TileMap::DocumentPtr doc;

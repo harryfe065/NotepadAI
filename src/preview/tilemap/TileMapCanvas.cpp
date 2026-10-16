@@ -70,7 +70,8 @@ void TileMapCanvas::resetCaches()
 
 void TileMapCanvas::setDocument(DocumentPtr doc, bool keepView)
 {
-    const bool sameBounds = keepView && m_doc && doc && m_doc->bounds == doc->bounds;
+    // A reload keeps zoom and pan whatever the new bounds (clamped to them).
+    const bool keep = keepView && m_doc && doc && m_viewInitialised;
     m_doc = std::move(doc);
     resetCaches();
 
@@ -85,11 +86,17 @@ void TileMapCanvas::setDocument(DocumentPtr doc, bool keepView)
                 m_layerOn[i] = it.value();
         }
     }
-    if (!sameBounds || !m_viewInitialised) {
+    if (!keep) {
         m_fit = true;
         m_viewInitialised = false;
         if (width() > 0 && m_doc)
             zoomToFit();
+    } else if (m_fit) {
+        zoomToFit();                 // fit is a mode: refit the new bounds
+    } else {
+        m_zoom = std::clamp(m_zoom, minZoom(), kMaxZoom);
+        clampCenter();
+        emitView();
     }
     updateAnimationTimer();
     update();
@@ -150,7 +157,7 @@ void TileMapCanvas::setColors(const QColor &background, const QColor &grid, cons
 
 void TileMapCanvas::updateAnimationTimer()
 {
-    const bool run = m_animating && m_doc && m_doc->hasAnimations && isVisible();
+    const bool run = m_animating && m_doc && m_doc->hasAnimations && m_liveShown && isVisible();
     if (run && !m_animTimer.isActive()) {
         m_animClock.start();
         m_animTimer.start();
@@ -289,12 +296,14 @@ int TileMapCanvas::levelForZoom() const
 
 // ------------------------------------------------------------------ chunks
 
-quint64 TileMapCanvas::chunkKey(int layer, int level, int cx, int cy)
+quint64 TileMapCanvas::chunkKey(int layer, int level, bool baked, int cx, int cy)
 {
     constexpr qint64 kBias = qint64(1) << 20;
     const quint64 ux = quint64(qint64(cx) + kBias) & 0x1FFFFF;
     const quint64 uy = quint64(qint64(cy) + kBias) & 0x1FFFFF;
-    return (quint64(layer) << 48) | (quint64(level) << 42) | (ux << 21) | uy;
+    // 6 bits between: the level (<= kMaxLevel, 4 bits) and the baked flag.
+    const quint64 variant = quint64(level) | (baked ? 0x20u : 0u);
+    return (quint64(layer) << 48) | (variant << 42) | (ux << 21) | uy;
 }
 
 const QImage &TileMapCanvas::levelImage(size_t tileset, int level)
@@ -312,7 +321,9 @@ uint32_t TileMapCanvas::averageColor(size_t tileset, int tile)
 {
     const Tileset &ts = m_doc->tilesets[tileset];
     TilesetCache &cache = m_tilesetCache[tileset];
-    const size_t count = size_t(std::max(ts.tileCount, int(ts.tiles.size())));
+    // The real tile count: the loader caps a sheet's to what its image holds
+    // and a collection's to its id slots, so the cache stays bounded.
+    const size_t count = ts.isCollection() ? ts.tiles.size() : size_t(std::max(0, ts.tileCount));
     if (tile < 0 || size_t(tile) >= count)
         return 0xA0808080u;
     if (cache.average.size() != count) {
@@ -353,7 +364,7 @@ uint32_t TileMapCanvas::averageColor(size_t tileset, int tile)
     return out;
 }
 
-void TileMapCanvas::drawChunkInstance(QPainter &p, const Instance &in, int level)
+void TileMapCanvas::drawChunkInstance(QPainter &p, const Instance &in, int tile, int level)
 {
     const QRectF dest(in.x, in.y, in.w, in.h);
     if (in.tileset < 0) {
@@ -362,19 +373,19 @@ void TileMapCanvas::drawChunkInstance(QPainter &p, const Instance &in, int level
     }
     const size_t tsi = size_t(in.tileset);
     if (level >= 3) {
-        p.fillRect(dest, QColor::fromRgba(averageColor(tsi, in.tile)));
+        p.fillRect(dest, QColor::fromRgba(averageColor(tsi, tile)));
         return;
     }
     const Tileset &ts = m_doc->tilesets[tsi];
     const QImage *img = nullptr;
     QRectF src;
     if (ts.isCollection()) {
-        img = ts.collectionImage(in.tile);
+        img = ts.collectionImage(tile);
         if (!img)
             return;
         src = QRectF(img->rect());
     } else {
-        const QRect r = ts.sheetRect(in.tile);
+        const QRect r = ts.sheetRect(tile);
         if (r.isEmpty())
             return;
         if (level == 0) {
@@ -392,7 +403,7 @@ void TileMapCanvas::drawChunkInstance(QPainter &p, const Instance &in, int level
         p.drawImage(dest, *img, src);
 }
 
-void TileMapCanvas::renderChunk(Chunk &chunk, const Layer &layer, int level, int cx, int cy)
+void TileMapCanvas::renderChunk(Chunk &chunk, const Layer &layer, int level, bool baked, int cx, int cy)
 {
     const double unit = double(1 << level);
     const double ext = kChunkPx * unit;
@@ -416,11 +427,19 @@ void TileMapCanvas::renderChunk(Chunk &chunk, const Layer &layer, int level, int
     bool any = false;
     for (const uint32_t idx : m_scratch) {
         const Instance &in = layer.instances[idx];
-        if (in.flags & Animated)
-            continue;
         if (in.x >= area.right() || in.y >= area.bottom() || in.x + in.w <= area.left() || in.y + in.h <= area.top())
             continue;
-        drawChunkInstance(p, in, level);
+        int tile = in.tile;
+        if (in.flags & Animated) {
+            if (!baked)
+                continue;              // drawn live on top
+            // Baked: the first frame stands for the animation.
+            const Tileset &ts = m_doc->tilesets[size_t(in.tileset)];
+            const auto it = ts.animations.constFind(in.tile);
+            if (it != ts.animations.constEnd() && !it->frames.empty())
+                tile = it->frames.front().tile;
+        }
+        drawChunkInstance(p, in, tile, level);
         any = true;
     }
     p.end();
@@ -428,9 +447,9 @@ void TileMapCanvas::renderChunk(Chunk &chunk, const Layer &layer, int level, int
         chunk.image = std::move(img);
 }
 
-bool TileMapCanvas::ensureChunk(int layerIndex, int level, int cx, int cy)
+bool TileMapCanvas::ensureChunk(int layerIndex, int level, bool baked, int cx, int cy)
 {
-    const quint64 key = chunkKey(layerIndex, level, cx, cy);
+    const quint64 key = chunkKey(layerIndex, level, baked, cx, cy);
     auto it = m_chunks.find(key);
     if (it != m_chunks.end()) {
         it->used = m_tick;
@@ -438,7 +457,7 @@ bool TileMapCanvas::ensureChunk(int layerIndex, int level, int cx, int cy)
     }
     Chunk chunk;
     chunk.used = m_tick;
-    renderChunk(chunk, m_doc->layers[size_t(layerIndex)], level, cx, cy);
+    renderChunk(chunk, m_doc->layers[size_t(layerIndex)], level, baked, cx, cy);
     m_chunkBytes += chunk.image.sizeInBytes();
     m_chunks.insert(key, std::move(chunk));
     return true;
@@ -503,7 +522,10 @@ void TileMapCanvas::drawLiveTiles(QPainter &p, const Layer &layer, const QRectF 
         return;
     const bool smooth = m_zoom < 1.0;
     int drawn = 0;
-    for (const uint32_t idx : layer.animated) {
+    // Only the animated tiles near the view, in draw order.
+    m_liveScratch.clear();
+    layer.animatedGrid.query(visible, m_liveScratch);
+    for (const uint32_t idx : m_liveScratch) {
         const Instance &in = layer.instances[idx];
         if (in.x >= visible.right() || in.y >= visible.bottom() || in.x + in.w <= visible.left()
             || in.y + in.h <= visible.top())
@@ -514,12 +536,11 @@ void TileMapCanvas::drawLiveTiles(QPainter &p, const Layer &layer, const QRectF 
         if (in.tileset >= 0) {
             const Tileset &ts = m_doc->tilesets[size_t(in.tileset)];
             const auto it = ts.animations.constFind(in.tile);
-            if (it != ts.animations.constEnd() && !it->empty()) {
-                const int total = ts.animationTotalMs(in.tile);
-                qint64 t = total > 0 ? timeMs % total : 0;
-                for (const AnimFrame &f : *it) {
+            if (it != ts.animations.constEnd() && !it->frames.empty()) {
+                qint64 t = it->totalMs > 0 ? timeMs % it->totalMs : 0;
+                for (const AnimFrame &f : it->frames) {
                     tile = f.tile;
-                    t -= std::max(1, f.durationMs);
+                    t -= f.durationMs;     // >= 1, clamped at load
                     if (t < 0)
                         break;
                 }
@@ -632,7 +653,8 @@ void TileMapCanvas::drawGrid(QPainter &p)
     if (sx < kMinGridPx || sy < kMinGridPx)
         return;
     const QRectF vis = visibleMapRect();
-    QVector<QLineF> lines;
+    QVector<QLineF> &lines = m_gridLines;   // clear() keeps the capacity
+    lines.clear();
     const int x0 = int(std::floor(vis.left() / m_doc->gridW)), x1 = int(std::ceil(vis.right() / m_doc->gridW));
     const int y0 = int(std::floor(vis.top() / m_doc->gridH)), y1 = int(std::ceil(vis.bottom() / m_doc->gridH));
     lines.reserve((x1 - x0 + 1) + (y1 - y0 + 1));
@@ -665,7 +687,8 @@ void TileMapCanvas::paintEvent(QPaintEvent *)
     // Chunks the view needs, nearest to the centre first.
     const int cx0 = int(std::floor(visible.left() / ext)), cx1 = int(std::floor(visible.right() / ext));
     const int cy0 = int(std::floor(visible.top() / ext)), cy1 = int(std::floor(visible.bottom() / ext));
-    std::vector<std::pair<int, int>> wanted;
+    std::vector<std::pair<int, int>> &wanted = m_wanted;
+    wanted.clear();
     if (qint64(cx1 - cx0 + 1) * (cy1 - cy0 + 1) <= 4096) {
         const QPointF mid = m_center;
         for (int cy = cy0; cy <= cy1; ++cy) {
@@ -679,6 +702,25 @@ void TileMapCanvas::paintEvent(QPaintEvent *)
         });
     }
 
+    // Per layer: animated tiles drawn live (fine levels, few enough near the
+    // view: an O(rows) count on the layer's animated index), or baked into
+    // its chunks' first-frame variant so they never vanish.
+    m_layerBaked.assign(m_doc->layers.size(), 0);
+    bool live = false;
+    for (size_t li = 0; li < m_doc->layers.size(); ++li) {
+        const Layer &layer = m_doc->layers[li];
+        if (layer.kind != Layer::Kind::Tiles || layer.animated.empty())
+            continue;
+        const size_t nearby = layer.animatedGrid.countCandidates(visible);
+        m_layerBaked[li] = level > kMaxLiveLevel || nearby > size_t(kMaxLiveAnimated);
+        live = live || (!m_layerBaked[li] && nearby > 0 && m_layerOn[li]);
+    }
+    // The 33 ms timer only runs while something animates on screen.
+    if (live != m_liveShown) {
+        m_liveShown = live;
+        updateAnimationTimer();
+    }
+
     // Pass 1: rasterise missing chunks within the budget.
     bool pending = false;
     int rendered = 0;
@@ -689,15 +731,17 @@ void TileMapCanvas::paintEvent(QPaintEvent *)
             const Layer &layer = m_doc->layers[li];
             if (layer.kind != Layer::Kind::Tiles || !m_layerOn[li] || layer.instances.empty())
                 continue;
-            if (m_chunks.contains(chunkKey(int(li), level, c.first, c.second))) {
-                m_chunks[chunkKey(int(li), level, c.first, c.second)].used = m_tick;
+            const bool baked = m_layerBaked[li] != 0;
+            const auto it = m_chunks.find(chunkKey(int(li), level, baked, c.first, c.second));
+            if (it != m_chunks.end()) {
+                it->used = m_tick;
                 continue;
             }
             if (rendered > 0 && budget.nsecsElapsed() > kPaintBudgetNs) {
                 pending = true;
                 continue;
             }
-            ensureChunk(int(li), level, c.first, c.second);
+            ensureChunk(int(li), level, baked, c.first, c.second);
             ++rendered;
         }
     }
@@ -740,14 +784,15 @@ void TileMapCanvas::paintEvent(QPaintEvent *)
             // scaling leaves no seams; translucent layers skip the overlap.
             const double grow = layer.opacity >= 0.999 ? kChunkPad * std::ldexp(1.0, level) * m_zoom : 0.0;
             p.setRenderHint(QPainter::SmoothPixmapTransform, m_zoom * std::ldexp(1.0, level) < 1.0);
+            const bool baked = m_layerBaked[li] != 0;
             for (const auto &c : wanted) {
-                const auto it = m_chunks.constFind(chunkKey(int(li), level, c.first, c.second));
+                const auto it = m_chunks.constFind(chunkKey(int(li), level, baked, c.first, c.second));
                 if (it == m_chunks.constEnd() || it->image.isNull())
                     continue;
                 const QRectF target(mapToView(QPointF(c.first * ext, c.second * ext)), QSizeF(ext * m_zoom, ext * m_zoom));
                 p.drawImage(target.adjusted(-grow, -grow, grow, grow), it->image);
             }
-            if (!layer.animated.empty() && level <= 2) {
+            if (!layer.animated.empty() && !baked) {
                 p.setTransform(world);
                 drawLiveTiles(p, layer, visible, timeMs);
                 p.resetTransform();
@@ -879,8 +924,10 @@ void TileMapCanvas::updateHover(const QPointF &pos)
     }
     const QPointF m = viewToMap(pos);
     QString text;
-    if (m_doc->gridW > 0 && m_doc->gridH > 0) {
-        text = QStringLiteral("%1, %2").arg(int(std::floor(m.x() / m_doc->gridW))).arg(int(std::floor(m.y() / m_doc->gridH)));
+    QPoint cell;
+    if (cellAt(*m_doc, m, &cell)) {
+        // Orthogonal / LDtk grid, or the isometric / staggered / hexagonal cell.
+        text = QStringLiteral("%1, %2").arg(cell.x()).arg(cell.y());
     } else {
         text = QStringLiteral("x %1  y %2").arg(int(std::floor(m.x()))).arg(int(std::floor(m.y())));
     }

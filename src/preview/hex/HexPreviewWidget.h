@@ -31,6 +31,7 @@ protected:
 
 private:
     struct SearchResult {
+        quint64 serial = 0;     // m_searchSerial when started
         qint64 offset = -1;     // HexSearch codes when negative
         bool wrapped = false;
     };
@@ -52,6 +53,7 @@ private:
     QFutureWatcher<SearchResult> m_search;
     std::shared_ptr<std::atomic_bool> m_searchCancel;
     qint64 m_patternLength = 0;
+    quint64 m_searchSerial = 0;     // bumped by cancelSearch: queued stale results are dropped
 };
 
 #endif // HEXPREVIEWWIDGET_H

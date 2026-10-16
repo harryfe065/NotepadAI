@@ -12,6 +12,14 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <memory>
+#include <utility>
+
+struct ImageCanvas::SvgSource {
+    QByteArray data;
+    std::unique_ptr<QSvgRenderer> renderer; // built and used by one job at a time
+};
 
 namespace {
 
@@ -20,6 +28,8 @@ constexpr qint64 kSyncPyramidPixels = 1 << 20;
 // Without a pyramid, zooming out on a bigger surface would convert the whole
 // image on the UI thread; wait for the worker instead.
 constexpr qint64 kNeedPyramidPixels = 4 << 20;
+// A handful of pyramids (mip/face/layer browsing) is plenty.
+constexpr int kMaxPyramids = 6;
 
 constexpr std::array<double, 25> kZoomSteps = {
     1.0 / 64, 1.0 / 32, 1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0 / 3, 1.0 / 2, 2.0 / 3, 1.0, 1.5, 2, 3, 4,
@@ -28,6 +38,35 @@ constexpr std::array<double, 25> kZoomSteps = {
 bool sameParams(const ImageOps::ViewParams &a, const ImageOps::ViewParams &b)
 {
     return a.channel == b.channel && a.exposure == b.exposure;
+}
+
+// `rect` (level texels) of the level repeated in both directions; `rect` is
+// non-negative and may cross seams. Each copy's piece is converted once into
+// its spot, so the work is the rect's area however many seams it crosses.
+QImage renderWrapped(const QImage &level, const QRect &rect, const ImageOps::ViewParams &params)
+{
+    const int lw = level.width(), lh = level.height();
+    const int tx0 = rect.left() / lw, tx1 = rect.right() / lw;
+    const int ty0 = rect.top() / lh, ty1 = rect.bottom() / lh;
+    if (tx0 == tx1 && ty0 == ty1)
+        return ImageOps::renderCrop(level, rect.translated(-tx0 * lw, -ty0 * lh), params);
+
+    QImage out(rect.size(), QImage::Format_ARGB32_Premultiplied);
+    if (out.isNull()) return out;
+    const ImageOps::RowWriter rows(out);
+    for (int ty = ty0; ty <= ty1; ++ty) {
+        for (int tx = tx0; tx <= tx1; ++tx) {
+            const QRect copy(tx * lw, ty * lh, lw, lh);
+            const QRect piece = rect & copy;
+            if (piece.isEmpty()) continue;
+            const QImage part = ImageOps::renderCrop(level, piece.translated(-copy.topLeft()), params);
+            if (part.isNull()) return {};
+            const int dx = piece.x() - rect.x(), dy = piece.y() - rect.y();
+            for (int y = 0; y < part.height(); ++y)
+                std::memcpy(rows.row<quint32>(dy + y) + dx, part.constScanLine(y), size_t(part.width()) * 4);
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -70,6 +109,7 @@ void ImageCanvas::setDocument(ImageDocumentPtr doc, bool keepView, ImagePyramidP
     m_pyramidJobs.clear();
     m_crop = {};
     m_vectorTile = {};
+    m_svg.reset(); // a running job keeps its own reference
 
     if (!keepView || !sameShape) {
         m_layer = m_face = m_mip = 0;
@@ -134,12 +174,6 @@ QSizeF ImageCanvas::contentSize() const
     return m_tiled ? one * 3.0 : one;
 }
 
-QRectF ImageCanvas::tileRect(int i, int j) const
-{
-    const QSizeF one = logicalSize();
-    return {i * one.width(), j * one.height(), one.width(), one.height()};
-}
-
 void ImageCanvas::updateMathGeometry()
 {
     m_math.viewport = QSizeF(size());
@@ -185,6 +219,7 @@ void ImageCanvas::setTiled(bool tiled)
     const QSizeF before = contentSize();
     m_tiled = tiled;
     m_crop = {};
+    m_vectorTile = {}; // its image rect is in the old content coordinates
     updateMathGeometry();
     if (!before.isEmpty()) {
         // Keep the centre texel: the original image becomes the middle tile.
@@ -245,9 +280,9 @@ void ImageCanvas::scheduleFrame()
 {
     if (!m_playing || !m_doc || !m_doc->isAnimation || !isVisible()) return;
     int delay = m_layer < m_doc->frameDelaysMs.size() ? m_doc->frameDelaysMs[m_layer] : 100;
-    // Browsers treat 0-10 ms GIF delays as 100 ms; do the same so such files
-    // play at their intended speed instead of spinning.
-    if (delay <= 10) delay = 100;
+    // Stored durations play as they are (the GIF 0-10 ms rule is applied when
+    // decoding); a zero would only spin the timer.
+    if (delay <= 0) delay = 100;
     m_frameTimer.start(delay);
 }
 
@@ -259,11 +294,23 @@ ImagePyramidPtr ImageCanvas::pyramidFor(int surfaceIndex)
     const QImage &s = m_doc->surfaces[static_cast<size_t>(surfaceIndex)];
     if (qint64(s.width()) * s.height() <= kSyncPyramidPixels) {
         ImagePyramidPtr pyr = ImageOps::buildPyramid(s);
-        m_pyramids.insert(surfaceIndex, pyr);
+        storePyramid(surfaceIndex, pyr);
         return pyr;
     }
     requestPyramid(surfaceIndex);
     return {};
+}
+
+void ImageCanvas::storePyramid(int surfaceIndex, ImagePyramidPtr pyramid)
+{
+    if (m_pyramids.size() >= kMaxPyramids) {
+        const int keep = currentSurfaceIndex();
+        for (auto it = m_pyramids.begin(); it != m_pyramids.end();) {
+            if (it.key() != keep) it = m_pyramids.erase(it);
+            else ++it;
+        }
+    }
+    m_pyramids.insert(surfaceIndex, std::move(pyramid));
 }
 
 void ImageCanvas::requestPyramid(int surfaceIndex)
@@ -277,15 +324,7 @@ void ImageCanvas::requestPyramid(int surfaceIndex)
         watcher->deleteLater();
         if (gen != m_docGeneration) return;
         m_pyramidJobs.remove(surfaceIndex);
-        // A handful of surfaces (mip/face browsing) is plenty; drop the rest.
-        if (m_pyramids.size() >= 6) {
-            const int keep = currentSurfaceIndex();
-            for (auto it = m_pyramids.begin(); it != m_pyramids.end();) {
-                if (it.key() != keep) it = m_pyramids.erase(it);
-                else ++it;
-            }
-        }
-        m_pyramids.insert(surfaceIndex, watcher->result());
+        storePyramid(surfaceIndex, watcher->result());
         update();
     });
     watcher->setFuture(QtConcurrent::run([src]() { return ImageOps::buildPyramid(src); }));
@@ -362,29 +401,21 @@ void ImageCanvas::resizeEvent(QResizeEvent *event)
     viewChanged();
 }
 
-QImage ImageCanvas::wholeLevel(int surfaceIndex, int levelIndex, const QImage &level)
-{
-    if (m_crop.surface == surfaceIndex && m_crop.level == levelIndex && sameParams(m_crop.params, m_params)
-        && m_crop.rect == level.rect() && !m_crop.image.isNull())
-        return m_crop.image;
-    m_crop.surface = surfaceIndex;
-    m_crop.level = levelIndex;
-    m_crop.params = m_params;
-    m_crop.rect = level.rect();
-    m_crop.image = ImageOps::renderCrop(level, level.rect(), m_params);
-    return m_crop.image;
-}
-
 void ImageCanvas::paintSurface(QPainter &p, const QImage *level, int levelIndex, double sx, double sy)
 {
     const int sidx = currentSurfaceIndex();
     const QRectF visible = m_math.visibleImageRect();
     if (visible.isEmpty()) return;
 
+    // Content in level texels: the level, or its 3 x 3 repeat when tiled
+    // (setTiled() drops the crop, so the two never mix).
+    const int repeat = m_tiled ? 3 : 1;
+    const QRect bounds(0, 0, level->width() * repeat, level->height() * repeat);
+
     // Visible rect in level texels, rounded outward.
     const QRect need = QRectF(visible.x() * sx, visible.y() * sy, visible.width() * sx, visible.height() * sy)
                            .toAlignedRect()
-                           .intersected(level->rect());
+                           .intersected(bounds);
     if (need.isEmpty()) return;
 
     const bool reuse = m_crop.surface == sidx && m_crop.level == levelIndex && sameParams(m_crop.params, m_params)
@@ -392,12 +423,12 @@ void ImageCanvas::paintSurface(QPainter &p, const QImage *level, int levelIndex,
     if (!reuse) {
         // 20% margin each side so small pans and scrolls reuse the crop.
         const int mx = std::max(16, need.width() / 5), my = std::max(16, need.height() / 5);
-        const QRect rect = need.adjusted(-mx, -my, mx, my).intersected(level->rect());
+        const QRect rect = need.adjusted(-mx, -my, mx, my).intersected(bounds);
         m_crop.surface = sidx;
         m_crop.level = levelIndex;
         m_crop.params = m_params;
         m_crop.rect = rect;
-        m_crop.image = ImageOps::renderCrop(*level, rect, m_params);
+        m_crop.image = m_tiled ? renderWrapped(*level, rect, m_params) : ImageOps::renderCrop(*level, rect, m_params);
     }
     if (m_crop.image.isNull()) return;
 
@@ -461,20 +492,9 @@ void ImageCanvas::paintEvent(QPaintEvent *)
         p.restore();
     }
 
-    if (m_tiled) {
-        const QImage whole = wholeLevel(sidx, levelIndex, *level);
-        for (int j = 0; j < 3; ++j) {
-            for (int i = 0; i < 3; ++i) {
-                const QRectF t = tileRect(i, j);
-                const QRectF target(m_math.imageToView(t.topLeft()), t.size() * m_math.zoom);
-                if (target.intersects(QRectF(rect())))
-                    p.drawImage(target, whole, QRectF(whole.rect()));
-            }
-        }
-        return;
-    }
-
     paintSurface(p, level, levelIndex, sx, sy);
+    if (m_tiled)
+        return;
 
     if (m_doc->isVector() && !m_vectorTile.image.isNull() && qFuzzyCompare(m_vectorTile.deviceScale, deviceScale)
         && m_params.channel == ImageOps::Channel::Rgba) {
@@ -553,29 +573,51 @@ void ImageCanvas::startVectorRender()
     if (deviceScale <= m_doc->rasterScale * 1.001) return;
     const QRectF visible = m_math.visibleImageRect();
     if (visible.isEmpty()) return;
+    // The parsed renderer is shared by every job of this document, so only one
+    // runs at a time; a view change meanwhile re-renders once it finishes.
+    if (m_vectorBusy) {
+        m_vectorPending = true;
+        return;
+    }
     const QSize out(std::max(1, qCeil(visible.width() * deviceScale)), std::max(1, qCeil(visible.height() * deviceScale)));
     // Bounded by the viewport in device pixels; a stale request is dropped.
     const quint64 gen = ++m_vectorGeneration;
     const quint64 docGen = m_docGeneration;
-    const QByteArray data = m_doc->vectorData;
+    if (!m_svg) {
+        m_svg = std::make_shared<SvgSource>();
+        m_svg->data = m_doc->vectorData;
+    }
+    const std::shared_ptr<SvgSource> svg = m_svg;
     const QSizeF surfaceSize = logicalSize();
-    const double dpr = devicePixelRatioF();
+    m_vectorBusy = true;
 
     auto *watcher = new QFutureWatcher<QImage>(this);
     connect(watcher, &QFutureWatcher<QImage>::finished, this,
             [this, watcher, gen, docGen, visible, deviceScale]() {
         watcher->deleteLater();
-        if (gen != m_vectorGeneration || docGen != m_docGeneration) return;
-        QImage img = watcher->result();
-        if (img.isNull()) return;
-        m_vectorTile.image = std::move(img);
-        m_vectorTile.imageRect = visible;
-        m_vectorTile.deviceScale = deviceScale;
-        update();
+        m_vectorBusy = false;
+        if (gen == m_vectorGeneration && docGen == m_docGeneration) {
+            QImage img = watcher->result();
+            if (!img.isNull()) {
+                m_vectorTile.image = std::move(img);
+                m_vectorTile.imageRect = visible;
+                m_vectorTile.deviceScale = deviceScale;
+                update();
+            }
+        }
+        if (std::exchange(m_vectorPending, false))
+            startVectorRender();
     });
-    watcher->setFuture(QtConcurrent::run([data, out, visible, deviceScale, surfaceSize, dpr]() {
-        Q_UNUSED(dpr);
-        QSvgRenderer renderer(data);
+    watcher->setFuture(QtConcurrent::run([svg, out, visible, deviceScale, surfaceSize]() {
+        if (!svg->renderer) {
+            // Parsed once per document, here on the worker. No animation
+            // timer (fps 0 before load), so the renderer may be destroyed on
+            // whichever thread drops the last reference.
+            svg->renderer = std::make_unique<QSvgRenderer>();
+            svg->renderer->setFramesPerSecond(0);
+            svg->renderer->load(svg->data);
+        }
+        QSvgRenderer &renderer = *svg->renderer;
         if (!renderer.isValid()) return QImage();
         QImage img(out, QImage::Format_ARGB32_Premultiplied);
         if (img.isNull()) return img;

@@ -15,6 +15,11 @@ namespace {
 
 using ModelLoader::Result;
 
+// ufbx keeps doubles and per-corner index arrays, so its scene is larger
+// than the converted geometry; twice the geometry cap, for loading and for
+// the result (and animation baking) each.
+constexpr size_t kUfbxMemoryLimit = size_t(ModelLoader::kMaxGeometryBytes) * 2;
+
 QString str(const ufbx_string &s)
 {
     return QString::fromUtf8(s.data, qsizetype(s.length));
@@ -30,13 +35,6 @@ ufbx_progress_result onProgress(void *user, const ufbx_progress *)
 {
     return static_cast<const std::atomic_bool *>(user)->load(std::memory_order_relaxed) ? UFBX_PROGRESS_CANCEL
                                                                                        : UFBX_PROGRESS_CONTINUE;
-}
-
-inline quint8 unorm8(double v)
-{
-    if (!(v > 0.0)) return 0;
-    if (v >= 1.0) return 255;
-    return quint8(v * 255.0 + 0.5);
 }
 
 // One converted ufbx_mesh: local arrays, appended to the document afterwards.
@@ -110,7 +108,8 @@ void convertMesh(MeshJob &job, const std::atomic_bool &cancel)
                 if (hasColor) {
                     // FBX vertex colours are stored as authored (display values).
                     const ufbx_vec4 col = ufbx_get_vertex_vec4(&mesh.vertex_color, ix);
-                    v.color = ModelPack::colorFromBytes(unorm8(col.x), unorm8(col.y), unorm8(col.z), unorm8(col.w));
+                    v.color = ModelPack::colorFromBytes(ModelPack::unorm8(col.x), ModelPack::unorm8(col.y),
+                                                        ModelPack::unorm8(col.z), ModelPack::unorm8(col.w));
                 }
                 soup.push_back(v);
                 if (skin) {
@@ -265,6 +264,8 @@ void Converter::buildAnimations(const std::atomic_bool &cancel)
         opts.resample_rate = 30.0;
         opts.key_reduction_enabled = true;
         opts.key_reduction_rotation = true;
+        opts.temp_allocator.memory_limit = kUfbxMemoryLimit;
+        opts.result_allocator.memory_limit = kUfbxMemoryLimit;
         ufbx_error error;
         std::unique_ptr<ufbx_baked_anim, decltype(&ufbx_free_baked_anim)> baked(
             ufbx_bake_anim(&m_scene, stack.anim, &opts, &error), &ufbx_free_baked_anim);
@@ -494,6 +495,9 @@ Result load(const QString &path, QByteArrayView bytes, const std::atomic_bool &c
     opts.progress_cb.fn = onProgress;
     opts.progress_cb.user = const_cast<std::atomic_bool *>(&cancel);
     opts.progress_interval_hint = quint64(8) << 20;
+    // Compressed arrays (and their parsed copies) cannot expand without bound.
+    opts.temp_allocator.memory_limit = kUfbxMemoryLimit;
+    opts.result_allocator.memory_limit = kUfbxMemoryLimit;
 
     ufbx_error error;
     std::unique_ptr<ufbx_scene, decltype(&ufbx_free_scene)> scene(
@@ -501,6 +505,8 @@ Result load(const QString &path, QByteArrayView bytes, const std::atomic_bool &c
     if (!scene) {
         if (error.type == UFBX_ERROR_CANCELLED || cancel.load(std::memory_order_relaxed))
             return ModelLoader::cancelled();
+        if (error.type == UFBX_ERROR_MEMORY_LIMIT || error.type == UFBX_ERROR_ALLOCATION_LIMIT)
+            return ModelLoader::tooLarge(qint64(kUfbxMemoryLimit));
         if (error.type == UFBX_ERROR_OUT_OF_MEMORY)
             return ModelLoader::failed(QObject::tr("Not enough memory to load this model."));
         return ModelLoader::failed(QObject::tr("Could not read the FBX: %1.").arg(str(error.description)));
@@ -509,15 +515,7 @@ Result load(const QString &path, QByteArrayView bytes, const std::atomic_bool &c
     auto doc = std::make_shared<ModelDocument>();
     quint64 tooLargeBytes = 0;
     const QString err = Converter(path, *scene, *doc).run(cancel, &tooLargeBytes);
-    if (cancel.load(std::memory_order_relaxed))
-        return ModelLoader::cancelled();
-    if (tooLargeBytes)
-        return ModelLoader::tooLarge(qint64(tooLargeBytes));
-    if (!err.isEmpty())
-        return ModelLoader::failed(err);
-    Result r;
-    r.doc = std::move(doc);
-    return r;
+    return ModelLoader::finish(std::move(doc), err, tooLargeBytes, cancel);
 }
 
 } // namespace FbxLoader

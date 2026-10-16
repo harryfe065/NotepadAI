@@ -194,6 +194,7 @@ struct Layout {
     int width = 0, height = 0;
     int mips = 1, faces = 1, layers = 1;
     bool volume = false;
+    bool cube = false; // also a legacy partial cubemap (fewer than 6 faces)
     QStringList faceNames;
     qsizetype dataOffset = 0;
 };
@@ -250,7 +251,8 @@ bool parse(QByteArrayView data, Layout &out, QString *error)
             return false;
         }
         out.volume = dimension == DX10_DIMENSION_TEXTURE3D && depth > 1;
-        out.faces = (misc & DX10_MISC_TEXTURECUBE) ? 6 : 1;
+        out.cube = (misc & DX10_MISC_TEXTURECUBE) != 0;
+        out.faces = out.cube ? 6 : 1;
         out.layers = out.volume ? int(std::min<quint32>(depth, 65536)) : int(std::min<quint32>(arraySize, 65536));
     } else {
         out.format = fromLegacy(pfFlags, cc, bitCount, masks);
@@ -262,6 +264,7 @@ bool parse(QByteArrayView data, Layout &out, QString *error)
         if (out.volume)
             out.layers = int(std::min<quint32>(depth, 65536));
         if (caps2 & DDSCAPS2_CUBEMAP) {
+            out.cube = true;
             static const char *const names[6] = {"+X", "−X", "+Y", "−Y", "+Z", "−Z"};
             out.faces = 0;
             for (int i = 0; i < 6; ++i) {
@@ -292,6 +295,7 @@ bool parse(QByteArrayView data, Layout &out, QString *error)
         // the (layer, face, mip) model cannot express.
         out.mips = 1;
         out.faces = 1;
+        out.cube = false;
         out.faceNames.clear();
         return true;
     }
@@ -574,6 +578,7 @@ QImage decodeSurface(const Format &f, const uchar *src, int w, int h)
     if (img.isNull())
         return img;
     const qint64 pixels = qint64(w) * h;
+    const ImageOps::RowWriter dst(img); // workers never call scanLine()
 
     if (isBlock(f.px)) {
         const int bw = std::max(1, (w + 3) / 4), bh = std::max(1, (h + 3) / 4);
@@ -588,7 +593,7 @@ QImage decodeSurface(const Format &f, const uchar *src, int w, int h)
                         quint16 rgb[48];
                         bcdec_bc6h_half(row + qint64(bx) * bb, rgb, 12, f.px == Px::BC6HS);
                         for (int y = 0; y < rows; ++y) {
-                            auto *d = reinterpret_cast<quint16 *>(img.scanLine(y0 + y)) + 4 * x0;
+                            auto *d = dst.row<quint16>(y0 + y) + 4 * x0;
                             for (int x = 0; x < cols; ++x) {
                                 const quint16 *s = rgb + 12 * y + 3 * x;
                                 d[4 * x] = s[0];
@@ -601,7 +606,7 @@ QImage decodeSurface(const Format &f, const uchar *src, int w, int h)
                         quint32 px[16];
                         decodeLdrBlock(f.px, row + qint64(bx) * bb, px);
                         for (int y = 0; y < rows; ++y)
-                            std::memcpy(reinterpret_cast<quint32 *>(img.scanLine(y0 + y)) + x0, px + 4 * y,
+                            std::memcpy(dst.row<quint32>(y0 + y) + x0, px + 4 * y,
                                         size_t(cols) * 4);
                     }
                 }
@@ -617,9 +622,9 @@ QImage decodeSurface(const Format &f, const uchar *src, int w, int h)
         for (int y = y0; y < y1; ++y) {
             const uchar *s = src + pitch * y;
             if (hdr)
-                convertHdrRow(f, s, reinterpret_cast<qfloat16 *>(img.scanLine(y)), w, scratch.data());
+                convertHdrRow(f, s, dst.row<qfloat16>(y), w, scratch.data());
             else
-                convertLdrRow(f, s, reinterpret_cast<quint32 *>(img.scanLine(y)), w);
+                convertLdrRow(f, s, dst.row<quint32>(y), w);
         }
     });
     return img;
@@ -675,6 +680,7 @@ ImageDecoder::Result decode(QByteArrayView data, const std::atomic_bool &cancel)
     doc->faceCount = l.faces;
     doc->layerCount = l.layers;
     doc->faceNames = l.faceNames;
+    doc->isCubemap = l.cube;
     doc->hasAlpha = hasAlpha(l.format);
     doc->isHdr = isHdr(l.format.px);
     if (l.volume) {

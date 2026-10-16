@@ -25,11 +25,6 @@ namespace {
 constexpr double kFallbackFps = 30.0;
 constexpr qint64 kSeekStepMs = 5000;
 
-float &sessionVolume()
-{
-    static float volume = 0.8f;
-    return volume;
-}
 
 } // namespace
 
@@ -61,18 +56,12 @@ VideoView::VideoView(MediaPlugin::Host *host, QWidget *parent)
 
     m_player = new QMediaPlayer(this);
     m_output = new QAudioOutput(this);
-    m_output->setVolume(sessionVolume());
+    m_output->setVolume(MediaFormat::sessionVolume());
     m_player->setAudioOutput(m_output);
     m_player->setVideoOutput(m_video);
 
-    auto button = [this](const QString &text, const QString &tip, bool checkable) {
-        auto *b = new QToolButton;
-        b->setText(text);
-        b->setToolTip(tip);
-        b->setAutoRaise(true);
-        b->setCheckable(checkable);
-        m_host->addToolWidget(b);
-        return b;
+    auto button = [this](const QString &text, const QString &tip, bool checkable = false) {
+        return m_host->addToolButton(text, tip, checkable);
     };
     m_play = button(tr("Play"), tr("Play or pause (Space)"), false);
     m_prevFrame = button(tr("◀ Frame"), tr("Previous frame (,)"), false);
@@ -91,7 +80,7 @@ VideoView::VideoView(MediaPlugin::Host *host, QWidget *parent)
     m_volume->setRange(0, 100);
     m_volume->setFixedWidth(90);
     m_volume->setToolTip(tr("Volume"));
-    m_volume->setValue(qRound(QAudio::convertVolume(sessionVolume(), QAudio::LinearVolumeScale,
+    m_volume->setValue(qRound(QAudio::convertVolume(MediaFormat::sessionVolume(), QAudio::LinearVolumeScale,
                                                     QAudio::LogarithmicVolumeScale) * 100));
     m_host->addToolWidget(m_volume);
 
@@ -108,7 +97,7 @@ VideoView::VideoView(MediaPlugin::Host *host, QWidget *parent)
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
         const float linear = float(QAudio::convertVolume(value / 100.0, QAudio::LogarithmicVolumeScale,
                                                          QAudio::LinearVolumeScale));
-        sessionVolume() = linear;
+        MediaFormat::sessionVolume() = linear;
         m_output->setVolume(linear);
     });
     connect(m_timeline, &QSlider::sliderMoved, this, [this](int value) { seek(value); });

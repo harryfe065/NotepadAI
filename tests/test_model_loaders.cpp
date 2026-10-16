@@ -17,6 +17,8 @@
  */
 
 #include <QtTest>
+#include <QDir>
+#include <QElapsedTimer>
 #include <QTemporaryDir>
 #include <QtEndian>
 
@@ -25,9 +27,11 @@
 #include "preview/model/ModelDocument.h"
 #include "preview/model/ModelLoader.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -127,6 +131,64 @@ QByteArray gltfJson(const QByteArray &bufferEntry)
 "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}]})");
 }
 
+// One primitive over one data-URI buffer holding trianglePositions(); the
+// caller supplies the primitive, buffer views and accessors.
+QByteArray gltfDoc(const QByteArray &primitive, const QByteArray &bufferViews, const QByteArray &accessors)
+{
+    return QByteArray(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],)")
+           + R"("meshes":[{"primitives":[)" + primitive + R"(]}],)"
+           + R"("buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,)"
+           + trianglePositions().toBase64() + R"("}],"bufferViews":)" + bufferViews + R"(,"accessors":)" + accessors
+           + "}";
+}
+
+const QByteArray kPositionView = R"([{"buffer":0,"byteLength":36}])";
+const QByteArray kPositionAccessor = R"({"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"})";
+
+QByteArray voxChunk(const char *id, const QByteArray &content)
+{
+    QByteArray b(id, 4);
+    put32(b, quint32(content.size()));
+    put32(b, 0);
+    return b + content;
+}
+
+// MagicaVoxel nodes; dictionaries are empty.
+QByteArray voxTransform(int id, int child)
+{
+    QByteArray c;
+    put32(c, quint32(id));
+    put32(c, 0);              // attributes
+    put32(c, quint32(child));
+    put32(c, 0xFFFFFFFFu);    // reserved
+    put32(c, 0xFFFFFFFFu);    // layer
+    put32(c, 1);              // frames
+    put32(c, 0);              // frame attributes
+    return voxChunk("nTRN", c);
+}
+
+QByteArray voxGroup(int id, const QVector<int> &children)
+{
+    QByteArray c;
+    put32(c, quint32(id));
+    put32(c, 0);
+    put32(c, quint32(children.size()));
+    for (int child : children)
+        put32(c, quint32(child));
+    return voxChunk("nGRP", c);
+}
+
+QByteArray voxShape(int id, int model)
+{
+    QByteArray c;
+    put32(c, quint32(id));
+    put32(c, 0);
+    put32(c, 1);              // models
+    put32(c, quint32(model));
+    put32(c, 0);              // model attributes
+    return voxChunk("nSHP", c);
+}
+
 ModelChannel channel(ModelChannelPath path, ModelInterpolation interp, std::vector<float> times,
                      std::vector<float> values)
 {
@@ -182,6 +244,15 @@ private slots:
     void objWeldsAndTriangulates();
     void objRejectsCompiledObjectFiles();
     void emptyAndUnknownFiles();
+
+    // --- hostile inputs ---
+    void gltfStripFanAndLoopExpand();
+    void gltfHugeAccessorCountIsRejected();
+    void gltfHugeStripWithoutBufferViewIsTooLarge();
+    void gltfBufferOutsideTheFolderIsRefused();
+    void plyHugeElementAndListCounts();
+    void voxSelfReferencingGroupVisitsOnce();
+    void objManyUvsOnOnePositionWeldsFast();
 
 private:
     QTemporaryDir m_dir;
@@ -635,6 +706,186 @@ void TestModelLoaders::emptyAndUnknownFiles()
     QVERIFY(!loadBytes(m_dir, QStringLiteral("junk.stl"), QByteArray("not an stl")).doc);
     QVERIFY(!loadBytes(m_dir, QStringLiteral("broken.gltf"), QByteArray("{\"asset\":")).doc);
     QVERIFY(!loadBytes(m_dir, QStringLiteral("short.vox"), QByteArray("VOX \x96\0\0\0MAIN", 12)).doc);
+}
+
+void TestModelLoaders::gltfStripFanAndLoopExpand()
+{
+    const QByteArray accessors = "[" + kPositionAccessor + "]";
+    const ModelLoader::Result strip = loadBytes(
+        m_dir, QStringLiteral("strip.gltf"), gltfDoc(R"({"attributes":{"POSITION":0},"mode":5})", kPositionView, accessors));
+    QVERIFY2(strip.doc, qPrintable(strip.error));
+    QCOMPARE(strip.doc->stats.triangles, quint64(1));
+    const ModelLoader::Result fan = loadBytes(
+        m_dir, QStringLiteral("fan.gltf"), gltfDoc(R"({"attributes":{"POSITION":0},"mode":6})", kPositionView, accessors));
+    QVERIFY2(fan.doc, qPrintable(fan.error));
+    QCOMPARE(fan.doc->stats.triangles, quint64(1));
+    const ModelLoader::Result loop = loadBytes(
+        m_dir, QStringLiteral("loop.gltf"), gltfDoc(R"({"attributes":{"POSITION":0},"mode":2})", kPositionView, accessors));
+    QVERIFY2(loop.doc, qPrintable(loop.error));
+    QCOMPARE(loop.doc->stats.lines, quint64(3)); // closed: 0-1, 1-2, 2-0
+    QCOMPARE(loop.doc->indices.size(), size_t(6));
+    QCOMPARE(loop.doc->indices[5], 0u);
+}
+
+void TestModelLoaders::gltfHugeAccessorCountIsRejected()
+{
+    // 16 * (2^60 + 1 - 1) + 12 wraps to 12 bytes in size_t: cgltf_validate
+    // alone accepts it against a 36-byte view.
+    const ModelLoader::Result wrapped = loadBytes(
+        m_dir, QStringLiteral("wrap.gltf"),
+        gltfDoc(R"({"attributes":{"POSITION":0}})", R"([{"buffer":0,"byteLength":36,"byteStride":16}])",
+                R"([{"bufferView":0,"componentType":5126,"count":1152921504606846977,"type":"VEC3"}])"));
+    QVERIFY(!wrapped.doc);
+    QVERIFY(!wrapped.tooLarge);
+    QVERIFY(!wrapped.error.isEmpty());
+
+    // Zero-filled (no buffer view) matrices: only the size cap bounds them.
+    const ModelLoader::Result zeros = loadBytes(
+        m_dir, QStringLiteral("zeros.gltf"),
+        gltfDoc(R"({"attributes":{"POSITION":0}})", kPositionView,
+                "[" + kPositionAccessor + R"(,{"componentType":5126,"count":4611686018427387904,"type":"MAT4"}])"));
+    QVERIFY(!zeros.doc);
+    QVERIFY(zeros.tooLarge);
+}
+
+void TestModelLoaders::gltfHugeStripWithoutBufferViewIsTooLarge()
+{
+    // (m - 2) * 3 wraps to 2 in 32 bits for this count.
+    for (const QByteArray &count : {QByteArray("1431655768"), QByteArray("200000000")}) {
+        QElapsedTimer timer;
+        timer.start();
+        const ModelLoader::Result r = loadBytes(
+            m_dir, QStringLiteral("hugestrip.gltf"),
+            gltfDoc(R"({"attributes":{"POSITION":0},"indices":1,"mode":5})", kPositionView,
+                    "[" + kPositionAccessor + R"(,{"componentType":5125,"count":)" + count + R"(,"type":"SCALAR"}])"));
+        QVERIFY(!r.doc);
+        QVERIFY2(r.tooLarge, qPrintable(r.error));
+        QVERIFY(timer.elapsed() < 5000); // refused before anything is allocated
+    }
+}
+
+void TestModelLoaders::gltfBufferOutsideTheFolderIsRefused()
+{
+    for (const char *uri : {"../x.bin", "sub/../../x.bin", "%2E%2E/x.bin", "/etc/x.bin", "//host/share/x.bin",
+                            "C:/x.bin", "http://example.com/x.bin", "x.bin:stream", "x.bin."}) {
+        const QByteArray json = QByteArray(R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":")") + uri
+                                + R"("}]})";
+        const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("outside.gltf"), json);
+        QVERIFY2(!r.doc, uri);
+        QVERIFY2(r.error.contains(QLatin1String("folder")), qPrintable(r.error));
+    }
+    // Inside the folder (after "..") is still fine.
+    QVERIFY(m_dir.isValid());
+    QDir(m_dir.path()).mkpath(QStringLiteral("bufs"));
+    QFile bin(m_dir.filePath(QStringLiteral("bufs/tri.bin")));
+    QVERIFY(bin.open(QIODevice::WriteOnly));
+    bin.write(trianglePositions());
+    bin.close();
+    const ModelLoader::Result ok =
+        loadBytes(m_dir, QStringLiteral("inside.gltf"), gltfJson(R"({"byteLength":36,"uri":"bufs/../bufs/tri.bin"})"));
+    QVERIFY2(ok.doc, qPrintable(ok.error));
+    QCOMPARE(ok.doc->stats.triangles, quint64(1));
+}
+
+void TestModelLoaders::plyHugeElementAndListCounts()
+{
+    const QByteArray header = "ply\nformat binary_little_endian 1.0\nelement vertex 3\n"
+                              "property float x\nproperty float y\nproperty float z\n";
+    QByteArray vertices;
+    for (int i = 0; i < 9; ++i)
+        putF(vertices, float(i));
+
+    // 4 * (2^61 + 1) is negative as qint64: the walk must not move backwards.
+    {
+        QByteArray b = header + "element junk 2305843009213693953\nproperty int v\n"
+                                "element face 1\nproperty list uchar int vertex_indices\nend_header\n";
+        b += vertices;
+        put32(b, 0);
+        put32(b, 0);
+        const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("junk.ply"), b);
+        QVERIFY2(r.doc, qPrintable(r.error));
+        QCOMPARE(r.doc->stats.points, quint64(3));
+    }
+    // A float list count of NaN (and later 1e30) is never converted.
+    for (const float count : {std::numeric_limits<float>::quiet_NaN(), 1e30f, -5.0f}) {
+        QByteArray b = header + "element face 1\nproperty list float int vertex_indices\nend_header\n";
+        b += vertices;
+        putF(b, count);
+        for (int i = 0; i < 3; ++i)
+            put32(b, quint32(i));
+        const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("floatcount.ply"), b);
+        QVERIFY2(r.doc, qPrintable(r.error));
+        QCOMPARE(r.doc->stats.triangles, quint64(0));
+        QCOMPARE(r.doc->stats.points, quint64(3));
+    }
+    // ASCII: an infinite list count, and a face count the file cannot hold.
+    {
+        const QByteArray text = "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+                                "property float z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n"
+                                "0 0 0\n1 0 0\n0 1 0\n1e300 0 1 2\n";
+        const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("inf.ply"), text);
+        QVERIFY2(r.doc, qPrintable(r.error));
+        QCOMPARE(r.doc->stats.triangles, quint64(0));
+    }
+    {
+        QElapsedTimer timer;
+        timer.start();
+        const QByteArray text = "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+                                "property float z\nelement face 4000000000\nproperty list uchar int vertex_indices\n"
+                                "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+        const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("manyfaces.ply"), text);
+        QVERIFY(!r.doc);
+        QVERIFY(timer.elapsed() < 5000); // refused before reserving for the header's count
+    }
+    // A vertex count the file cannot hold is refused before allocating.
+    {
+        QByteArray b = "ply\nformat binary_little_endian 1.0\nelement vertex 50000000\n"
+                       "property float x\nproperty float y\nproperty float z\nend_header\n";
+        b += vertices;
+        const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("shortvertices.ply"), b);
+        QVERIFY(!r.doc);
+        QVERIFY(!r.tooLarge);
+    }
+}
+
+void TestModelLoaders::voxSelfReferencingGroupVisitsOnce()
+{
+    // Root transform 0 -> group 1 listing itself 64 times, the root (a cycle)
+    // and transform 2 three times; transform 2 -> shape 3 -> model 0.
+    QVector<int> children(64, 1);
+    children << 0 << 2 << 2 << 2;
+    const QByteArray single = voxFile(1, 1, 1, {{0, 0, 0, 1}});
+    QByteArray b = single + voxTransform(0, 1) + voxGroup(1, children) + voxTransform(2, 3) + voxShape(3, 0);
+    // voxFile's MAIN size covers its own children only: patch it.
+    qToLittleEndian(quint32(b.size() - 20), b.data() + 16);
+    QElapsedTimer timer;
+    timer.start();
+    const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("cycle.vox"), b);
+    QVERIFY2(r.doc, qPrintable(r.error));
+    QVERIFY(timer.elapsed() < 5000);
+    QCOMPARE(r.doc->nodes.size(), size_t(3)); // transform 0, transform 2, one instance
+    QCOMPARE(std::count_if(r.doc->nodes.begin(), r.doc->nodes.end(), [](const ModelNode &n) { return n.mesh >= 0; }),
+             std::ptrdiff_t(1));
+}
+
+void TestModelLoaders::objManyUvsOnOnePositionWeldsFast()
+{
+    // One position with 100 000 distinct UVs: welding must not walk a chain
+    // per corner (quadratic).
+    constexpr int kUvs = 100000;
+    QByteArray text = "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+    text.reserve(kUvs * 40);
+    for (int i = 0; i < kUvs; ++i)
+        text += "vt " + QByteArray::number(i) + " 0\n";
+    for (int i = 1; i <= kUvs; ++i)
+        text += "f 1/" + QByteArray::number(i) + " 2/1 3/1\n";
+    QElapsedTimer timer;
+    timer.start();
+    const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("uvs.obj"), text);
+    QVERIFY2(r.doc, qPrintable(r.error));
+    QVERIFY2(timer.elapsed() < 5000, qPrintable(QString::number(timer.elapsed())));
+    QCOMPARE(r.doc->stats.triangles, quint64(kUvs));
+    QCOMPARE(r.doc->stats.vertices, quint64(kUvs + 2)); // position 1 once per UV, 2 and 3 shared
 }
 
 QTEST_GUILESS_MAIN(TestModelLoaders)

@@ -41,7 +41,10 @@ struct Info {
     qint64 dataOffset = -1;
     qint64 dataBytes = 0;
 
-    bool pcmFastPath() const { return valid && pcmKnown && dataOffset >= 0 && dataBytes > 0 && channels > 0; }
+    bool pcmFastPath() const
+    {
+        return valid && pcmKnown && dataOffset >= 0 && dataBytes > 0 && channels > 0 && sampleRate > 0;
+    }
 };
 
 Info parse(QIODevice &device);

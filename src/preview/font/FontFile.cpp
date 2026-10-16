@@ -137,6 +137,9 @@ void cmapFormat4(const Reader &r, qsizetype base, CmapVector &out)
         const quint16 rangeOffset = r.u16(ranges + s * 2);
         if (start > end)
             continue;
+        // Overlapping segments could repeat the BMP thousands of times.
+        if (qsizetype(out.size()) + qsizetype(end - start) + 1 > kMaxCmapEntries)
+            return;
         for (quint32 c = start; c <= end && c != 0xFFFF; ++c) {
             quint32 glyph = 0;
             if (rangeOffset == 0) {
@@ -468,15 +471,22 @@ QByteArray faceData(const Document &doc, int faceIndex)
         return {};
     if (doc.container != Container::Collection)
         return doc.data;
-    const QByteArrayView data(doc.data);
-    const Face &face = doc.faces[faceIndex];
-    std::vector<std::pair<quint32, QByteArrayView>> tables;
-    tables.reserve(size_t(face.tables.size()));
-    for (const Table &t : face.tables)
-        tables.emplace_back(t.tag, data.sliced(t.offset, t.length));
-    const bool cff = face.table("CFF ") || face.table("CFF2");
-    const quint32 version = cff ? tag("OTTO") : kTrueType;
-    return buildSfnt(version, std::move(tables));
+    return buildFace(doc.data, doc.faces[faceIndex].tables);
+}
+
+QByteArray buildFace(const QByteArray &collection, const QVector<Table> &tables)
+{
+    const QByteArrayView data(collection);
+    std::vector<std::pair<quint32, QByteArrayView>> parts;
+    parts.reserve(size_t(tables.size()));
+    bool cff = false;
+    for (const Table &t : tables) {
+        if (quint64(t.offset) + t.length > quint64(data.size()))
+            continue;
+        parts.emplace_back(t.tag, data.sliced(t.offset, t.length));
+        cff = cff || t.tag == tag("CFF ") || t.tag == tag("CFF2");
+    }
+    return buildSfnt(cff ? tag("OTTO") : kTrueType, std::move(parts));
 }
 
 } // namespace FontFile

@@ -2,6 +2,7 @@
 
 #include "HexFormat.h"
 #include "HexSource.h"
+#include "PaletteMix.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -17,23 +18,11 @@
 
 #include <climits>
 #include <cmath>
-#include <vector>
 
 namespace {
 
 constexpr int kMargin = 8;
-constexpr int kClassCount = 4;
-
-QColor mix(const QColor &a, const QColor &b, double t)
-{
-    return QColor::fromRgbF(float(a.redF() * (1 - t) + b.redF() * t), float(a.greenF() * (1 - t) + b.greenF() * t),
-                            float(a.blueF() * (1 - t) + b.blueF() * t));
-}
-
-bool isDarkPalette(const QPalette &pal)
-{
-    return pal.color(QPalette::Base).lightness() < 128;
-}
+constexpr int kClassCount = HexFormat::kByteClasses;
 
 } // namespace
 
@@ -69,7 +58,7 @@ void HexView::sourceChanged()
 
 void HexView::setBytesPerRow(int bytes)
 {
-    if (bytes == m_bytesPerRow || bytes <= 0)
+    if (bytes == m_bytesPerRow || bytes <= 0 || bytes > kMaxBytesPerRow)
         return;
     m_bytesPerRow = bytes;
     updateLayout();
@@ -97,6 +86,8 @@ void HexView::updateLayout()
     l.hexX = l.offsetX + (l.digits + 2) * l.charWidth;
     l.asciiX = l.hexX + (HexFormat::hexColumnWidth(m_bytesPerRow) + 2) * l.charWidth;
     l.endX = l.asciiX + m_bytesPerRow * l.charWidth + kMargin;
+    m_hexHeader = HexFormat::hexHeader(m_bytesPerRow);
+    m_asciiHeader = HexFormat::asciiHeader(m_bytesPerRow);
 }
 
 qint64 HexView::rowCount() const
@@ -190,10 +181,12 @@ void HexView::copy(CopyFormat format)
     if (!m_source || m_source->size() == 0)
         return;
     const qint64 length = selectionLength();
-    if (length > kMaxCopyBytes) {
+    // A C array spends 12 bytes of text per byte; keep its clipboard text near 50 MB.
+    const qint64 limit = format == CopyFormat::CArray ? kMaxCopyBytes / 4 : kMaxCopyBytes;
+    if (length > limit) {
         QMessageBox::information(this, tr("Copy"),
                                  tr("The selection is larger than %1 MB; select less to copy it.")
-                                     .arg(kMaxCopyBytes / (1024 * 1024)));
+                                     .arg(limit / (1024 * 1024)));
         return;
     }
     QByteArray bytes(length, Qt::Uninitialized);
@@ -263,15 +256,15 @@ void HexView::paintEvent(QPaintEvent *event)
 {
     QPainter p(viewport());
     const QPalette &pal = palette();
-    const bool dark = isDarkPalette(pal);
     const QColor base = pal.color(QPalette::Base);
     const QColor text = pal.color(QPalette::Text);
     const QColor muted = pal.color(QPalette::PlaceholderText);
+    // Byte classes from palette roles, so both themes stay readable.
     const QColor classColors[kClassCount] = {
-        mix(muted, base, 0.35),                                         // NUL
-        text,                                                           // printable
-        dark ? QColor(0x6c, 0xb6, 0xd6) : QColor(0x1f, 0x6f, 0x9a),     // control
-        dark ? QColor(0xd9, 0xa4, 0x6a) : QColor(0x9a, 0x5a, 0x10)};    // high
+        paletteMix(muted, base, 0.35),                                 // NUL
+        text,                                                   // printable
+        paletteMix(text, pal.color(QPalette::Link), 0.7),              // control
+        paletteMix(text, pal.color(QPalette::Highlight), 0.55)};       // high
     p.fillRect(event->rect(), base);
     p.setFont(font());
 
@@ -288,20 +281,10 @@ void HexView::paintEvent(QPaintEvent *event)
     // Column header.
     p.fillRect(QRectF(0, 0, viewport()->width(), l.lineHeight), pal.color(QPalette::AlternateBase));
     p.setPen(muted);
-    QString header(HexFormat::hexColumnWidth(m_bytesPerRow), QLatin1Char(' '));
-    QString asciiHeader(m_bytesPerRow, QLatin1Char(' '));
-    for (int i = 0; i < m_bytesPerRow; ++i) {
-        const QString h = QStringLiteral("%1").arg(i, 2, 16, QLatin1Char('0')).toUpper();
-        header[HexFormat::hexColumnPos(i)] = h[0];
-        header[HexFormat::hexColumnPos(i) + 1] = h[1];
-        asciiHeader[i] = QLatin1Char("0123456789ABCDEF"[i & 0xF]);
-    }
-    p.drawText(QPointF(dx + l.hexX, l.ascent), header);
-    p.drawText(QPointF(dx + l.asciiX, l.ascent), asciiHeader);
+    p.drawText(QPointF(dx + l.hexX, l.ascent), m_hexHeader);
+    p.drawText(QPointF(dx + l.asciiX, l.ascent), m_asciiHeader);
 
-    std::vector<char> rowBytes(static_cast<size_t>(m_bytesPerRow));
-    const int hexWidth = HexFormat::hexColumnWidth(m_bytesPerRow);
-    QString hexRuns[kClassCount], asciiRuns[kClassCount];
+    char rowBytes[kMaxBytesPerRow];
     for (int r = 0; r < rows; ++r) {
         const qint64 row = top + r;
         const qint64 offset = row * m_bytesPerRow;
@@ -312,7 +295,7 @@ void HexView::paintEvent(QPaintEvent *event)
             break;
         if (y + l.lineHeight < event->rect().top())
             continue;
-        const qint64 got = m_source ? m_source->read(offset, rowBytes.data(), m_bytesPerRow) : 0;
+        const qint64 got = m_source ? m_source->read(offset, rowBytes, m_bytesPerRow) : 0;
         const int n = int(std::max<qint64>(0, got));
         const int baseline = y + l.ascent;
 
@@ -346,28 +329,13 @@ void HexView::paintEvent(QPaintEvent *event)
         p.drawText(QPointF(dx + l.offsetX, baseline), HexFormat::offsetText(offset, l.digits));
 
         // One text run per byte class and pane; other classes are spaces.
-        bool used[kClassCount] = {};
+        HexFormat::splitByClass(QByteArrayView(rowBytes, n), m_bytesPerRow, m_runs);
         for (int c = 0; c < kClassCount; ++c) {
-            hexRuns[c].fill(QLatin1Char(' '), hexWidth);
-            asciiRuns[c].fill(QLatin1Char(' '), m_bytesPerRow);
-        }
-        static const char kDigits[] = "0123456789ABCDEF";
-        for (int i = 0; i < n; ++i) {
-            const auto b = quint8(rowBytes[size_t(i)]);
-            const int c = int(HexFormat::classify(b));
-            used[c] = true;
-            const int at = HexFormat::hexColumnPos(i);
-            hexRuns[c][at] = QLatin1Char(kDigits[b >> 4]);
-            hexRuns[c][at + 1] = QLatin1Char(kDigits[b & 0xF]);
-            asciiRuns[c][i] = HexFormat::classify(b) == HexFormat::ByteClass::Printable ? QLatin1Char(char(b))
-                                                                                        : QLatin1Char('.');
-        }
-        for (int c = 0; c < kClassCount; ++c) {
-            if (!used[c])
+            if (!m_runs.used[c])
                 continue;
             p.setPen(classColors[c]);
-            p.drawText(QPointF(dx + l.hexX, baseline), hexRuns[c]);
-            p.drawText(QPointF(dx + l.asciiX, baseline), asciiRuns[c]);
+            p.drawText(QPointF(dx + l.hexX, baseline), m_runs.hex[c]);
+            p.drawText(QPointF(dx + l.asciiX, baseline), m_runs.ascii[c]);
         }
     }
 }
@@ -476,7 +444,8 @@ void HexView::contextMenuEvent(QContextMenuEvent *event)
     const bool canCopy = m_source && m_source->size() > 0 && selectionLength() <= kMaxCopyBytes;
     menu.addAction(tr("Copy as hex"), this, [this]() { copy(CopyFormat::Hex); })->setEnabled(canCopy);
     menu.addAction(tr("Copy as text"), this, [this]() { copy(CopyFormat::Text); })->setEnabled(canCopy);
-    menu.addAction(tr("Copy as C array"), this, [this]() { copy(CopyFormat::CArray); })->setEnabled(canCopy);
+    menu.addAction(tr("Copy as C array"), this, [this]() { copy(CopyFormat::CArray); })
+        ->setEnabled(canCopy && selectionLength() <= kMaxCopyBytes / 4);
     menu.addAction(tr("Copy offset"), this, &HexView::copyOffset);
     menu.addSeparator();
     menu.addAction(tr("Select all"), this, &HexView::selectAll);

@@ -8,7 +8,9 @@
 #include <QSet>
 #include <QXmlStreamReader>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 // Tiled (https://doc.mapeditor.org/en/stable/reference/json-map-format/).
 //
@@ -44,7 +46,10 @@ struct XNode {
     }
 };
 
-void readNode(QXmlStreamReader &xml, XNode &n)
+// Recursive per element; QXmlStreamReader has no depth limit of its own, so
+// a crafted file could overflow the stack. Past kMaxXmlDepth the reader is
+// put in the error state, which ends every level's loop.
+void readNode(QXmlStreamReader &xml, XNode &n, int depth = 0)
 {
     n.name = xml.name().toString();
     for (const QXmlStreamAttribute &a : xml.attributes())
@@ -52,8 +57,12 @@ void readNode(QXmlStreamReader &xml, XNode &n)
     while (!xml.atEnd()) {
         switch (xml.readNext()) {
         case QXmlStreamReader::StartElement:
+            if (depth + 1 >= kMaxXmlDepth) {
+                xml.raiseError(QObject::tr("Elements are nested more than %1 levels deep.").arg(kMaxXmlDepth));
+                return;
+            }
             n.kids.emplace_back();
-            readNode(xml, n.kids.back());
+            readNode(xml, n.kids.back(), depth + 1);
             break;
         case QXmlStreamReader::Characters:
             n.text += xml.text();
@@ -281,7 +290,8 @@ private:
     bool decodeTileData(const QJsonValue &data, const QString &encoding, const QString &compression,
                         size_t count, std::vector<uint32_t> &out);
 
-    void addLayers(const QJsonArray &layers, const QString &prefix, QPointF offset, double opacity, bool visible);
+    void addLayers(const QJsonArray &layers, const QString &prefix, QPointF offset, double opacity, bool visible,
+                   int depth = 0);
     void addTileLayer(const QJsonObject &l, Layer &layer, QPointF offset);
     void emitTiles(Layer &layer, const std::vector<uint32_t> &gids, int x0, int y0, int w, int h, QPointF offset);
     void addObjects(const QJsonObject &l, Layer &layer, QPointF offset);
@@ -308,61 +318,89 @@ void Builder::buildTileset(const QJsonObject &t, const QString &dir, int firstGi
     Tileset ts;
     ts.firstGid = firstGid;
     ts.name = jstr(t, "name");
-    ts.tileW = jint(t, "tilewidth");
-    ts.tileH = jint(t, "tileheight");
-    ts.margin = jint(t, "margin");
-    ts.spacing = jint(t, "spacing");
-    ts.columns = jint(t, "columns");
-    ts.tileCount = jint(t, "tilecount");
+    // Clamped so the sheet arithmetic below (and in sheetRect) cannot divide
+    // by zero or overflow on a crafted file.
+    ts.tileW = std::clamp(jint(t, "tilewidth"), 0, kMaxTileSide);
+    ts.tileH = std::clamp(jint(t, "tileheight"), 0, kMaxTileSide);
+    ts.margin = std::clamp(jint(t, "margin"), 0, kMaxGap);
+    ts.spacing = std::clamp(jint(t, "spacing"), 0, kMaxGap);
+    ts.columns = std::max(0, jint(t, "columns"));
+    ts.tileCount = std::max(0, jint(t, "tilecount"));
     const QJsonObject off = t.value(QLatin1String("tileoffset")).toObject();
     ts.offset = QPoint(jint(off, "x"), jint(off, "y"));
 
     const QString imageRel = jstr(t, "image");
     if (!imageRel.isEmpty()) {
-        ts.image = m_ctx.loadImage(QDir(dir).absoluteFilePath(imageRel));
-        if (!ts.image.isNull() && ts.tileW > 0 && ts.tileH > 0) {
-            if (ts.columns <= 0)
-                ts.columns = std::max(1, (ts.image.width() - 2 * ts.margin + ts.spacing) / (ts.tileW + ts.spacing));
-            const int rows = std::max(1, (ts.image.height() - 2 * ts.margin + ts.spacing) / (ts.tileH + ts.spacing));
-            if (ts.tileCount <= 0)
-                ts.tileCount = ts.columns * rows;
+        if (ts.tileW <= 0) ts.tileW = std::clamp(m_info.tileW, 1, kMaxTileSide);
+        if (ts.tileH <= 0) ts.tileH = std::clamp(m_info.tileH, 1, kMaxTileSide);
+        ts.image = m_ctx.loadImage(m_ctx.resolve(dir, imageRel));
+        if (!ts.image.isNull()) {
+            // Like Tiled, the columns come from the actual image, and the
+            // count (which sizes per-tile caches) is capped to what it holds:
+            // ids past it never draw.
+            const int fitCols = std::max(1, (ts.image.width() - 2 * ts.margin + ts.spacing) / (ts.tileW + ts.spacing));
+            const int fitRows = std::max(1, (ts.image.height() - 2 * ts.margin + ts.spacing) / (ts.tileH + ts.spacing));
+            ts.columns = fitCols;
+            const int cap = int(std::min<qint64>(qint64(fitCols) * fitRows, kMaxInstances));
+            ts.tileCount = ts.tileCount > 0 ? std::min(ts.tileCount, cap) : cap;
         }
     }
 
     const QJsonArray tiles = t.value(QLatin1String("tiles")).toArray();
+    bool idsDropped = false;
     for (const QJsonValue &tv : tiles) {
         const QJsonObject to = tv.toObject();
         const int id = jint(to, "id", -1);
         if (id < 0)
             continue;
+        if (id >= kMaxTileId) {
+            idsDropped = true;
+            continue;
+        }
         const QJsonArray anim = to.value(QLatin1String("animation")).toArray();
         if (!anim.isEmpty()) {
-            std::vector<AnimFrame> frames;
+            Animation a;
+            a.frames.reserve(size_t(anim.size()));
+            qint64 total = 0;
             for (const QJsonValue &fv : anim) {
                 const QJsonObject fo = fv.toObject();
-                frames.push_back({jint(fo, "tileid"), std::max(1, jint(fo, "duration", 100))});
+                const AnimFrame f{jint(fo, "tileid"), std::clamp(jint(fo, "duration", 100), 1, 1 << 24)};
+                total += f.durationMs;
+                a.frames.push_back(f);
             }
-            ts.animations.insert(id, std::move(frames));
+            a.totalMs = int(std::min<qint64>(total, std::numeric_limits<int>::max()));
+            ts.animations.insert(id, std::move(a));
         }
         const QString tileImage = jstr(to, "image");
         if (!tileImage.isEmpty() && imageRel.isEmpty()) {
-            QImage img = m_ctx.loadImage(QDir(dir).absoluteFilePath(tileImage));
+            QImage img = m_ctx.loadImage(m_ctx.resolve(dir, tileImage));
             if (img.isNull())
                 continue;
-            const int sw = jint(to, "width"), sh = jint(to, "height");
-            if (sw > 0 && sh > 0)
-                img = img.copy(jint(to, "x"), jint(to, "y"), sw, sh);
+            // The sub-rectangle stays inside the image: copy() would allocate
+            // whatever size the file names.
+            const int sw = std::min(jint(to, "width"), img.width()), sh = std::min(jint(to, "height"), img.height());
+            if (sw > 0 && sh > 0) {
+                const int sx = std::clamp(jint(to, "x"), 0, img.width()), sy = std::clamp(jint(to, "y"), 0, img.height());
+                const QRect sub = QRect(sx, sy, sw, sh).intersected(img.rect());
+                if (sub.isEmpty())
+                    continue;
+                img = img.copy(sub);
+            }
             if (ts.tiles.size() <= static_cast<size_t>(id))
                 ts.tiles.resize(static_cast<size_t>(id) + 1);
-            ts.tileW = std::max(ts.tileW, img.width());
-            ts.tileH = std::max(ts.tileH, img.height());
+            ts.tileW = std::clamp(img.width(), ts.tileW, kMaxTileSide);
+            ts.tileH = std::clamp(img.height(), ts.tileH, kMaxTileSide);
             ts.tiles[static_cast<size_t>(id)] = std::move(img);
         }
     }
+    if (idsDropped)
+        m_ctx.warnings << QObject::tr("Tileset \"%1\" has tile ids past %2; they are skipped.").arg(ts.name).arg(kMaxTileId);
     if (!ts.tiles.empty())
-        ts.tileCount = std::max(ts.tileCount, int(ts.tiles.size()));
-    if (ts.tileW <= 0) ts.tileW = std::max(1, m_info.tileW);
-    if (ts.tileH <= 0) ts.tileH = std::max(1, m_info.tileH);
+        ts.tileCount = int(ts.tiles.size());          // a collection: one slot per id
+    else if (ts.image.isNull())
+        ts.tileCount = std::min(ts.tileCount, kMaxTileId);   // grey placeholders only
+    if (ts.tileW <= 0) ts.tileW = std::clamp(m_info.tileW, 1, kMaxTileSide);
+    if (ts.tileH <= 0) ts.tileH = std::clamp(m_info.tileH, 1, kMaxTileSide);
 
     if (m_doc.tilesets.size() >= 30000)
         return;
@@ -378,7 +416,7 @@ void Builder::addTileset(const QJsonObject &t, const QString &dir)
         buildTileset(t, dir, firstGid);
         return;
     }
-    const QString path = QDir(dir).absoluteFilePath(source);
+    const QString path = m_ctx.resolve(dir, source);
     const QByteArray data = m_ctx.readFile(path);
     QJsonObject json;
     if (!data.isEmpty()) {
@@ -388,20 +426,25 @@ void Builder::addTileset(const QJsonObject &t, const QString &dir)
             while (!xml.atEnd() && xml.readNext() != QXmlStreamReader::StartElement) {}
             if (!xml.atEnd()) {
                 readNode(xml, root);
-                json = tilesetToJson(root);
+                // Too deep is refused; other XML errors keep what was read.
+                if (xml.error() != QXmlStreamReader::CustomError)
+                    json = tilesetToJson(root);
             }
         } else {
             json = QJsonDocument::fromJson(data).object();
         }
     }
     if (json.isEmpty()) {
-        m_ctx.warnings << QObject::tr("Tileset not found: %1").arg(QDir::toNativeSeparators(path));
+        if (!path.isEmpty())
+            m_ctx.warnings << QObject::tr("Tileset not found: %1").arg(QDir::toNativeSeparators(path));
         // A placeholder keeps the tiles visible as grey squares.
         Tileset ts;
         ts.firstGid = firstGid;
         ts.name = QFileInfo(source).completeBaseName();
-        ts.tileW = std::max(1, m_info.tileW);
-        ts.tileH = std::max(1, m_info.tileH);
+        ts.tileW = std::clamp(m_info.tileW, 1, kMaxTileSide);
+        ts.tileH = std::clamp(m_info.tileH, 1, kMaxTileSide);
+        if (m_doc.tilesets.size() >= 30000)
+            return;
         m_lookup.emplace_back(firstGid, int(m_doc.tilesets.size()));
         m_doc.tilesets.push_back(std::move(ts));
         return;
@@ -524,7 +567,22 @@ void Builder::emitTiles(Layer &layer, const std::vector<uint32_t> &gids, int x0,
     const bool leftward = ortho && m_info.renderOrder.startsWith(QLatin1String("left"));
     const bool upward = ortho && m_info.renderOrder.endsWith(QLatin1String("up"));
     const size_t before = layer.instances.size();
-    layer.instances.reserve(before + gids.size() / 2);
+    // Chunk origins come from the file; past this, x0 + col could overflow
+    // (and the tiles would be dropped as out of range anyway).
+    if (std::abs(qint64(x0)) > (qint64(1) << 28) || std::abs(qint64(y0)) > (qint64(1) << 28))
+        return;
+
+    // Every non-empty cell is at most one instance: refuse before allocating
+    // when they would pass the cap (the caller reports it), and reserve exactly.
+    const size_t cells = size_t(w) * size_t(h);
+    size_t used = 0;
+    for (size_t i = 0; i < cells; ++i)
+        used += (gids[i] & kGidMask) != 0;
+    if (qint64(used) > m_ctx.instanceBudget()) {
+        m_ctx.instances += qint64(used);
+        return;
+    }
+    layer.instances.reserve(before + used);
 
     int poll = 0;
     for (int r = 0; r < h; ++r) {
@@ -751,7 +809,8 @@ void Builder::projectObject(Object &obj, const QJsonObject &o, double x, double 
     obj.size = QSizeF(w, h);
 }
 
-void Builder::addLayers(const QJsonArray &layers, const QString &prefix, QPointF offset, double opacity, bool visible)
+void Builder::addLayers(const QJsonArray &layers, const QString &prefix, QPointF offset, double opacity, bool visible,
+                        int depth)
 {
     for (const QJsonValue &lv : layers) {
         if (m_ctx.cancelled() || m_ctx.instances > kMaxInstances)
@@ -759,13 +818,21 @@ void Builder::addLayers(const QJsonArray &layers, const QString &prefix, QPointF
         const QJsonObject l = lv.toObject();
         const QString type = jstr(l, "type");
         const QString name = jstr(l, "name");
-        const QPointF layerOffset = offset + QPointF(jnum(l, "offsetx"), jnum(l, "offsety"));
+        // Clamped so tile positions stay in float range (finalizeLayer drops
+        // anything past kMaxCoord).
+        const QPointF layerOffset = offset + QPointF(std::clamp(jnum(l, "offsetx"), -1e12, 1e12),
+                                                     std::clamp(jnum(l, "offsety"), -1e12, 1e12));
         const double layerOpacity = opacity * jnum(l, "opacity", 1.0);
         const bool layerVisible = visible && jflag(l, "visible", true);
 
         if (type == QLatin1String("group")) {
+            // Recursive: JSON may nest far deeper than any real map.
+            if (depth + 1 >= kMaxGroupDepth) {
+                m_ctx.warnings << QObject::tr("Layer groups nested more than %1 levels deep are skipped.").arg(kMaxGroupDepth);
+                continue;
+            }
             addLayers(l.value(QLatin1String("layers")).toArray(), prefix + name + QLatin1Char('/'), layerOffset,
-                      layerOpacity, layerVisible);
+                      layerOpacity, layerVisible, depth + 1);
             continue;
         }
 
@@ -785,7 +852,7 @@ void Builder::addLayers(const QJsonArray &layers, const QString &prefix, QPointF
             layer.kind = Layer::Kind::Image;
             const QString image = jstr(l, "image");
             if (!image.isEmpty()) {
-                layer.image = m_ctx.loadImage(QDir(m_ctx.baseDir).absoluteFilePath(image));
+                layer.image = m_ctx.loadImage(m_ctx.resolve(m_ctx.baseDir, image));
                 layer.imagePos = layerOffset + QPointF(jnum(l, "x"), jnum(l, "y"));
             }
         } else {
@@ -802,15 +869,15 @@ bool Builder::buildMap(const QJsonObject &root)
         m_info.orientation = QStringLiteral("orthogonal");
     m_info.width = jint(root, "width");
     m_info.height = jint(root, "height");
-    m_info.tileW = std::max(1, jint(root, "tilewidth", 16));
-    m_info.tileH = std::max(1, jint(root, "tileheight", 16));
+    m_info.tileW = std::clamp(jint(root, "tilewidth", 16), 1, kMaxTileSide);
+    m_info.tileH = std::clamp(jint(root, "tileheight", 16), 1, kMaxTileSide);
     m_info.infinite = jflag(root, "infinite", false);
     if (const QString ro = jstr(root, "renderorder"); !ro.isEmpty())
         m_info.renderOrder = ro;
-    m_info.hexSide = jint(root, "hexsidelength");
+    m_info.hexSide = std::clamp(jint(root, "hexsidelength"), 0, kMaxTileSide);
     m_info.staggerX = jstr(root, "staggeraxis") == QLatin1String("x");
     m_info.staggerEven = jstr(root, "staggerindex") == QLatin1String("even");
-    m_isoOriginX = (m_info.isIso() && !m_info.infinite) ? m_info.height * m_info.tileW / 2.0 : 0.0;
+    m_isoOriginX = (m_info.isIso() && !m_info.infinite) ? double(m_info.height) * m_info.tileW / 2.0 : 0.0;
 
     const QJsonArray tilesets = root.value(QLatin1String("tilesets")).toArray();
     for (const QJsonValue &tv : tilesets)
@@ -831,6 +898,16 @@ bool Builder::buildMap(const QJsonObject &root)
     if (m_info.isOrtho()) {
         m_doc.gridW = m_info.tileW;
         m_doc.gridH = m_info.tileH;
+    } else if (m_info.isIso() || m_info.isStaggered() || m_info.isHex()) {
+        // No grid overlay, but the hover still names the cell.
+        CellLayout &cells = m_doc.cells;
+        cells.kind = m_info.isIso() ? CellLayout::Kind::Isometric : CellLayout::Kind::Staggered;
+        cells.tileW = m_info.tileW;
+        cells.tileH = m_info.tileH;
+        cells.originX = m_isoOriginX;
+        cells.hexSide = m_info.isHex() ? m_info.hexSide : 0;
+        cells.staggerX = m_info.staggerX;
+        cells.staggerEven = m_info.staggerEven;
     }
     QString size = m_info.infinite ? QObject::tr("infinite")
                                    : QObject::tr("%1 × %2 tiles").arg(m_info.width).arg(m_info.height);
@@ -849,8 +926,8 @@ bool Builder::buildMap(const QJsonObject &root)
 
 bool Builder::buildTilesetSheet(const QJsonObject &root)
 {
-    m_info.tileW = std::max(1, jint(root, "tilewidth", 16));
-    m_info.tileH = std::max(1, jint(root, "tileheight", 16));
+    m_info.tileW = std::clamp(jint(root, "tilewidth", 16), 1, kMaxTileSide);
+    m_info.tileH = std::clamp(jint(root, "tileheight", 16), 1, kMaxTileSide);
     buildTileset(root, m_ctx.baseDir, 0);
     if (m_doc.tilesets.empty())
         return false;
@@ -888,8 +965,8 @@ bool Builder::buildTilesetSheet(const QJsonObject &root)
             in.h = uint16_t(ts.tileH);
         }
         // Laid out in sheet order, without the sheet's margin and spacing.
-        in.x = float((id % cols) * ts.tileW);
-        in.y = float((id / cols) * ts.tileH);
+        in.x = float(double(id % cols) * ts.tileW);
+        in.y = float(double(id / cols) * ts.tileH);
         if (in.tileset >= 0 && ts.animations.contains(id))
             in.flags |= Animated;
         layer.instances.push_back(in);

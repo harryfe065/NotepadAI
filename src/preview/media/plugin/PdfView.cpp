@@ -64,13 +64,7 @@ PdfView::PdfView(MediaPlugin::Host *host, QWidget *parent)
     setFocusProxy(m_view);
 
     auto button = [this](const QString &text, const QString &tip, bool checkable = false) {
-        auto *b = new QToolButton;
-        b->setText(text);
-        b->setToolTip(tip);
-        b->setAutoRaise(true);
-        b->setCheckable(checkable);
-        m_host->addToolWidget(b);
-        return b;
+        return m_host->addToolButton(text, tip, checkable);
     };
     m_prev = button(tr("◀"), tr("Previous page"));
     m_page = new QSpinBox;

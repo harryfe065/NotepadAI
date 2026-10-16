@@ -87,7 +87,12 @@ FontPreviewWidget::FontPreviewWidget(const QString &typeId, const QString &displ
     });
     connect(m_source, QOverload<int>::of(&QComboBox::activated), this, &FontPreviewWidget::applySource);
     connect(m_grid, &GlyphGridView::hovered, this, &FontPreviewWidget::showHover);
-    connect(&m_watcher, &QFutureWatcher<FontFile::Document>::finished, this, &FontPreviewWidget::onLoaded);
+    connect(&m_watcher, &QFutureWatcher<Loaded>::finished, this, &FontPreviewWidget::onLoaded);
+    connect(&m_faceWatcher, &QFutureWatcher<FaceBuild>::finished, this, [this]() {
+        const FaceBuild built = m_faceWatcher.result();
+        if (built.serial == m_loadSerial)
+            applyFace(built.face, built.bytes);
+    });
 }
 
 void FontPreviewWidget::startLoad(bool reload)
@@ -106,20 +111,30 @@ void FontPreviewWidget::startLoad(bool reload)
                    tr("Open as text"), [this]() { requestOpenAsText(); });
         return;
     }
-    m_watcher.setFuture(QtConcurrent::run([path]() {
+    // The face shown first is rebuilt on the worker too: a collection face
+    // copies its tables (tens of MB for a CJK collection).
+    const int wantFace = reload ? std::max(0, m_face) : 0;
+    ++m_loadSerial;
+    m_watcher.setFuture(QtConcurrent::run([path, wantFace]() {
+        Loaded loaded;
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
-            FontFile::Document doc;
-            doc.error = file.errorString();
-            return doc;
+            loaded.doc.error = file.errorString();
+            return loaded;
         }
-        return FontFile::parse(file.readAll());
+        loaded.doc = FontFile::parse(file.readAll());
+        if (loaded.doc.isValid()) {
+            loaded.face = std::min(wantFace, int(loaded.doc.faces.size()) - 1);
+            loaded.faceBytes = FontFile::faceData(loaded.doc, loaded.face);
+        }
+        return loaded;
     }));
 }
 
 void FontPreviewWidget::onLoaded()
 {
-    FontFile::Document doc = m_watcher.result();
+    Loaded loaded = m_watcher.result();
+    FontFile::Document &doc = loaded.doc;
     if (!doc.isValid()) {
         if (m_pendingReload && m_doc.isValid()) {
             showBanner(BannerKind::Warning, tr("Could not reload the font: %1").arg(doc.error));
@@ -130,7 +145,6 @@ void FontPreviewWidget::onLoaded()
         return;
     }
     hideBanner();
-    const int previousFace = m_pendingReload ? m_face : 0;
     const int previousSource = m_pendingReload ? m_source->currentData().toInt() : AllCharacters;
     const int previousRow = m_pendingReload ? m_grid->scrollRow() : 0;
     m_doc = std::move(doc);
@@ -143,7 +157,7 @@ void FontPreviewWidget::onLoaded()
     }
     m_faces->setVisible(m_doc.faces.size() > 1);
     m_face = -1;
-    selectFace(std::clamp(previousFace, 0, int(m_doc.faces.size()) - 1));
+    applyFace(loaded.face, loaded.faceBytes);
     if (m_pendingReload) {
         const int sourceIndex = m_source->findData(previousSource);
         if (sourceIndex >= 0) {
@@ -158,9 +172,24 @@ void FontPreviewWidget::selectFace(int index)
 {
     if (index < 0 || index >= m_doc.faces.size() || index == m_face)
         return;
+    if (m_doc.container != FontFile::Container::Collection) {
+        applyFace(index, m_doc.data);
+        return;
+    }
+    // Latest wins: setFuture detaches the watcher from an older rebuild.
+    m_faceWatcher.setFuture(QtConcurrent::run(
+        [serial = m_loadSerial, data = m_doc.data, tables = m_doc.faces[index].tables, index]() {
+            return FaceBuild{serial, index, FontFile::buildFace(data, tables)};
+        }));
+}
+
+void FontPreviewWidget::applyFace(int index, const QByteArray &bytes)
+{
+    if (index < 0 || index >= m_doc.faces.size())
+        return;
     m_face = index;
     m_faces->setCurrentIndex(index);
-    m_raw = QRawFont(FontFile::faceData(m_doc, index), 32.0);
+    m_raw = QRawFont(bytes, 32.0);
     if (!m_raw.isValid()) {
         showBanner(BannerKind::Error, tr("The font's tables were read, but this system cannot render it."),
                    tr("Open as text"), [this]() { requestOpenAsText(); });

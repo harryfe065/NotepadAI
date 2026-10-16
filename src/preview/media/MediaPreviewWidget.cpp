@@ -13,6 +13,10 @@ public:
     explicit Host(MediaPreviewWidget *owner) : m_owner(owner) {}
 
     void addToolWidget(QWidget *widget) override { m_owner->addToolWidget(widget); }
+    QToolButton *addToolButton(const QString &text, const QString &toolTip, bool checkable) override
+    {
+        return m_owner->addToolButton(text, toolTip, checkable);
+    }
     void addToolGap() override { m_owner->addToolGap(); }
     void setInfoText(const QString &text) override { m_owner->setInfoText(text); }
     void setInfoToolTip(const QString &text) override { m_owner->setInfoToolTip(text); }

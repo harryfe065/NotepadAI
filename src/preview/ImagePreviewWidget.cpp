@@ -5,11 +5,14 @@
 #include <QComboBox>
 #include <QFileInfo>
 #include <QLabel>
+#include <QPromise>
 #include <QSlider>
 #include <QToolButton>
 #include <QtConcurrent>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -158,6 +161,8 @@ ImagePreviewWidget::ImagePreviewWidget(const QString &typeId, const QString &dis
     });
 
     connect(&m_watcher, &QFutureWatcher<ImageDecoder::Result>::finished, this, &ImagePreviewWidget::onDecoded);
+    connect(&m_watcher, &QFutureWatcher<ImageDecoder::Result>::progressValueChanged, this,
+            &ImagePreviewWidget::onDecodeSizeKnown);
 }
 
 ImagePreviewWidget::~ImagePreviewWidget()
@@ -169,7 +174,6 @@ ImagePreviewWidget::~ImagePreviewWidget()
 void ImagePreviewWidget::cancelDecode()
 {
     m_cancel->store(true);
-    m_cancel = std::make_shared<std::atomic_bool>(false);
 }
 
 void ImagePreviewWidget::startLoad(bool reload)
@@ -177,6 +181,7 @@ void ImagePreviewWidget::startLoad(bool reload)
     // setFuture() below detaches the watcher from any previous decode, so a
     // stale result can never arrive; the flag only stops that worker early.
     cancelDecode();
+    m_cancel = std::make_shared<std::atomic_bool>(false);
     m_pendingReload = reload;
     const QString path = filePath();
 
@@ -185,27 +190,32 @@ void ImagePreviewWidget::startLoad(bool reload)
         return;
     }
 
-    const qint64 estimate = ImageDecoder::estimateDecodedBytes(path);
-    if (estimate > ImageDecoder::kMaxDecodedBytes) {
-        showBanner(BannerKind::Error,
-                   tr("This image needs %1 of memory to preview; the limit is %2.")
-                       .arg(ImageDecoder::formatBytes(estimate), ImageDecoder::formatBytes(ImageDecoder::kMaxDecodedBytes)));
-        return;
-    }
-    if (estimate > ImageDecoder::kProgressBytes) {
-        showBanner(BannerKind::Neutral, tr("Decoding %1 image…").arg(ImageDecoder::formatBytes(estimate)),
-                   tr("Cancel"), [this]() {
-                       cancelDecode();
-                       showBanner(BannerKind::Neutral, tr("Decoding cancelled."), tr("Retry"),
-                                  [this]() { startLoad(m_pendingReload); });
-                   });
-    }
-
+    // The size estimate (header parse, GIF frame count) and the "too large"
+    // decision run on the worker: it reports a big decode as progress (MiB)
+    // for the cancellable banner (onDecodeSizeKnown), and a file over the cap
+    // comes back as a tooLarge() result.
     const std::shared_ptr<std::atomic_bool> cancel = m_cancel;
     const bool vector = typeId() == QLatin1String("svg");
-    m_watcher.setFuture(QtConcurrent::run([path, cancel, vector]() {
-        return ImageDecoder::decode(path, *cancel, vector);
+    m_watcher.setFuture(QtConcurrent::run([path, cancel, vector](QPromise<ImageDecoder::Result> &promise) {
+        promise.setProgressRange(0, std::numeric_limits<int>::max());
+        promise.addResult(ImageDecoder::decode(path, *cancel, vector, [&promise](qint64 bytes) {
+            if (bytes > ImageDecoder::kProgressBytes)
+                promise.setProgressValue(int(std::min<qint64>(bytes >> 20, std::numeric_limits<int>::max())));
+        }));
     }));
+}
+
+void ImagePreviewWidget::onDecodeSizeKnown(int mib)
+{
+    // A late report from a decode that was cancelled or already finished.
+    if (m_cancel->load() || m_watcher.isFinished())
+        return;
+    showBanner(BannerKind::Neutral, tr("Decoding %1 image…").arg(ImageDecoder::formatBytes(qint64(mib) << 20)),
+               tr("Cancel"), [this]() {
+                   cancelDecode();
+                   showBanner(BannerKind::Neutral, tr("Decoding cancelled."), tr("Retry"),
+                              [this]() { startLoad(m_pendingReload); });
+               });
 }
 
 void ImagePreviewWidget::onDecoded()
@@ -294,7 +304,8 @@ void ImagePreviewWidget::updateInfo()
     parts << QStringLiteral("%1 × %2").arg(doc->width).arg(doc->height) << doc->format;
     if (!doc->detail.isEmpty()) parts << doc->detail;
     if (doc->mipCount > 1) parts << tr("%n mips", nullptr, doc->mipCount);
-    if (doc->faceCount == 6) parts << tr("cubemap");
+    if (doc->isCubemap || doc->faceCount == 6)
+        parts << (doc->faceCount == 6 ? tr("cubemap") : tr("partial cubemap (%n face(s))", nullptr, doc->faceCount));
     if (doc->isAnimation) parts << tr("%n frames", nullptr, doc->layerCount);
     else if (doc->layerCount > 1) parts << tr("%n layers", nullptr, doc->layerCount);
     parts << ImageDecoder::formatBytes(doc->fileSize);

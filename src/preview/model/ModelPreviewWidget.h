@@ -43,7 +43,7 @@ private:
     QFutureWatcher<ModelLoader::Result> m_watcher;
     std::shared_ptr<std::atomic_bool> m_cancel;
     bool m_pendingReload = false;
-    bool m_glFailed = false;
+    QString m_glError;      // why OpenGL is unavailable, re-shown after each load
 
     QComboBox *m_shading = nullptr;
     QToolButton *m_wire = nullptr;

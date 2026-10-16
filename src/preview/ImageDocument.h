@@ -34,6 +34,7 @@ struct ImageDocument
     bool hasAlpha = false;
     bool isHdr = false;
     bool isAnimation = false;     // layers are frames
+    bool isCubemap = false;       // faces are cube sides (possibly fewer than 6)
     QVector<int> frameDelaysMs;   // per layer, when isAnimation
     QStringList faceNames;        // per face, when faceCount > 1
     QStringList layerNames;       // optional: array/volume slice names; for animations the frame's tags
@@ -83,6 +84,17 @@ struct ViewParams {
 // is large (>= 1M), else inline. The caller takes part, so it is safe to call
 // from a pool thread. For decoders that fill rows independently.
 void parallelRows(int rows, qint64 pixels, const std::function<void(int, int)> &fn);
+
+// Writable rows of an image that several workers fill. The non-const
+// QImage::scanLine() detaches (a non-atomic write) on every call, so workers
+// must not call it; this takes the pointer once on the calling thread.
+struct RowWriter {
+    uchar *bits;
+    qsizetype bpl;
+    explicit RowWriter(QImage &img) : bits(img.bits()), bpl(img.bytesPerLine()) {}
+    template <typename T>
+    T *row(int y) const { return reinterpret_cast<T *>(bits + qsizetype(y) * bpl); }
+};
 
 // Box-filter halving of an ARGB32 (straight) or RGBA16FPx4 image.
 QImage halve(const QImage &src);

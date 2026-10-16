@@ -44,6 +44,8 @@ public:
 
     // Envelope over buckets [first, last) as -1..1; false when the range is empty.
     bool range(qsizetype first, qsizetype last, float *lo, float *hi) const;
+    // The same fold over any bucket array (the waveform view keeps its own copy).
+    static bool fold(const Peak *peaks, qsizetype count, qsizetype first, qsizetype last, qint8 *lo, qint8 *hi);
 
 private:
     // `sample(i)` returns interleaved sample i as -1..1.
@@ -54,8 +56,12 @@ private:
     std::vector<Peak> m_peaks;
     int m_rate = 0;
     int m_channels = 1;
-    int m_framesPerBucket = 441;
-    int m_inBucket = 0;
+    // First frame of bucket k is ceil(k * rate / 100): exact for any rate
+    // (22 050 Hz is 220.5 frames a bucket), so the envelope never drifts
+    // against the time axis.
+    qint64 bucketStart(qint64 bucket) const { return (bucket * m_rate + kBucketsPerSecond - 1) / kBucketsPerSecond; }
+    qint64 m_bucket = 0;        // index of the bucket being filled
+    qint64 m_bucketEnd = 0;     // its end frame (exclusive)
     float m_lo = 1.0f, m_hi = -1.0f;
     qint64 m_frames = 0;
     bool m_truncated = false;

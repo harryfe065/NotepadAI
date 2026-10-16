@@ -54,8 +54,6 @@ QString describeFormat(QImage::Format f)
     }
 }
 
-Result fail(const QString &error) { return failed(error); }
-
 enum class Container : quint8 { Qt, Svg, Dds, Tga, Psd, Radiance, Exr, Aseprite };
 
 bool isSvgSuffix(const QString &suffix)
@@ -96,12 +94,16 @@ RasterDecoders::Kind rasterKind(Container c)
     }
 }
 
-// The whole file as one read-only view: mapped (zero-copy) when possible,
-// read into memory otherwise. Valid while the object lives.
+constexpr qsizetype kHeadBytes = 256; // enough for every magic sniffer
+
+// The file as one read-only view, mapped (zero-copy). When mapping fails only
+// the head is read up front; loadAll() reads the rest for decoders that need
+// it. Valid while the object lives.
 struct FileBytes {
     QFile file;
     QByteArray copy;
-    QByteArrayView view;
+    QByteArrayView view;   // the whole file once mapped / loaded
+    QByteArrayView head;
     QString error;
 
     explicit FileBytes(const QString &path) : file(path)
@@ -115,10 +117,28 @@ struct FileBytes {
             return;
         if (uchar *p = file.map(0, size)) {
             view = QByteArrayView(reinterpret_cast<const char *>(p), size);
+            head = view.first(std::min<qsizetype>(view.size(), kHeadBytes));
             return;
         }
+        copy = file.read(kHeadBytes);
+        head = QByteArrayView(copy);
+    }
+
+    // The whole file in memory when it could not be mapped; a file past the
+    // decode cap is refused rather than copied.
+    Result loadAll()
+    {
+        const qint64 size = file.size();
+        if (!view.isNull() || size <= 0)
+            return {};
+        if (size > kMaxDecodedBytes)
+            return tooLarge(size);
+        if (!file.seek(0))
+            return failed(file.errorString());
         copy = file.readAll();
         view = QByteArrayView(copy);
+        head = view.first(std::min<qsizetype>(view.size(), kHeadBytes));
+        return {};
     }
 };
 
@@ -126,14 +146,14 @@ Result decodeSvg(const QString &path, const std::atomic_bool &cancel)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
-        return fail(file.errorString());
+        return failed(file.errorString());
     if (file.size() > kMaxSvgBytes)
         return tooLarge(file.size());
     const QByteArray data = file.readAll();
 
     QSvgRenderer renderer(data);
     if (!renderer.isValid())
-        return fail(QObject::tr("The SVG could not be parsed."));
+        return failed(QObject::tr("The SVG could not be parsed."));
 
     QSizeF intrinsic = renderer.defaultSize();
     if (intrinsic.isEmpty())
@@ -149,11 +169,8 @@ Result decodeSvg(const QString &path, const std::atomic_bool &cancel)
     const double scale = target / longest;
     const QSize rasterSize(std::max(1, int(std::ceil(intrinsic.width() * scale))),
                            std::max(1, int(std::ceil(intrinsic.height() * scale))));
-    if (cancel.load(std::memory_order_relaxed)) {
-        Result r;
-        r.cancelled = true;
-        return r;
-    }
+    if (cancel.load(std::memory_order_relaxed))
+        return cancelled();
 
     QImage raster(rasterSize, QImage::Format_ARGB32_Premultiplied);
     if (raster.isNull())
@@ -174,7 +191,7 @@ Result decodeSvg(const QString &path, const std::atomic_bool &cancel)
     doc->hasAlpha = true;
     doc->vectorData = data;
     doc->rasterScale = scale;
-    doc->surfaces.push_back(raster.convertToFormat(QImage::Format_ARGB32));
+    doc->surfaces.push_back(std::move(raster).convertToFormat(QImage::Format_ARGB32)); // in place
 
     Result r;
     r.pyramid = ImageOps::buildPyramid(doc->surfaces[0]);
@@ -182,7 +199,7 @@ Result decodeSvg(const QString &path, const std::atomic_bool &cancel)
     return r;
 }
 
-Result decodeQt(const QString &path, const std::atomic_bool &cancel)
+Result decodeQt(const QString &path, const std::atomic_bool &cancel, const SizeCallback &onSize)
 {
     QImageReader reader(path);
     reader.setAutoTransform(true);
@@ -190,15 +207,20 @@ Result decodeQt(const QString &path, const std::atomic_bool &cancel)
     // within our own cap; enforce ours instead.
     reader.setAllocationLimit(int(kMaxDecodedBytes >> 20) + 64);
     if (!reader.canRead())
-        return fail(reader.errorString());
+        return failed(reader.errorString());
 
     const QSize size = reader.size();
+    // imageCount() walks the whole file for some formats (GIF); this runs on
+    // the worker, and an early "too large" beats decoding frames up to the cap.
     const int count = reader.imageCount();
     const bool animated = reader.supportsAnimation() && count != 1;
     if (size.isValid()) {
-        const qint64 frame = qint64(size.width()) * size.height() * 4;
-        if (frame * std::max(1, animated ? count : 1) > kMaxDecodedBytes)
-            return tooLarge(frame * std::max(1, count));
+        const qint64 frame = mulSat(qint64(size.width()) * size.height(), 4);
+        const qint64 total = mulSat(frame, std::max(1, animated ? count : 1));
+        if (total > kMaxDecodedBytes)
+            return tooLarge(total);
+        if (onSize)
+            onSize(total);
     }
 
     auto doc = std::make_shared<ImageDocument>();
@@ -209,11 +231,8 @@ Result decodeQt(const QString &path, const std::atomic_bool &cancel)
     qint64 bytes = 0;
     QImage frame;
     while (reader.read(&frame)) {
-        if (cancel.load(std::memory_order_relaxed)) {
-            Result r;
-            r.cancelled = true;
-            return r;
-        }
+        if (cancel.load(std::memory_order_relaxed))
+            return cancelled();
         if (doc->surfaces.empty()) {
             doc->width = frame.width();
             doc->height = frame.height();
@@ -228,12 +247,15 @@ Result decodeQt(const QString &path, const std::atomic_bool &cancel)
         if (bytes > kMaxDecodedBytes)
             return tooLarge(bytes);
         doc->surfaces.push_back(std::move(argb));
-        doc->frameDelaysMs.append(reader.nextImageDelay());
+        // Browsers treat 0-10 ms GIF delays as 100 ms; so do we, so such files
+        // play at their intended speed instead of spinning.
+        const int delay = reader.nextImageDelay();
+        doc->frameDelaysMs.append(delay <= 10 && reader.format() == "gif" ? 100 : delay);
         if (!animated)
             break;
     }
     if (doc->surfaces.empty())
-        return fail(reader.errorString());
+        return failed(reader.errorString());
 
     doc->layerCount = static_cast<int>(doc->surfaces.size());
     doc->isAnimation = doc->layerCount > 1;
@@ -277,32 +299,7 @@ Result cancelled()
     return r;
 }
 
-qint64 estimateDecodedBytes(const QString &path)
-{
-    const QString suffix = QFileInfo(path).suffix().toLower();
-    if (isSvgSuffix(suffix))
-        return 16 << 20;
-    {
-        FileBytes bytes(path);
-        const Container c = containerFor(suffix, bytes.view.first(std::min<qsizetype>(bytes.view.size(), 256)));
-        switch (c) {
-        case Container::Svg: return 16 << 20;
-        case Container::Dds: return DdsDecoder::estimate(bytes.view);
-        case Container::Aseprite: return AsepriteDecoder::estimate(bytes.view);
-        case Container::Tga: case Container::Psd: case Container::Radiance: case Container::Exr:
-            return RasterDecoders::estimate(rasterKind(c), bytes.view);
-        case Container::Qt: break;
-        }
-    }
-    QImageReader reader(path);
-    const QSize size = reader.size();
-    if (!size.isValid())
-        return -1;
-    const int count = reader.supportsAnimation() ? std::max(1, reader.imageCount()) : 1;
-    return qint64(size.width()) * size.height() * 4 * count;
-}
-
-Result decode(const QString &path, const std::atomic_bool &cancel, bool vector)
+Result decode(const QString &path, const std::atomic_bool &cancel, bool vector, const SizeCallback &onSize)
 {
     const QString suffix = QFileInfo(path).suffix().toLower();
     if (vector || isSvgSuffix(suffix))
@@ -314,7 +311,19 @@ Result decode(const QString &path, const std::atomic_bool &cancel, bool vector)
         FileBytes bytes(path);
         if (!bytes.error.isEmpty())
             return failed(bytes.error);
-        c = containerFor(suffix, bytes.view.first(std::min<qsizetype>(bytes.view.size(), 256)));
+        c = containerFor(suffix, bytes.head);
+        if (c != Container::Qt && c != Container::Svg) {
+            if (Result load = bytes.loadAll(); !load.error.isEmpty())
+                return load;
+            // Header-only estimates (the decoders re-check while decoding).
+            const qint64 estimate = c == Container::Dds        ? DdsDecoder::estimate(bytes.view)
+                                    : c == Container::Aseprite ? AsepriteDecoder::estimate(bytes.view)
+                                                               : RasterDecoders::estimate(rasterKind(c), bytes.view);
+            if (estimate > kMaxDecodedBytes)
+                return tooLarge(estimate);
+            if (estimate > 0 && onSize)
+                onSize(estimate);
+        }
         switch (c) {
         case Container::Svg: break;
         case Container::Dds: r = DdsDecoder::decode(bytes.view, cancel); break;
@@ -328,7 +337,7 @@ Result decode(const QString &path, const std::atomic_bool &cancel, bool vector)
     if (c == Container::Svg)
         return decodeSvg(path, cancel);
     if (c == Container::Qt)
-        return decodeQt(path, cancel);
+        return decodeQt(path, cancel, onSize);
     return r;
 }
 

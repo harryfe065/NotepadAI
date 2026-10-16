@@ -25,12 +25,6 @@ namespace {
 constexpr int kScrollSteps = 10000;
 constexpr qint64 kSeekStepMs = 5000;
 
-// One volume for every audio tab of the session, as a media player would.
-float &sessionVolume()
-{
-    static float volume = 0.8f;
-    return volume;
-}
 
 QString loopText(const AudioFileInfo::Info &info)
 {
@@ -60,18 +54,12 @@ AudioView::AudioView(MediaPlugin::Host *host, QWidget *parent)
 
     m_player = new QMediaPlayer(this);
     m_output = new QAudioOutput(this);
-    m_output->setVolume(sessionVolume());
+    m_output->setVolume(MediaFormat::sessionVolume());
     m_player->setAudioOutput(m_output);
     m_builder = new WaveformBuilder(this);
 
-    auto button = [this](const QString &text, const QString &tip, bool checkable) {
-        auto *b = new QToolButton;
-        b->setText(text);
-        b->setToolTip(tip);
-        b->setAutoRaise(true);
-        b->setCheckable(checkable);
-        m_host->addToolWidget(b);
-        return b;
+    auto button = [this](const QString &text, const QString &tip, bool checkable = false) {
+        return m_host->addToolButton(text, tip, checkable);
     };
     m_play = button(tr("Play"), tr("Play or pause (Space)"), false);
     m_stop = button(tr("Stop"), tr("Stop and return to the start (Home)"), false);
@@ -87,7 +75,7 @@ AudioView::AudioView(MediaPlugin::Host *host, QWidget *parent)
     m_volume->setRange(0, 100);
     m_volume->setFixedWidth(90);
     m_volume->setToolTip(tr("Volume"));
-    m_volume->setValue(qRound(QAudio::convertVolume(sessionVolume(), QAudio::LinearVolumeScale,
+    m_volume->setValue(qRound(QAudio::convertVolume(MediaFormat::sessionVolume(), QAudio::LinearVolumeScale,
                                                     QAudio::LogarithmicVolumeScale) * 100));
     m_host->addToolWidget(m_volume);
 
@@ -103,14 +91,14 @@ AudioView::AudioView(MediaPlugin::Host *host, QWidget *parent)
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
         const float linear = float(QAudio::convertVolume(value / 100.0, QAudio::LogarithmicVolumeScale,
                                                          QAudio::LinearVolumeScale));
-        sessionVolume() = linear;
+        MediaFormat::sessionVolume() = linear;
         m_output->setVolume(linear);
     });
 
     connect(m_wave, &WaveformView::seekRequested, this, &AudioView::seek);
     connect(m_wave, &WaveformView::hoverChanged, this, [this](double s) {
         m_hover = s;
-        updateInfo();
+        showInfoLine();
     });
     connect(m_wave, &WaveformView::viewChanged, this, &AudioView::syncScrollBar);
     connect(m_scroll, &QScrollBar::valueChanged, this, [this](int value) {
@@ -336,9 +324,8 @@ void AudioView::updateInfo()
     if (!loop.isEmpty())
         parts << loop;
     parts << MediaFormat::bytesText(m_fileSize);
-    if (m_hover >= 0.0)
-        parts << tr("cursor %1").arg(MediaFormat::preciseTimeText(qint64(m_hover * 1000)));
-    m_host->setInfoText(parts.join(MediaFormat::separator()));
+    m_infoBase = parts.join(MediaFormat::separator());
+    showInfoLine();
 
     // Tags go to the tooltip.
     const QMediaMetaData meta = m_player->metaData();
@@ -359,6 +346,16 @@ void AudioView::updateInfo()
             tip << tr(label).arg(value);
     }
     m_host->setInfoToolTip(tip.join(QLatin1Char('\n')));
+}
+
+void AudioView::showInfoLine()
+{
+    // Mouse moves only change the cursor time; the metadata part is cached.
+    if (m_hover < 0.0)
+        m_host->setInfoText(m_infoBase);
+    else
+        m_host->setInfoText(m_infoBase + MediaFormat::separator()
+                            + tr("cursor %1").arg(MediaFormat::preciseTimeText(qint64(m_hover * 1000))));
 }
 
 void AudioView::themeChanged(const QPalette &palette, bool isDark)

@@ -86,6 +86,70 @@ QByteArray ddsHeader(const DdsSpec &s)
     return b;
 }
 
+// Aseprite pieces: a chunk, a frame of chunks, a 1x1 RGBA file of frames.
+QByteArray aseChunk(quint16 type, const QByteArray &body)
+{
+    QByteArray c;
+    put32(c, quint32(6 + body.size()));
+    put16(c, type);
+    return c + body;
+}
+
+QByteArray aseFrame(const QByteArrayList &chunks)
+{
+    const QByteArray body = chunks.join();
+    QByteArray f;
+    put32(f, quint32(16 + body.size()));
+    put16(f, 0xF1FA);
+    put16(f, quint16(chunks.size()));
+    put16(f, 100);
+    f.append(2, '\0');
+    put32(f, quint32(chunks.size()));
+    return f + body;
+}
+
+QByteArray aseFile(int frames, const QByteArray &frameData)
+{
+    QByteArray h;
+    put32(h, quint32(128 + frameData.size()));
+    put16(h, 0xA5E0);
+    put16(h, quint16(frames));
+    put16(h, 1);
+    put16(h, 1);
+    put16(h, 32);
+    put32(h, 1);
+    put16(h, 100);
+    put32(h, 0);
+    put32(h, 0);
+    h.append(char(0));
+    h.append(3, '\0');
+    put16(h, 0);
+    h.append(char(1));
+    h.append(char(1));
+    h.append(8, '\0');
+    h.append(84, '\0');
+    Q_ASSERT(h.size() == 128);
+    return h + frameData;
+}
+
+// A tags chunk: `count` tags named `name`, each spanning frames [from, to].
+QByteArray aseTags(int count, int from, int to, const QByteArray &name)
+{
+    QByteArray t;
+    put16(t, quint16(count));
+    t.append(8, '\0');
+    for (int i = 0; i < count; ++i) {
+        put16(t, quint16(from));
+        put16(t, quint16(to));
+        t.append(char(0)); // direction
+        put16(t, 0);       // repeat
+        t.append(6 + 3 + 1, '\0');
+        put16(t, quint16(name.size()));
+        t += name;
+    }
+    return aseChunk(0x2018, t);
+}
+
 } // namespace
 
 class TestTextureDecoders : public QObject
@@ -282,6 +346,83 @@ private slots:
         QVERIFY2(r.doc, qPrintable(r.error));
         QCOMPARE(r.doc->surface(0, 0, 0).pixel(1, 1), qRgba(0, 255, 0, 255));
         QCOMPARE(qAlpha(r.doc->surface(0, 0, 0).pixel(0, 0)), 0); // transparent index 0
+    }
+
+    // A legacy cubemap with only some face bits still reads as a cubemap.
+    void ddsLegacyPartialCubemap()
+    {
+        DdsSpec s;
+        s.pfFlags = 0x40 | 0x1;
+        s.bitCount = 32;
+        s.masks[0] = 0x00ff0000;
+        s.masks[1] = 0x0000ff00;
+        s.masks[2] = 0x000000ff;
+        s.masks[3] = 0xff000000;
+        s.caps2 = 0x200 | 0x400 | 0x1000; // CUBEMAP | +X | +Y
+        QByteArray f = ddsHeader(s);
+        f.append(8, '\x7f');
+        std::atomic_bool cancel{false};
+        const auto r = DdsDecoder::decode(f, cancel);
+        QVERIFY2(r.doc, qPrintable(r.error));
+        QCOMPARE(r.doc->faceCount, 2);
+        QVERIFY(r.doc->isCubemap);
+        QCOMPARE(r.doc->faceNames, QStringList({QStringLiteral("+X"), QStringLiteral("+Y")}));
+    }
+
+    // Tileset sizes whose 64-bit byte count used to wrap negative (and pass
+    // the cap) or whose tile count does not fit an int: refused as too large,
+    // never inflated.
+    void asepriteHugeTilesetIsTooLarge()
+    {
+        for (const quint32 count : {quint32(0x7fffffff), quint32(0xffffffff), quint32(0x40000000)}) {
+            QByteArray ts;
+            put32(ts, 1);     // tileset id
+            put32(ts, 2);     // tiles embedded in the file
+            put32(ts, count);
+            put16(ts, 65535); // tile width
+            put16(ts, 65535); // tile height
+            put16(ts, 0);     // base index
+            ts.append(14, '\0');
+            put16(ts, 0);     // name
+            put32(ts, 8);     // compressed length
+            ts.append(8, '\0');
+            const QByteArray f = aseFile(1, aseFrame({aseChunk(0x2023, ts)}));
+            std::atomic_bool cancel{false};
+            const auto r = AsepriteDecoder::decode(f, cancel);
+            QVERIFY(!r.doc);
+            QVERIFY(r.tooLarge);
+        }
+    }
+
+    // A tags chunk repeated in a later frame is ignored, not appended again.
+    void asepriteTagsChunkCountsOnce()
+    {
+        const QByteArray tags = aseTags(1, 0, 1, "walk");
+        const QByteArray f = aseFile(2, aseFrame({tags}) + aseFrame({tags}));
+        std::atomic_bool cancel{false};
+        const auto r = AsepriteDecoder::decode(f, cancel);
+        QVERIFY2(r.doc, qPrintable(r.error));
+        QCOMPARE(r.doc->layerNames, QStringList({QStringLiteral("walk"), QStringLiteral("walk")}));
+    }
+
+    // 300 tags with 1000-char names over 4096 frames, repeated: unbounded that
+    // is ~1.2G chars of labels. Names are cut and the total stays bounded.
+    void asepriteOversizedTagsAreBounded()
+    {
+        constexpr int kFrames = 4096;
+        const QByteArray tags = aseTags(300, 0, kFrames - 1, QByteArray(1000, 'x'));
+        QByteArray frames;
+        for (int f = 0; f < kFrames; ++f)
+            frames += f < 4 ? aseFrame({tags}) : aseFrame({});
+        std::atomic_bool cancel{false};
+        const auto r = AsepriteDecoder::decode(aseFile(kFrames, frames), cancel);
+        QVERIFY2(r.doc, qPrintable(r.error));
+        QCOMPARE(r.doc->layerNames.size(), kFrames);
+        QCOMPARE(r.doc->layerNames[0].section(QStringLiteral(", "), 0, 0), QString(256, QLatin1Char('x')));
+        qint64 total = 0;
+        for (const QString &label : r.doc->layerNames)
+            total += label.size();
+        QVERIFY2(total <= (qint64(2) << 20), qPrintable(QString::number(total)));
     }
 
 private:

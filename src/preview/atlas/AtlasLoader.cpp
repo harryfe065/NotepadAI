@@ -1,5 +1,6 @@
 #include "AtlasLoader.h"
 
+#include "AssetFileUtil.h"
 #include "ImageDecoder.h"
 
 #include <QDir>
@@ -21,17 +22,9 @@ using namespace Atlas;
 namespace {
 
 constexpr int kMaxItems = 2'000'000;
+constexpr int kMaxPlistDepth = 256;   // plist nesting; deeper is refused
 
-QByteArrayView trimmedHead(QByteArrayView head)
-{
-    if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF && static_cast<unsigned char>(head[1]) == 0xBB
-        && static_cast<unsigned char>(head[2]) == 0xBF)
-        head = head.sliced(3);
-    qsizetype i = 0;
-    while (i < head.size() && (head[i] == ' ' || head[i] == '\t' || head[i] == '\r' || head[i] == '\n'))
-        ++i;
-    return head.sliced(i);
-}
+using AssetFileUtil::trimmedHead;
 
 bool has(QByteArrayView hay, const char *needle)
 {
@@ -80,7 +73,9 @@ QRect jsonRect(const QJsonObject &o)
 void resolvePage(Page &page, const QString &baseDir)
 {
     page.path.clear();
-    if (page.file.isEmpty())
+    // A network path written in the file is treated as missing: probing it
+    // would make Windows connect over SMB.
+    if (page.file.isEmpty() || AssetFileUtil::isNetworkPath(page.file))
         return;
     const QDir dir(baseDir);
     QString file = page.file;
@@ -289,13 +284,34 @@ std::shared_ptr<Document> parseJson(const QJsonObject &root, QString *error)
         addFrames(root.value(QLatin1String("frames")), 0, false);
     }
 
-    // Aseprite animation tags label their frame ranges.
-    if (root.value(QLatin1String("frames")).isArray()) {
-        for (const QJsonValue &tv : meta.value(QLatin1String("frameTags")).toArray()) {
-            const QJsonObject t = tv.toObject();
-            const int from = toInt(t.value(QLatin1String("from")), -1), to = toInt(t.value(QLatin1String("to")), -1);
-            for (int i = std::max(0, from); i <= to && i < int(doc->frames.size()); ++i)
-                doc->frames[size_t(i)].tag = t.value(QLatin1String("name")).toString();
+    // Aseprite animation tags label their frame ranges; a later tag wins where
+    // ranges overlap. Tags are applied last to first, and `next` (a
+    // path-halving union-find) skips frames already labelled, so every frame
+    // is written once: O((frames + tags) α) however the ranges overlap.
+    const QJsonArray tags = meta.value(QLatin1String("frameTags")).toArray();
+    if (root.value(QLatin1String("frames")).isArray() && !tags.isEmpty() && !doc->frames.empty()) {
+        const int n = int(doc->frames.size());
+        std::vector<int> next(size_t(n) + 1);
+        for (int i = 0; i <= n; ++i)
+            next[size_t(i)] = i;
+        auto find = [&next](int i) {
+            while (next[size_t(i)] != i) {
+                next[size_t(i)] = next[size_t(next[size_t(i)])];
+                i = next[size_t(i)];
+            }
+            return i;
+        };
+        for (qsizetype k = tags.size(); k-- > 0;) {
+            const QJsonObject t = tags.at(k).toObject();
+            const int from = std::max(0, toInt(t.value(QLatin1String("from")), -1));
+            const int to = std::min(n - 1, toInt(t.value(QLatin1String("to")), -1));
+            if (from > to)
+                continue;
+            const QString name = t.value(QLatin1String("name")).toString();
+            for (int i = find(from); i <= to; i = find(i)) {
+                doc->frames[size_t(i)].tag = name;
+                next[size_t(i)] = i + 1;
+            }
         }
     }
 
@@ -308,9 +324,17 @@ std::shared_ptr<Document> parseJson(const QJsonObject &root, QString *error)
 
 // ------------------------------------------------------------------- plist
 
-QVariant readPlistValue(QXmlStreamReader &xml)
+// Recursive per dict / array; QXmlStreamReader has no depth limit, so past
+// kMaxPlistDepth the reader is put in the error state (which ends every
+// level's loop) instead of overflowing the stack.
+QVariant readPlistValue(QXmlStreamReader &xml, int depth = 0)
 {
     const QString name = xml.name().toString();
+    const bool container = name == QLatin1String("dict") || name == QLatin1String("array");
+    if (container && depth >= kMaxPlistDepth) {
+        xml.raiseError(QObject::tr("The property list is nested more than %1 levels deep.").arg(kMaxPlistDepth));
+        return {};
+    }
     if (name == QLatin1String("dict")) {
         QVariantMap m;
         QString key;
@@ -318,14 +342,14 @@ QVariant readPlistValue(QXmlStreamReader &xml)
             if (xml.name() == QLatin1String("key"))
                 key = xml.readElementText();
             else
-                m.insert(key, readPlistValue(xml));
+                m.insert(key, readPlistValue(xml, depth + 1));
         }
         return m;
     }
     if (name == QLatin1String("array")) {
         QVariantList l;
         while (xml.readNextStartElement())
-            l << readPlistValue(xml);
+            l << readPlistValue(xml, depth + 1);
         return l;
     }
     if (name == QLatin1String("true") || name == QLatin1String("false")) {
@@ -741,6 +765,13 @@ std::shared_ptr<Document> parse(const QByteArray &data, const QString &suffixLow
         else if (error)
             *error = QObject::tr("This XML file is not a texture atlas or bitmap font.");
     } else {
+        // A binary that is no BMFont (a Windows .fnt / .fon resource) is not
+        // text either: say so instead of parsing it as a libGDX atlas.
+        if (head.contains('\0')) {
+            if (error)
+                *error = QObject::tr("This file is not a texture atlas or bitmap font.");
+            return nullptr;
+        }
         const QString text = QString::fromUtf8(data);
         if (head.startsWith("info "))
             doc = parseBmFontText(text, error);

@@ -50,6 +50,7 @@ private:
     void tick();
     void updateTime(qint64 positionMs);
     void updateInfo();
+    void showInfoLine();
     double durationSeconds() const;
 
     MediaPlugin::Host *m_host;
@@ -76,6 +77,7 @@ private:
     bool m_visible = false;
     bool m_syncingScroll = false;
     double m_hover = -1.0;
+    QString m_infoBase;     // info line without the cursor time
     qint64 m_restorePosition = -1;
     bool m_restorePlaying = false;
 };

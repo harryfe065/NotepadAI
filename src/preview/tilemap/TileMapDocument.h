@@ -30,6 +30,11 @@ struct AnimFrame {
     int durationMs = 100;
 };
 
+struct Animation {
+    std::vector<AnimFrame> frames;
+    int totalMs = 0;           // sum of the (>= 1 ms) frame durations, set at load
+};
+
 struct Tileset {
     QString name;
     int firstGid = 0;          // Tiled global id of tile 0
@@ -40,25 +45,26 @@ struct Tileset {
     QPoint offset;             // Tiled <tileoffset>: drawing offset of every tile
     QImage image;            // the sheet (ARGB32_Premultiplied); null for a collection
     std::vector<QImage> tiles; // collection of images: one per tile id (null when absent)
-    QHash<int, std::vector<AnimFrame>> animations;
+    QHash<int, Animation> animations;   // keyed by local tile id; never empty
     int animationTotalMs(int tile) const
     {
-        int total = 0;
-        for (const AnimFrame &f : animations.value(tile))
-            total += std::max(1, f.durationMs);
-        return total;
+        const auto it = animations.constFind(tile);
+        return it != animations.constEnd() ? it->totalMs : 0;
     }
 
     bool isCollection() const { return image.isNull() && !tiles.empty(); }
 
-    // Pixel rect of `id` inside image, or an empty rect.
+    // Pixel rect of `id` inside image, or an empty rect. 64-bit maths: ids,
+    // columns and spacing come from the file.
     QRect sheetRect(int id) const
     {
         if (columns <= 0 || id < 0 || image.isNull())
             return {};
-        const int col = id % columns, row = id / columns;
-        const QRect r(margin + col * (tileW + spacing), margin + row * (tileH + spacing), tileW, tileH);
-        return image.rect().contains(r) ? r : QRect();
+        const qint64 col = id % columns, row = id / columns;
+        const qint64 x = margin + col * (qint64(tileW) + spacing), y = margin + row * (qint64(tileH) + spacing);
+        if (x < 0 || y < 0 || x + tileW > image.width() || y + tileH > image.height() || tileW <= 0 || tileH <= 0)
+            return {};
+        return QRect(int(x), int(y), tileW, tileH);
     }
     const QImage *collectionImage(int id) const
     {
@@ -72,21 +78,24 @@ enum InstanceFlag : uint8_t {
     FlipH = 1,
     FlipV = 2,
     FlipD = 4,       // diagonal (transpose), applied before H and V
-    Animated = 8,    // drawn live by the canvas, not baked into chunks
+    Animated = 8,    // drawn live at fine levels; coarse chunks bake its first frame
 };
 
-// One drawn tile: 20 bytes, so a million-tile map costs 20 MB.
+// One drawn tile: 20 bytes (fields ordered so there is no inner padding), so
+// a million-tile map costs 20 MB.
 struct Instance {
     float x = 0, y = 0;        // top-left, map pixels
     uint16_t w = 0, h = 0;     // drawn size
-    int16_t tileset = -1;      // index into Document::tilesets; -1 = solid colour
     int32_t tile = 0;          // local tile id, or the QRgb of a solid colour
+    int16_t tileset = -1;      // index into Document::tilesets; -1 = solid colour
     uint8_t flags = 0;
 };
+static_assert(sizeof(Instance) == 20, "Instance is sized for 20 bytes");
 
-// Instances of a layer bucketed by the 256 px cell of their top-left corner,
-// stored CSR style (two arrays, no per-cell allocation). A query returns the
-// indices in ascending (= draw) order.
+// Instances of a layer (or a subset of them) bucketed by the cell of their
+// top-left corner, 256 px or coarser so the table stays bounded, stored CSR
+// style (two arrays, no per-cell allocation). A query returns the indices in
+// ascending (= draw) order.
 struct GridIndex {
     float cell = 256.0f;
     int cols = 0, rows = 0;
@@ -96,8 +105,27 @@ struct GridIndex {
     std::vector<uint32_t> items;
 
     void build(const std::vector<Instance> &instances);
+    // Indexes only instances[subset[i]]; queries return those instance indices.
+    void build(const std::vector<Instance> &instances, const std::vector<uint32_t> &subset);
     // Appends the indices of instances that may intersect `r`, sorted ascending.
     void query(const QRectF &r, std::vector<uint32_t> &out) const;
+    // Upper bound of what query(r) would return, without copying: O(rows).
+    size_t countCandidates(const QRectF &r) const;
+};
+
+// How map pixels map back to cells, for the hover read-out.
+struct CellLayout {
+    enum class Kind : uint8_t {
+        None,         // no cells: Document::gridW / gridH (or none) decide
+        Isometric,    // diamonds; (col, row) top vertex at ((col - row) * w / 2 + originX, (col + row) * h / 2)
+        Staggered,    // Tiled staggered and hexagonal (hexSide > 0)
+    };
+    Kind kind = Kind::None;
+    int tileW = 0, tileH = 0;
+    double originX = 0;
+    int hexSide = 0;
+    bool staggerX = false;     // staggeraxis == "x"
+    bool staggerEven = false;  // staggerindex == "even"
 };
 
 struct Object {
@@ -127,6 +155,7 @@ struct Layer {
     std::vector<Instance> instances;
     std::vector<uint32_t> animated;   // indices of Animated instances
     GridIndex grid;
+    GridIndex animatedGrid;           // the animated ones only (live drawing culls with it)
 
     QVector<Object> objects;
 
@@ -147,6 +176,7 @@ struct Document {
     QRectF bounds;             // everything drawn, map pixels
     QColor background;         // invalid = theme base
     int gridW = 0, gridH = 0;  // grid overlay cell, 0 = none
+    CellLayout cells;          // non-orthogonal Tiled maps: hover cell projection
     bool orthogonal = true;
 
     std::vector<Tileset> tilesets;
@@ -167,6 +197,10 @@ QString describeInstance(const Document &doc, const Layer &layer, const Instance
 // Topmost visible tile at `mapPos` over the enabled layers, or nullptr.
 const Instance *hitTest(const Document &doc, const std::vector<bool> &layerOn, const QPointF &mapPos,
                         const Layer **layerOut);
+
+// Cell under `mapPos` (Document::cells, else the gridW x gridH grid); false
+// when the document has no cells.
+bool cellAt(const Document &doc, const QPointF &mapPos, QPoint *cell);
 
 } // namespace TileMap
 

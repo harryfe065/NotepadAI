@@ -99,6 +99,21 @@ private slots:
         QCOMPARE(byte, data[int(HexSource::kPageBytes)]);
     }
 
+    void readsWiderThanTheCache()
+    {
+        // A 5 MB copy with part of it cached must not evict its own pages.
+        const QByteArray data = pattern(int(HexSource::kPageBytes * 90));
+        HexSource source;
+        source.reset(memoryReader(data, nullptr), data.size());
+        char byte = 0;
+        for (int page = 0; page <= 20; ++page)
+            source.read(page * HexSource::kPageBytes, &byte, 1);
+        const qint64 length = HexSource::kPageBytes * 80 + 123;
+        QByteArray out(int(length), 'x');
+        QCOMPARE(source.read(77, out.data(), length), length);
+        QCOMPARE(out, data.mid(77, int(length)));
+    }
+
     void resetDropsTheCache()
     {
         int calls = 0;
@@ -191,14 +206,25 @@ private slots:
         QVERIFY(HexFormat::classify(0x80) == HexFormat::ByteClass::High);
     }
 
-    void rowText()
+    void rowTextByClass()
     {
         const QByteArray row("AB\x00\xFF", 4);
-        // Hex column: two digits per byte, one space between bytes, an extra
-        // space every 8 bytes; bytes past the end are blank.
-        QCOMPARE(HexFormat::hexColumn(row, 8), QStringLiteral("41 42 00 FF            "));
-        QCOMPARE(HexFormat::asciiColumn(row, 8), QStringLiteral("AB..    "));
+        HexFormat::ClassRuns runs;
+        HexFormat::splitByClass(row, 8, runs);
+        // Each class run keeps the column layout: two digits per byte, one
+        // space between bytes; other classes' bytes are blanks.
+        const int printable = int(HexFormat::ByteClass::Printable);
+        const int null = int(HexFormat::ByteClass::Null);
+        const int high = int(HexFormat::ByteClass::High);
+        QCOMPARE(runs.hex[printable], QStringLiteral("41 42                  "));
+        QCOMPARE(runs.hex[null], QStringLiteral("      00               "));
+        QCOMPARE(runs.hex[high], QStringLiteral("         FF            "));
+        QCOMPARE(runs.ascii[printable], QStringLiteral("AB      "));
+        QCOMPARE(runs.ascii[null], QStringLiteral("  .     "));
+        QVERIFY(!runs.used[int(HexFormat::ByteClass::Control)]);
         QCOMPARE(HexFormat::hexColumnWidth(16), 16 * 3 - 1 + 1);
+        QCOMPARE(HexFormat::hexHeader(16).mid(HexFormat::hexColumnPos(15), 2), QStringLiteral("0F"));
+        QCOMPARE(HexFormat::asciiHeader(16), QStringLiteral("0123456789ABCDEF"));
     }
 
     void inspector()

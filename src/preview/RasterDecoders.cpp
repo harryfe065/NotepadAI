@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstring>
 #include <memory>
 
@@ -37,14 +38,31 @@ QString formatName(Kind kind)
 
 // --- stb: TGA, PSD, Radiance ---------------------------------------------------------
 
+// Peak bytes per pixel while decoding, stb's buffers included:
+//  - Radiance: stb's float RGBA (16) next to our RGBA16F surface (8);
+//  - 16-bit PSD: stb's 16-bit RGBA (8) next to its 8-bit copy (4);
+//  - TGA stored with fewer than 4 channels: stb's native buffer next to its
+//    RGBA expansion (comp + 4);
+//  - else stb's RGBA buffer alone: it is swizzled to ARGB32 in place and
+//    becomes the surface.
+int peakBytesPerPixel(Kind kind, int comp, bool sixteen)
+{
+    if (kind == Kind::Radiance) return 16 + 8;
+    if (sixteen) return 8 + 4;
+    if (kind == Kind::Tga && comp >= 1 && comp < 4) return comp + 4;
+    return 4;
+}
+
 qint64 estimateStb(Kind kind, QByteArrayView data)
 {
     if (data.size() > INT_MAX)
         return -1;
+    const int len = int(data.size());
     int w = 0, h = 0, comp = 0;
-    if (!stbi_info_from_memory(bytes(data), int(data.size()), &w, &h, &comp))
+    if (!stbi_info_from_memory(bytes(data), len, &w, &h, &comp))
         return -1;
-    return qint64(w) * h * (kind == Kind::Radiance ? 8 : 4);
+    const bool sixteen = kind == Kind::Psd && stbi_is_16_bit_from_memory(bytes(data), len);
+    return ImageDecoder::mulSat(qint64(w) * h, peakBytesPerPixel(kind, comp, sixteen));
 }
 
 ImageDecoder::Result decodeStb(Kind kind, QByteArrayView data, const std::atomic_bool &cancel)
@@ -56,10 +74,10 @@ ImageDecoder::Result decodeStb(Kind kind, QByteArrayView data, const std::atomic
     if (!stbi_info_from_memory(bytes(data), len, &w, &h, &comp))
         return ImageDecoder::failed(stbError());
     const bool hdr = kind == Kind::Radiance;
-    const qint64 needed = qint64(w) * h * (hdr ? 8 : 4);
+    const bool sixteen = kind == Kind::Psd && stbi_is_16_bit_from_memory(bytes(data), len);
+    const qint64 needed = ImageDecoder::mulSat(qint64(w) * h, peakBytesPerPixel(kind, comp, sixteen));
     if (needed > ImageDecoder::kMaxDecodedBytes)
         return ImageDecoder::tooLarge(needed);
-    const bool sixteen = kind == Kind::Psd && stbi_is_16_bit_from_memory(bytes(data), len);
 
     auto doc = std::make_shared<ImageDocument>();
     doc->format = formatName(kind);
@@ -77,10 +95,10 @@ ImageDecoder::Result decodeStb(Kind kind, QByteArrayView data, const std::atomic
         surface = QImage(w, h, QImage::Format_RGBA16FPx4);
         if (surface.isNull())
             return ImageDecoder::tooLarge(needed);
+        const ImageOps::RowWriter rows(surface);
         ImageOps::parallelRows(h, qint64(w) * h, [&](int y0, int y1) {
             for (int y = y0; y < y1; ++y)
-                qFloatToFloat16(reinterpret_cast<qfloat16 *>(surface.scanLine(y)), rgba + qint64(y) * w * 4,
-                                qsizetype(w) * 4);
+                qFloatToFloat16(rows.row<qfloat16>(y), rgba + qint64(y) * w * 4, qsizetype(w) * 4);
         });
         doc->isHdr = true;
         doc->hasAlpha = false;
@@ -93,12 +111,22 @@ ImageDecoder::Result decodeStb(Kind kind, QByteArrayView data, const std::atomic
             stbi_image_free(rgba);
             return ImageDecoder::cancelled();
         }
-        // Wrap without a copy; the one conversion pass (SIMD swizzle in Qt)
-        // writes the straight ARGB32 surface and frees stb's buffer after.
-        const QImage wrapped(rgba, w, h, qsizetype(w) * 4, QImage::Format_RGBA8888, stbi_image_free, rgba);
-        surface = wrapped.convertToFormat(QImage::Format_ARGB32);
-        if (surface.isNull())
+        // R G B A bytes to ARGB32 words in place, so stb's buffer becomes the
+        // surface (freed with it) and no second full-size image is needed.
+        ImageOps::parallelRows(h, qint64(w) * h, [rgba, w](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                uchar *p = rgba + qsizetype(y) * w * 4;
+                for (int x = 0; x < w; ++x, p += 4) {
+                    const quint32 v = (quint32(p[3]) << 24) | (quint32(p[0]) << 16) | (quint32(p[1]) << 8) | p[2];
+                    std::memcpy(p, &v, 4);
+                }
+            }
+        });
+        surface = QImage(rgba, w, h, qsizetype(w) * 4, QImage::Format_ARGB32, stbi_image_free, rgba);
+        if (surface.isNull()) {
+            stbi_image_free(rgba);
             return ImageDecoder::tooLarge(needed);
+        }
         const QString depth = sixteen ? QObject::tr("16-bit") : QObject::tr("8-bit");
         const QString channels = comp == 1 ? QObject::tr("gray") : comp == 2 ? QObject::tr("gray + alpha")
                                : comp == 3 ? QObject::tr("RGB") : QObject::tr("RGBA");
@@ -218,14 +246,37 @@ ExrChannels pickChannels(const EXRHeader &h)
     return c;
 }
 
+// Data window size; 0 x 0 when it is empty or does not fit an int.
+QSize exrSize(const EXRHeader &hdr)
+{
+    const qint64 w = qint64(hdr.data_window.max_x) - hdr.data_window.min_x + 1;
+    const qint64 h = qint64(hdr.data_window.max_y) - hdr.data_window.min_y + 1;
+    if (w <= 0 || h <= 0 || w > INT_MAX || h > INT_MAX)
+        return {};
+    return QSize(int(w), int(h));
+}
+
+// Peak decode memory: our RGBA16F surface (8 B/px) plus tinyexr's planar copy
+// of every channel. Anything past the cap is reported as just past it, so
+// nothing here can overflow (pixels <= 2^30 from then on).
+qint64 exrPeakBytes(const EXRHeader &hdr, QSize size)
+{
+    const qint64 pixels = qint64(size.width()) * size.height(); // < 2^62
+    if (pixels > ImageDecoder::kMaxDecodedBytes)
+        return pixels;
+    qint64 peak = pixels * 8;
+    for (int i = 0; i < hdr.num_channels && peak <= ImageDecoder::kMaxDecodedBytes; ++i)
+        peak += pixels * pixelBytes(hdr.pixel_types[i]);
+    return peak;
+}
+
 qint64 estimateExr(QByteArrayView data)
 {
     ExrHeader h;
     if (!parseExr(data, h, nullptr))
         return -1;
-    const qint64 w = qint64(h.header.data_window.max_x) - h.header.data_window.min_x + 1;
-    const qint64 hh = qint64(h.header.data_window.max_y) - h.header.data_window.min_y + 1;
-    return w > 0 && hh > 0 ? w * hh * 8 : -1;
+    const QSize size = exrSize(h.header);
+    return size.isEmpty() ? -1 : exrPeakBytes(h.header, size);
 }
 
 inline quint16 toHalfBits(const unsigned char *plane, int type, qsizetype index)
@@ -237,6 +288,10 @@ inline quint16 toHalfBits(const unsigned char *plane, int type, qsizetype index)
         f = reinterpret_cast<const float *>(plane)[index];
     else
         f = float(reinterpret_cast<const quint32 *>(plane)[index]);
+    // Surfaces are half floats (8 B/px); clamp so bright 32-bit values stay
+    // the brightest finite half instead of turning into infinity.
+    if (std::isfinite(f))
+        f = std::clamp(f, -65504.0f, 65504.0f);
     const qfloat16 h(f);
     quint16 bits;
     std::memcpy(&bits, &h, 2);
@@ -250,18 +305,14 @@ ImageDecoder::Result decodeExr(QByteArrayView data, const std::atomic_bool &canc
     if (!parseExr(data, h, &error))
         return ImageDecoder::failed(error);
     const EXRHeader &hdr = h.header;
-    const int w = hdr.data_window.max_x - hdr.data_window.min_x + 1;
-    const int height = hdr.data_window.max_y - hdr.data_window.min_y + 1;
-    if (w <= 0 || height <= 0)
+    const QSize size = exrSize(hdr);
+    if (size.isEmpty())
         return ImageDecoder::failed(QObject::tr("The EXR has an empty data window."));
+    const int w = size.width(), height = size.height();
 
-    // Our RGBA16F surface plus tinyexr's planar copy of every channel.
-    const qint64 needed = qint64(w) * height * 8;
-    qint64 planar = 0;
-    for (int i = 0; i < hdr.num_channels; ++i)
-        planar += qint64(w) * height * pixelBytes(hdr.pixel_types[i]);
-    if (needed > ImageDecoder::kMaxDecodedBytes || needed + planar > 2 * ImageDecoder::kMaxDecodedBytes)
-        return ImageDecoder::tooLarge(needed + planar);
+    const qint64 needed = exrPeakBytes(hdr, size);
+    if (needed > ImageDecoder::kMaxDecodedBytes)
+        return ImageDecoder::tooLarge(needed);
     if (cancel.load(std::memory_order_relaxed))
         return ImageDecoder::cancelled();
 
@@ -289,10 +340,11 @@ ImageDecoder::Result decodeExr(QByteArrayView data, const std::atomic_bool &canc
                           ch.a >= 0 ? hdr.requested_pixel_types[ch.a] : 0};
     const int idx[4] = {ch.r, ch.g, ch.b, ch.a};
     constexpr quint16 kOne = 0x3c00, kZero = 0;
+    const ImageOps::RowWriter rows(surface); // workers never call scanLine()
 
     // Writes `count` pixels of row `y` from planes at plane index `src0`.
     auto writeRun = [&](unsigned char **planes, qsizetype src0, int y, int x0, int count) {
-        auto *d = reinterpret_cast<quint16 *>(surface.scanLine(y)) + 4 * qsizetype(x0);
+        auto *d = rows.row<quint16>(y) + 4 * qsizetype(x0);
         for (int c = 0; c < 4; ++c) {
             if (idx[c] < 0) {
                 const quint16 fill = c == 3 ? kOne : kZero;

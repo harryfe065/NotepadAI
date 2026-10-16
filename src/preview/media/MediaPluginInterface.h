@@ -7,6 +7,7 @@
 
 #include <functional>
 
+class QToolButton;
 class QWidget;
 
 // Contract between NotepadAI and the NotepadAIMedia plugin (add-media-preview
@@ -27,6 +28,8 @@ public:
 
     // Toolbar controls, left of "Open as text", in call order.
     virtual void addToolWidget(QWidget *widget) = 0;
+    // A compact auto-raise button in the toolbar's style.
+    virtual QToolButton *addToolButton(const QString &text, const QString &toolTip, bool checkable = false) = 0;
     virtual void addToolGap() = 0;
     virtual void setInfoText(const QString &text) = 0;
     // Tooltip of the info line (long metadata: tags, comments).
@@ -66,7 +69,7 @@ public:
 
 } // namespace MediaPlugin
 
-#define NotepadAIMediaFactory_iid "ai.notepad.MediaPreview.Factory/1"
+#define NotepadAIMediaFactory_iid "ai.notepad.MediaPreview.Factory/2"
 Q_DECLARE_INTERFACE(MediaPlugin::Factory, NotepadAIMediaFactory_iid)
 
 #endif // MEDIAPLUGININTERFACE_H

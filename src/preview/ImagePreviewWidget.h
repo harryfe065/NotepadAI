@@ -33,6 +33,7 @@ protected:
 
 private:
     void onDecoded();
+    void onDecodeSizeKnown(int mib);
     void documentReady(const ImageDocumentPtr &doc, bool reload);
     void syncSurfaceControls();
     void updateZoomLabel(double zoom, bool fit);

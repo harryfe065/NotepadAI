@@ -1,5 +1,6 @@
 #include "TileMapLoaderInternal.h"
 
+#include "AssetFileUtil.h"
 #include "ImageDecoder.h"
 
 #include <QDir>
@@ -10,14 +11,28 @@
 
 #include "miniz.h"
 
+#include <cmath>
 #include <cstring>
+#include <exception>
+#include <vector>
 
 namespace TileMapLoader {
 
 namespace detail {
 
+QString Context::resolve(const QString &dir, const QString &ref)
+{
+    if (AssetFileUtil::isNetworkPath(ref)) {
+        warnings << QObject::tr("Skipped a network path: %1").arg(ref);
+        return {};
+    }
+    return QDir(dir).absoluteFilePath(ref);
+}
+
 QImage Context::loadImage(const QString &absPath)
 {
+    if (absPath.isEmpty())
+        return {};
     const auto it = m_images.constFind(absPath);
     if (it != m_images.constEnd())
         return it.value();
@@ -45,6 +60,8 @@ QImage Context::loadImage(const QString &absPath)
 
 QByteArray Context::readFile(const QString &absPath)
 {
+    if (absPath.isEmpty())
+        return {};
     QFile f(absPath);
     if (!f.open(QIODevice::ReadOnly) || f.size() > kMaxFileBytes)
         return {};
@@ -86,12 +103,17 @@ bool inflateExact(const QByteArray &src, bool gzip, size_t expected, QByteArray 
 
 void finalizeLayer(TileMap::Layer &layer)
 {
+    // NaN / huge offsets from the file would poison the bounds and the view.
+    std::erase_if(layer.instances, [](const TileMap::Instance &in) {
+        return !(std::abs(in.x) <= kMaxCoord && std::abs(in.y) <= kMaxCoord);
+    });
     layer.animated.clear();
     for (size_t i = 0; i < layer.instances.size(); ++i) {
         if (layer.instances[i].flags & TileMap::Animated)
             layer.animated.push_back(uint32_t(i));
     }
     layer.grid.build(layer.instances);
+    layer.animatedGrid.build(layer.instances, layer.animated);
 }
 
 QRectF contentBounds(const TileMap::Document &doc)
@@ -179,17 +201,7 @@ QString suffixOf(const QString &path)
     return QFileInfo(path).suffix().toLower();
 }
 
-// First non-space byte of a head after an optional BOM.
-QByteArrayView trimmedHead(QByteArrayView head)
-{
-    if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF && static_cast<unsigned char>(head[1]) == 0xBB
-        && static_cast<unsigned char>(head[2]) == 0xBF)
-        head = head.sliced(3);
-    qsizetype i = 0;
-    while (i < head.size() && (head[i] == ' ' || head[i] == '\t' || head[i] == '\r' || head[i] == '\n'))
-        ++i;
-    return head.sliced(i);
-}
+using AssetFileUtil::trimmedHead;
 
 } // namespace
 
@@ -243,6 +255,10 @@ Result loadFromBytes(const QByteArray &data, const QString &suffixLower, const Q
             doc = detail::loadTiled(data, suffixLower, ctx);
     } catch (const std::bad_alloc &) {
         result.error = QObject::tr("Not enough memory to load this map.");
+        return result;
+    } catch (const std::exception &) {
+        // std::length_error and friends from a size the file made up.
+        result.error = QObject::tr("This map is too large to load.");
         return result;
     }
 

@@ -103,14 +103,18 @@ bool isAseprite(QByteArrayView h)
            && static_cast<unsigned char>(h[132]) == 0xFA && static_cast<unsigned char>(h[133]) == 0xF1;
 }
 
-PreviewTabManager::TypeRegistration imageRegistration(const QString &typeId, const QString &displayName,
-                                                      QStringList extensions)
+// Every asset type is a read-only file-path tab that every open surface
+// routes to and that reloads when the file changes. The widget is built as
+// Widget(typeId, displayName, extra..., parent).
+template <typename Widget, typename... Extra>
+PreviewTabManager::TypeRegistration assetType(const QString &typeId, const QString &displayName, const QString &icon,
+                                              QStringList extensions, Extra... extra)
 {
     PreviewTabManager::TypeRegistration reg;
     reg.extensions = std::move(extensions);
-    reg.iconPath = QStringLiteral(":/icons/image-preview.svg");
-    reg.factory = [typeId, displayName](QWidget *parent) -> PreviewContentWidget * {
-        return new ImagePreviewWidget(typeId, displayName, parent);
+    reg.iconPath = icon;
+    reg.factory = [typeId, displayName, extra...](QWidget *parent) -> PreviewContentWidget * {
+        return new Widget(typeId, displayName, extra..., parent);
     };
     reg.wantsFilePath = true;
     reg.displayName = displayName;
@@ -123,8 +127,9 @@ PreviewTabManager::TypeRegistration imageRegistration(const QString &typeId, con
 
 void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplication *app)
 {
-    auto image = imageRegistration(
-        QStringLiteral("image"), QStringLiteral("Image"),
+    const QString imageIcon = QStringLiteral(":/icons/image-preview.svg");
+    auto image = assetType<ImagePreviewWidget>(
+        QStringLiteral("image"), QStringLiteral("Image"), imageIcon,
         {QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("jpeg"), QStringLiteral("jpe"),
          QStringLiteral("jfif"), QStringLiteral("gif"), QStringLiteral("bmp"), QStringLiteral("dib"),
          QStringLiteral("webp"), QStringLiteral("ico"), QStringLiteral("cur"), QStringLiteral("tif"),
@@ -138,24 +143,17 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
                       RasterDecoders::looksLikePsd, RasterDecoders::looksLikeRadiance, isAseprite};
     manager->registerType(QStringLiteral("image"), image);
 
-    auto svg = imageRegistration(QStringLiteral("svg"), QStringLiteral("SVG"),
-                                 {QStringLiteral("svg"), QStringLiteral("svgz")});
+    auto svg = assetType<ImagePreviewWidget>(QStringLiteral("svg"), QStringLiteral("SVG"), imageIcon,
+                                             {QStringLiteral("svg"), QStringLiteral("svgz")});
     svg.sniffers = {isSvg};
     manager->registerType(QStringLiteral("svg"), svg);
 
     // 3D models (add-model-preview). OBJ/PLY/glTF are text formats, but their
     // extensions are unique to models, so they preview by default too.
-    PreviewTabManager::TypeRegistration model;
-    model.extensions = {QStringLiteral("gltf"), QStringLiteral("glb"), QStringLiteral("fbx"), QStringLiteral("obj"),
-                        QStringLiteral("stl"),  QStringLiteral("ply"), QStringLiteral("vox")};
-    model.iconPath = QStringLiteral(":/icons/model-preview.svg");
-    model.factory = [](QWidget *parent) -> PreviewContentWidget * {
-        return new ModelPreviewWidget(QStringLiteral("model"), QStringLiteral("3D model"), parent);
-    };
-    model.wantsFilePath = true;
-    model.displayName = QStringLiteral("3D model");
-    model.opensByDefault = true;
-    model.watchFile = true;
+    auto model = assetType<ModelPreviewWidget>(
+        QStringLiteral("model"), QStringLiteral("3D model"), QStringLiteral(":/icons/model-preview.svg"),
+        {QStringLiteral("gltf"), QStringLiteral("glb"), QStringLiteral("fbx"), QStringLiteral("obj"),
+         QStringLiteral("stl"), QStringLiteral("ply"), QStringLiteral("vox")});
     model.sniffers = {ModelLoader::looksLikeGlb, ModelLoader::looksLikeFbx, ModelLoader::looksLikePly,
                       ModelLoader::looksLikeVox};
     manager->registerType(QStringLiteral("model"), model);
@@ -164,16 +162,9 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
     // only: .tsx is TypeScript JSX and .tmx is also Translation Memory XML, so
     // an extension alone must never open them. .json maps are previewed on
     // request (the explicit Preview actions), never by plain open.
-    PreviewTabManager::TypeRegistration tilemap;
-    tilemap.extensions = {QStringLiteral("tmj"), QStringLiteral("tsj"), QStringLiteral("ldtk"), QStringLiteral("ldtkl")};
-    tilemap.iconPath = QStringLiteral(":/icons/tilemap-preview.svg");
-    tilemap.factory = [](QWidget *parent) -> PreviewContentWidget * {
-        return new TileMapPreviewWidget(QStringLiteral("tilemap"), QStringLiteral("Tile map"), parent);
-    };
-    tilemap.wantsFilePath = true;
-    tilemap.displayName = QStringLiteral("Tile map");
-    tilemap.opensByDefault = true;
-    tilemap.watchFile = true;
+    auto tilemap = assetType<TileMapPreviewWidget>(
+        QStringLiteral("tilemap"), QStringLiteral("Tile map"), QStringLiteral(":/icons/tilemap-preview.svg"),
+        {QStringLiteral("tmj"), QStringLiteral("tsj"), QStringLiteral("ldtk"), QStringLiteral("ldtkl")});
     tilemap.sniffers = {TileMapLoader::looksLikeTiledXml};
     tilemap.sniffExtensions = {QStringLiteral("tmx"), QStringLiteral("tsx"), QStringLiteral("json")};
     tilemap.contentSniffer = TileMapLoader::looksLikeTileMap;
@@ -182,56 +173,34 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
     // Texture atlases and bitmap fonts. .atlas / .tpsheet are unique to them and
     // .fnt is BMFont far more often than a Windows font (which shows an error
     // with "Open as text"); JSON / XML / plist / txt files are matched by content.
-    PreviewTabManager::TypeRegistration atlas;
-    atlas.extensions = {QStringLiteral("atlas"), QStringLiteral("tpsheet"), QStringLiteral("fnt")};
-    atlas.iconPath = QStringLiteral(":/icons/atlas-preview.svg");
-    atlas.factory = [](QWidget *parent) -> PreviewContentWidget * {
-        return new AtlasPreviewWidget(QStringLiteral("atlas"), QStringLiteral("Atlas"), parent);
-    };
-    atlas.wantsFilePath = true;
-    atlas.displayName = QStringLiteral("Atlas");
-    atlas.opensByDefault = true;
-    atlas.watchFile = true;
+    auto atlas = assetType<AtlasPreviewWidget>(
+        QStringLiteral("atlas"), QStringLiteral("Atlas"), QStringLiteral(":/icons/atlas-preview.svg"),
+        {QStringLiteral("atlas"), QStringLiteral("tpsheet"), QStringLiteral("fnt")});
     atlas.sniffers = {AtlasLoader::looksLikeBmFont};
     atlas.sniffExtensions = {QStringLiteral("json"), QStringLiteral("xml"), QStringLiteral("plist"), QStringLiteral("txt")};
     atlas.contentSniffer = AtlasLoader::looksLikeAtlasContent;
     manager->registerType(QStringLiteral("atlas"), atlas);
 
-    // Fonts (add-media-preview): rendered in the app with QRawFont. .fnt stays
-    // with the atlas type (BMFont far more often than a Windows bitmap font).
-    PreviewTabManager::TypeRegistration font;
-    font.extensions = {QStringLiteral("ttf"), QStringLiteral("otf"), QStringLiteral("ttc"), QStringLiteral("otc"),
-                       QStringLiteral("woff"), QStringLiteral("woff2")};
-    font.iconPath = QStringLiteral(":/icons/font-preview.svg");
-    font.factory = [](QWidget *parent) -> PreviewContentWidget * {
-        return new FontPreviewWidget(QStringLiteral("font"), QStringLiteral("Font"), parent);
-    };
-    font.wantsFilePath = true;
-    font.displayName = QStringLiteral("Font");
-    font.opensByDefault = true;
-    font.watchFile = true;
+    // Fonts (add-media-preview): rendered in the app with QRawFont.
+    auto font = assetType<FontPreviewWidget>(
+        QStringLiteral("font"), QStringLiteral("Font"), QStringLiteral(":/icons/font-preview.svg"),
+        {QStringLiteral("ttf"), QStringLiteral("otf"), QStringLiteral("ttc"), QStringLiteral("otc"),
+         QStringLiteral("woff"), QStringLiteral("woff2")});
     font.sniffers = {FontFile::looksLikeFont};
     manager->registerType(QStringLiteral("font"), font);
 
     // Audio, video and PDF: viewers from the NotepadAIMedia plugin, loaded on
     // first use. Registered only when the plugin was built and is installed,
     // so without it these files open as before. (.ts is TypeScript, never video.)
+#if defined(NOTEPADAI_MEDIA_AUDIO_VIDEO) || defined(NOTEPADAI_MEDIA_PDF)
     auto media = [manager](const QString &typeId, const QString &displayName, MediaPlugin::Kind kind,
                            const QString &icon, QStringList extensions, FileKindResolver::Sniffer sniffer) {
-        PreviewTabManager::TypeRegistration reg;
-        reg.extensions = std::move(extensions);
-        reg.iconPath = icon;
-        reg.factory = [typeId, displayName, kind](QWidget *parent) -> PreviewContentWidget * {
-            return new MediaPreviewWidget(typeId, displayName, kind, parent);
-        };
-        reg.wantsFilePath = true;
-        reg.displayName = displayName;
-        reg.opensByDefault = true;
-        reg.watchFile = true;
+        auto reg = assetType<MediaPreviewWidget>(typeId, displayName, icon, std::move(extensions), kind);
         reg.sniffers = {std::move(sniffer)};
         manager->registerType(typeId, reg);
     };
     const bool havePlugin = !MediaPluginLoader::path().isEmpty();
+#endif
 #ifdef NOTEPADAI_MEDIA_AUDIO_VIDEO
     if (havePlugin) {
         media(QStringLiteral("audio"), QStringLiteral("Audio"), MediaPlugin::Kind::Audio,
@@ -255,21 +224,12 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
               QStringLiteral(":/icons/pdf-preview.svg"), {QStringLiteral("pdf")}, MediaSniffers::isPdf);
     }
 #endif
-    Q_UNUSED(media);
-    Q_UNUSED(havePlugin);
 
     // Unrecognised binaries (add-hex-preview): no extensions or sniffers; the
     // resolver's Binary verdict routes here (MainWindow::assetPreviewTypeFor).
-    PreviewTabManager::TypeRegistration hex;
-    hex.iconPath = QStringLiteral(":/icons/hex-preview.svg");
-    hex.factory = [](QWidget *parent) -> PreviewContentWidget * {
-        return new HexPreviewWidget(QStringLiteral("hex"), QStringLiteral("Hex"), parent);
-    };
-    hex.wantsFilePath = true;
-    hex.displayName = QStringLiteral("Hex");
-    hex.opensByDefault = true;
-    hex.watchFile = true;
-    manager->registerType(QStringLiteral("hex"), hex);
+    manager->registerType(QStringLiteral("hex"),
+                          assetType<HexPreviewWidget>(QStringLiteral("hex"), QStringLiteral("Hex"),
+                                                      QStringLiteral(":/icons/hex-preview.svg"), {}));
 
     // Known text extensions skip the head read entirely. Snapshotted from the
     // Lua language table on first use (the table is loaded by then and never

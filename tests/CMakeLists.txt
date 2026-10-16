@@ -2798,6 +2798,7 @@ target_sources(test_2d_formats PRIVATE
     ${CMAKE_SOURCE_DIR}/src/preview/tilemap/TileMapLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/preview/tilemap/TiledLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/preview/tilemap/LdtkLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/tilemap/AssetFileUtil.h
     ${CMAKE_SOURCE_DIR}/src/preview/atlas/AtlasDocument.cpp
     ${CMAKE_SOURCE_DIR}/src/preview/atlas/AtlasLoader.cpp
 )

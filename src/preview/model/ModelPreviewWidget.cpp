@@ -123,7 +123,9 @@ ModelPreviewWidget::ModelPreviewWidget(const QString &typeId, const QString &dis
     connect(m_view, &ModelViewWindow::uploadProgressChanged, this, &ModelPreviewWidget::updateInfo);
     connect(m_view, &ModelViewWindow::settingsChangedByKey, this, &ModelPreviewWidget::syncControls);
     connect(m_view, &ModelViewWindow::glFailed, this, [this](const QString &message) {
-        m_glFailed = true;
+        // Only a missing context is permanent; an upload error belongs to one document.
+        if (m_view->glUnavailable())
+            m_glError = message;
         showBanner(BannerKind::Error, message);
     });
     connect(m_view, &ModelViewWindow::resourcesLost, this, [this]() { startLoad(true); });
@@ -196,8 +198,9 @@ void ModelPreviewWidget::onLoaded()
     }
 
     m_view->setDocument(result.doc, m_pendingReload);
-    if (m_glFailed) {
-        // The error banner stays; the info line still describes the file.
+    if (m_view->glUnavailable()) {
+        // Replaces the loading banner; the info line still describes the file.
+        showBanner(BannerKind::Error, m_glError);
     } else if (!result.doc->warnings.isEmpty()) {
         QStringList shown = result.doc->warnings.mid(0, kMaxWarningsShown);
         if (result.doc->warnings.size() > kMaxWarningsShown)

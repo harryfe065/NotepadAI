@@ -168,6 +168,19 @@ private slots:
         QCOMPARE(peaks.seconds(), 0.025);
     }
 
+    void peaksDoNotDriftAtFractionalRates()
+    {
+        // 22 050 Hz is 220.5 frames a bucket: 100 s must be exactly 10 000 buckets.
+        WaveformPeaks peaks;
+        peaks.reset(22050, 1);
+        const std::vector<qint16> second(22050, 0);
+        for (int s = 0; s < 100; ++s)
+            peaks.add(second.data(), WaveformPeaks::Format::S16, qint64(second.size()));
+        peaks.finish();
+        QCOMPARE(peaks.size(), qsizetype(10000));
+        QCOMPARE(peaks.frames(), qint64(2205000));
+    }
+
     void peaksFoldChannels()
     {
         WaveformPeaks peaks;

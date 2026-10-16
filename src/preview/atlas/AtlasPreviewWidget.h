@@ -6,8 +6,10 @@
 
 #include <QFutureWatcher>
 #include <QRectF>
+#include <QVector>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -44,6 +46,25 @@ private:
         QString label;
     };
 
+    // One page's items bucketed by the cell of their top-left corner (CSR, no
+    // per-cell allocation); items much larger than a cell sit in `large` and
+    // are always visited, so the query widening stays a few cells. Paint and
+    // hover then visit only the cells around the view / the pointer.
+    struct PageIndex {
+        double cell = 64;
+        int cols = 0, rows = 0;
+        double originX = 0, originY = 0;
+        double maxW = 0, maxH = 0;       // largest small item
+        std::vector<uint32_t> start;     // cols * rows + 1
+        std::vector<int> items;          // indices into m_items
+        std::vector<int> large;
+
+        void build(const std::vector<Item> &all, const std::vector<int> &mine);
+        // Appends the items that may intersect `r` (unordered); with
+        // `skipSmall`, only the large ones.
+        void query(const QRectF &r, bool skipSmall, std::vector<int> &out) const;
+    };
+
     void onLoaded();
     void showPage(int page, bool keepView);
     void paintOverlay(QPainter &p, const ImageViewMath &math);
@@ -63,7 +84,10 @@ private:
     Atlas::DocumentPtr m_doc;
     QVector<ImageDocumentPtr> m_images;
     std::vector<Item> m_items;
-    std::vector<std::vector<int>> m_pageItems;
+    std::vector<PageIndex> m_pageIndex;
+    // Per-paint / per-hover buffers, kept so neither allocates.
+    std::vector<int> m_queryScratch;
+    QVector<QRectF> m_rectScratch;
     int m_page = 0;
     int m_selected = -1;
     int m_hover = -1;

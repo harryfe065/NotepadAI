@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace ModelLoader {
 
@@ -37,6 +38,19 @@ Result cancelled()
 {
     Result r;
     r.cancelled = true;
+    return r;
+}
+
+Result finish(ModelDocumentPtr doc, const QString &error, quint64 tooLargeBytes, const std::atomic_bool &cancel)
+{
+    if (cancel.load(std::memory_order_relaxed))
+        return cancelled();
+    if (tooLargeBytes)
+        return tooLarge(qint64(std::min<quint64>(tooLargeBytes, quint64(std::numeric_limits<qint64>::max()))));
+    if (!error.isEmpty())
+        return failed(error);
+    Result r;
+    r.doc = std::move(doc);
     return r;
 }
 

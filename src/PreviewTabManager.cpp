@@ -122,16 +122,34 @@ const PreviewTabManager::TypeRegistration *PreviewTabManager::sniffRegistration(
 {
     if (!m_sniffableExtensions.contains(suffixLower))
         return nullptr;
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly))
-        return nullptr;
-    const QByteArray head = file.read(4096);
-    for (auto it = m_registry.constBegin(); it != m_registry.constEnd(); ++it) {
-        const TypeRegistration &reg = it.value();
-        if (reg.contentSniffer && reg.sniffExtensions.contains(suffixLower) && reg.contentSniffer(head))
-            return &reg;
+    // Editor tab switches ask this for every .json / .xml / .txt tab; a cached
+    // verdict costs one stat instead of an open + 4 KB read.
+    const QFileInfo info(filePath);
+    const qint64 modified = info.lastModified().toMSecsSinceEpoch();
+    const qint64 size = info.size();
+    const auto cached = m_sniffCache.constFind(filePath);
+    if (cached != m_sniffCache.constEnd() && cached->modified == modified && cached->size == size) {
+        const auto reg = m_registry.constFind(cached->typeId);
+        return reg != m_registry.constEnd() ? &reg.value() : nullptr;
     }
-    return nullptr;
+
+    QString typeId;
+    QFile file(filePath);
+    if (file.open(QIODevice::ReadOnly)) {
+        const QByteArray head = file.read(4096);
+        for (auto it = m_registry.constBegin(); it != m_registry.constEnd(); ++it) {
+            const TypeRegistration &reg = it.value();
+            if (reg.contentSniffer && reg.sniffExtensions.contains(suffixLower) && reg.contentSniffer(head)) {
+                typeId = it.key();
+                break;
+            }
+        }
+    }
+    if (m_sniffCache.size() >= kMaxSniffCache)
+        m_sniffCache.clear();
+    m_sniffCache.insert(filePath, {modified, size, typeId});
+    const auto reg = typeId.isEmpty() ? m_registry.constEnd() : m_registry.constFind(typeId);
+    return reg != m_registry.constEnd() ? &reg.value() : nullptr;
 }
 
 bool PreviewTabManager::canPreview(const QString &filePath) const

@@ -1,6 +1,8 @@
 #ifndef HEXVIEW_H
 #define HEXVIEW_H
 
+#include "HexFormat.h"
+
 #include <QAbstractScrollArea>
 
 #include <algorithm>
@@ -38,6 +40,7 @@ public:
     void ensureVisible(qint64 offset);
 
     static constexpr qint64 kMaxCopyBytes = 16LL * 1024 * 1024;
+    static constexpr int kMaxBytesPerRow = 32;
 
     enum class CopyFormat { Hex, Text, CArray };
     void copy(CopyFormat format);
@@ -87,6 +90,8 @@ private:
     bool m_asciiPane = false;
     bool m_dragging = false;
     Layout m_layout;
+    QString m_hexHeader, m_asciiHeader;     // rebuilt with the layout
+    HexFormat::ClassRuns m_runs;            // per-row scratch, reused across rows and paints
 };
 
 #endif // HEXVIEW_H

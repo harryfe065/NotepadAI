@@ -205,6 +205,14 @@ inline quint32 colorFromBytes(quint8 r, quint8 g, quint8 b, quint8 a)
 {
     return quint32(r) | (quint32(g) << 8) | (quint32(b) << 16) | (quint32(a) << 24);
 }
+// [0,1] (float or double) to a rounded byte; NaN and negatives give 0.
+template <typename T>
+inline quint8 unorm8(T v)
+{
+    if (!(v > T(0))) return 0;
+    if (v >= T(1)) return 255;
+    return quint8(v * T(255) + T(0.5));
+}
 // sRGB-encoded component [0,1] to linear (material colours from FBX/OBJ/VOX).
 float srgbToLinear(float c);
 // Up to four (joint, weight) pairs, normalised so the bytes sum to 255.

@@ -32,8 +32,9 @@ bool tagIs(const char *p, const char *tag) { return std::memcmp(p, tag, 4) == 0;
 
 void finishDuration(Info &info)
 {
+    // In double: an Ogg granule may be near 2^63, and frames * 1000 would overflow.
     if (info.frames >= 0 && info.sampleRate > 0)
-        info.durationMs = info.frames * 1000 / info.sampleRate;
+        info.durationMs = qint64(std::min(double(info.frames) * 1000.0 / info.sampleRate, 9.0e15));
 }
 
 void applyLoop(Info &info, qint64 start, qint64 end)
@@ -165,8 +166,11 @@ Info parseWav(QIODevice &dev, qint64 size, bool rf64)
             haveFmt = true;
         } else if (tagIs(id, "ds64") && len >= 24) {
             const QByteArray d = readAt(dev, body, 24);
-            if (d.size() == 24)
-                rf64Data = qint64(le64(d.constData() + 8));
+            if (d.size() == 24) {
+                // A 64-bit size from the file: never past the end of it.
+                const quint64 claimed = le64(d.constData() + 8);
+                rf64Data = claimed > quint64(size) ? size : qint64(claimed);
+            }
         } else if (tagIs(id, "data")) {
             info.dataOffset = body;
             info.dataBytes = std::max<qint64>(0, std::min(len, size - body));
@@ -233,7 +237,7 @@ Info parseWav(QIODevice &dev, qint64 size, bool rf64)
         else if (factFrames >= 0)
             info.frames = factFrames;
         else if (byteRate > 0 && info.sampleRate > 0)
-            info.frames = info.dataBytes * info.sampleRate / byteRate;
+            info.frames = qint64(double(info.dataBytes) * info.sampleRate / byteRate);
     }
     finishDuration(info);
     if (smplStart >= 0)

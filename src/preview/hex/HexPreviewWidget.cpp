@@ -132,6 +132,7 @@ void HexPreviewWidget::cancelSearch()
 {
     m_searchCancel->store(true);
     m_searchCancel = std::make_shared<std::atomic_bool>(false);
+    ++m_searchSerial;
     m_searchBanner->stop();
 }
 
@@ -153,8 +154,9 @@ void HexPreviewWidget::find(bool backward)
     m_patternLength = pattern.size();
     const std::shared_ptr<std::atomic_bool> cancel = m_searchCancel;
     const HexSource::Reader read = HexSource::fileReader(filePath());
-    m_search.setFuture(QtConcurrent::run([read, size, pattern, from, backward, cancel]() {
+    m_search.setFuture(QtConcurrent::run([serial = m_searchSerial, read, size, pattern, from, backward, cancel]() {
         SearchResult r;
+        r.serial = serial;
         r.offset = backward ? HexSearch::find(read, size, pattern, 0, from, true, *cancel)
                             : HexSearch::find(read, size, pattern, from, size, false, *cancel);
         if (r.offset == HexSearch::kNotFound) {
@@ -171,7 +173,7 @@ void HexPreviewWidget::onSearchFinished()
 {
     m_searchBanner->stop();
     const SearchResult r = m_search.result();
-    if (r.offset == HexSearch::kCancelled)
+    if (r.serial != m_searchSerial || r.offset == HexSearch::kCancelled)
         return;
     if (r.offset == HexSearch::kReadError) {
         showBanner(BannerKind::Error, tr("The file could not be read."));
@@ -207,5 +209,5 @@ void HexPreviewWidget::updateInfo()
         if (!values.isEmpty())
             parts << values;
     }
-    setInfoText(parts.join(QStringLiteral("  ·  ")));
+    setInfoText(parts.join(HexFormat::separator()));
 }

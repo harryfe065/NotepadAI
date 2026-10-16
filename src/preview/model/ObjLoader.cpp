@@ -17,6 +17,18 @@ namespace {
 
 constexpr quint32 kNone = std::numeric_limits<quint32>::max();
 
+// A corner's (position, texcoord, normal) indices, the welding key.
+struct WeldKey {
+    quint32 p, t, n;
+};
+
+inline quint64 weldHash(quint32 p, quint32 t, quint32 n)
+{
+    quint64 h = ((quint64(p) << 32) | t) * 0x9E3779B97F4A7C15ull;
+    h ^= (quint64(n) + (h >> 29)) * 0xC2B2AE3D27D4EB4Full;
+    return h ^ (h >> 32);
+}
+
 struct Io {
     const std::atomic_bool *cancel = nullptr;
 };
@@ -169,28 +181,42 @@ ModelLoader::Result load(const QString &path, const std::atomic_bool &cancel)
     const bool hasColors = mesh->color_count > 1 && mesh->colors;
     std::vector<bool> flat(materialCount + 1, !fileHasNormals);
 
-    // Weld (p, t, n) corners: a chain of vertices per position.
-    std::vector<quint32> head(mesh->position_count, kNone);
-    std::vector<quint32> next;
-    std::vector<quint32> keyT;
-    std::vector<quint32> keyN;
-    doc->vertices.reserve(mesh->position_count);
-    next.reserve(mesh->position_count);
-    keyT.reserve(mesh->position_count);
-    keyN.reserve(mesh->position_count);
+    // Weld (p, t, n) corners: open addressing over the whole triple, O(1)
+    // per corner whatever the number of UV / normal splits per position.
+    const size_t expected = std::min<size_t>(mesh->position_count, size_t(corners));
+    std::vector<WeldKey> keys; // per welded vertex
+    keys.reserve(expected);
+    doc->vertices.reserve(expected);
+    size_t capacity = 1024;
+    while (capacity < expected * 2)
+        capacity *= 2;
+    std::vector<quint32> table(capacity, kNone);
+    size_t mask = capacity - 1;
 
     auto vertexFor = [&](const fastObjIndex &ix) -> quint32 {
         const quint32 p = ix.p < mesh->position_count ? ix.p : 0;
         const quint32 t = ix.t < mesh->texcoord_count ? ix.t : 0;
         const quint32 n = ix.n < mesh->normal_count ? ix.n : 0;
-        for (quint32 v = head[p]; v != kNone; v = next[v])
-            if (keyT[v] == t && keyN[v] == n)
-                return v;
+        size_t slot = size_t(weldHash(p, t, n)) & mask;
+        for (quint32 hit = table[slot]; hit != kNone; slot = (slot + 1) & mask, hit = table[slot]) {
+            const WeldKey &k = keys[hit];
+            if (k.p == p && k.t == t && k.n == n)
+                return hit;
+        }
         const quint32 v = quint32(doc->vertices.size());
-        next.push_back(head[p]);
-        head[p] = v;
-        keyT.push_back(t);
-        keyN.push_back(n);
+        table[slot] = v;
+        keys.push_back({p, t, n});
+        if (keys.size() * 2 > table.size()) {
+            // Grow at half load: re-insert every key into a table twice the size.
+            table.assign(table.size() * 2, kNone);
+            mask = table.size() - 1;
+            for (quint32 i = 0; i < quint32(keys.size()); ++i) {
+                size_t s = size_t(weldHash(keys[i].p, keys[i].t, keys[i].n)) & mask;
+                while (table[s] != kNone)
+                    s = (s + 1) & mask;
+                table[s] = i;
+            }
+        }
         ModelVertex out;
         out.px = mesh->positions[size_t(p) * 3];
         out.py = mesh->positions[size_t(p) * 3 + 1];

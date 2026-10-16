@@ -3,6 +3,7 @@
 #include <QAudioBuffer>
 #include <QAudioDecoder>
 #include <QCoreApplication>
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QMutex>
@@ -214,8 +215,8 @@ private:
     bool m_finished = false;
 };
 
-// Decoder threads still running. On quit each is cancelled and joined, so no
-// QThread outlives the application object.
+// Decoder threads still running. On quit all are told to stop at once and
+// joined against one shared deadline, so quitting never waits per thread.
 QSet<QThread *> &liveThreads()
 {
     static QSet<QThread *> threads;
@@ -229,10 +230,12 @@ void joinThreadsOnQuit()
         return;
     connected = true;
     QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, []() {
-        for (QThread *thread : std::as_const(liveThreads())) {
+        for (QThread *thread : std::as_const(liveThreads()))
             thread->quit();
-            thread->wait(2000);
-        }
+        QDeadlineTimer deadline(2000);
+        for (QThread *thread : std::as_const(liveThreads()))
+            thread->wait(deadline);
+        // A decoder stuck in FFmpeg past the deadline is left to process exit.
     });
 }
 

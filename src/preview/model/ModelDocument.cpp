@@ -31,13 +31,6 @@ inline quint32 snorm10(float v)
     return quint32(i) & 0x3FFu;
 }
 
-inline quint8 unorm8(float v)
-{
-    if (!(v > 0.0f)) return 0;
-    if (v >= 1.0f) return 255;
-    return quint8(v * 255.0f + 0.5f);
-}
-
 inline float linearToSrgb(float c)
 {
     if (!(c > 0.0f)) return 0.0f;

@@ -87,12 +87,13 @@ QImage halveArgb32(const QImage &src)
     const int dw = std::max(1, sw / 2), dh = std::max(1, sh / 2);
     QImage dst(dw, dh, QImage::Format_ARGB32);
     if (dst.isNull()) return dst;
+    const RowWriter rows(dst);
     forRows(dh, qint64(dw) * dh, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
             const int sy0 = std::min(2 * y, sh - 1), sy1 = std::min(2 * y + 1, sh - 1);
             const auto *r0 = reinterpret_cast<const quint32 *>(src.constScanLine(sy0));
             const auto *r1 = reinterpret_cast<const quint32 *>(src.constScanLine(sy1));
-            auto *out = reinterpret_cast<quint32 *>(dst.scanLine(y));
+            auto *out = rows.row<quint32>(y);
             for (int x = 0; x < dw; ++x) {
                 const int sx0 = std::min(2 * x, sw - 1), sx1 = std::min(2 * x + 1, sw - 1);
                 const quint32 p[4] = {r0[sx0], r0[sx1], r1[sx0], r1[sx1]};
@@ -125,12 +126,13 @@ QImage halveRgba16f(const QImage &src)
     const int dw = std::max(1, sw / 2), dh = std::max(1, sh / 2);
     QImage dst(dw, dh, QImage::Format_RGBA16FPx4);
     if (dst.isNull()) return dst;
+    const RowWriter rows(dst);
     forRows(dh, qint64(dw) * dh, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
             const int sy0 = std::min(2 * y, sh - 1), sy1 = std::min(2 * y + 1, sh - 1);
             const auto *r0 = reinterpret_cast<const qfloat16 *>(src.constScanLine(sy0));
             const auto *r1 = reinterpret_cast<const qfloat16 *>(src.constScanLine(sy1));
-            auto *out = reinterpret_cast<qfloat16 *>(dst.scanLine(y));
+            auto *out = rows.row<qfloat16>(y);
             for (int x = 0; x < dw; ++x) {
                 const int sx0 = std::min(2 * x, sw - 1), sx1 = std::min(2 * x + 1, sw - 1);
                 const qfloat16 *p[4] = {r0 + 4 * sx0, r0 + 4 * sx1, r1 + 4 * sx0, r1 + 4 * sx1};
@@ -199,10 +201,11 @@ QImage renderCrop(const QImage &level, const QRect &rectIn, const ViewParams &pa
         QImage out(w, h, QImage::Format_ARGB32_Premultiplied);
         if (out.isNull()) return out;
         const Channel ch = params.channel;
+        const RowWriter rows(out);
         forRows(h, pixels, [&](int y0, int y1) {
             for (int y = y0; y < y1; ++y) {
                 const auto *in = reinterpret_cast<const quint32 *>(view.constScanLine(y));
-                auto *o = reinterpret_cast<quint32 *>(out.scanLine(y));
+                auto *o = rows.row<quint32>(y);
                 switch (ch) {
                 case Channel::Rgb:
                     for (int x = 0; x < w; ++x) o[x] = in[x] | 0xff000000u;
@@ -233,10 +236,11 @@ QImage renderCrop(const QImage &level, const QRect &rectIn, const ViewParams &pa
         const auto &lut = srgbLut();
         const float scale = std::exp2(params.exposure);
         const Channel ch = params.channel;
+        const RowWriter rows(out);
         forRows(h, pixels, [&](int y0, int y1) {
             for (int y = y0; y < y1; ++y) {
                 const auto *in = reinterpret_cast<const qfloat16 *>(level.constScanLine(rect.y() + y)) + 4 * rect.x();
-                auto *o = reinterpret_cast<quint32 *>(out.scanLine(y));
+                auto *o = rows.row<quint32>(y);
                 for (int x = 0; x < w; ++x) {
                     const qfloat16 *p = in + 4 * x;
                     const quint32 r = encodeSrgb(float(p[0]) * scale, lut);

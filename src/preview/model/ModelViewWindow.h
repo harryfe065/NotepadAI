@@ -43,6 +43,9 @@ public:
     void setWireframe(bool on);
     void setGrid(bool on);
     void setSkeleton(bool on);
+    // No usable OpenGL (context or renderer init failed); a failed upload of one
+    // document does not count.
+    bool glUnavailable() const { return m_glFailed; }
     bool hasSkeleton() const;
     void setColors(const ModelRenderer::Colors &colors);
 

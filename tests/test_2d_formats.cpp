@@ -24,10 +24,13 @@
 #include "preview/atlas/AtlasLoader.h"
 #include "preview/tilemap/TileMapDocument.h"
 #include "preview/tilemap/TileMapLoader.h"
+#include "preview/tilemap/AssetFileUtil.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -104,6 +107,7 @@ private slots:
     void texturePackerJsonArray();
     void texturePackerJsonHash();
     void asepriteTags();
+    void asepriteOverlappingTags();
     void starlingXml();
     void cocosPlist();
     void bmFontText();
@@ -113,6 +117,7 @@ private slots:
     void atlasSniffers();
     void atlasLoadsPages();
     void atlasRejectsGarbage();
+    void plistTooDeep();
 
     // ------------------------------------------------------------- tile maps
     void tmjOrthogonal();
@@ -122,15 +127,24 @@ private slots:
     void tmjInfiniteChunks();
     void isometricPositions();
     void staggeredPositions();
+    void hexagonalCells();
     void tilesetSheetWithAnimation();
     void externalTilesetTsx();
     void missingTilesetImage();
     void ldtkProject();
     void hitTestAndGrid();
     void gridIndexQuery();
+    void gridIndexHugeExtent();
     void tileMapSniffers();
     void tileMapErrors();
     void tileMapCancel();
+
+    // ------------------------------------------------------ crafted inputs
+    void tiledCraftedSheetNumbers();
+    void tiledHugeTileId();
+    void ldtkCraftedSheetNumbers();
+    void tmxTooDeep();
+    void networkPathsRefused();
 };
 
 // ---------------------------------------------------------------------------
@@ -251,6 +265,23 @@ void Test2dFormats::asepriteTags()
     QVERIFY(doc->frames[0].tag.isEmpty());
     QCOMPARE(doc->frames[1].tag, QStringLiteral("walk"));
     QCOMPARE(doc->frames[2].tag, QStringLiteral("walk"));
+}
+
+void Test2dFormats::asepriteOverlappingTags()
+{
+    // A later tag wins where ranges overlap; out-of-range bounds are clamped.
+    QByteArray frames;
+    for (int i = 0; i < 6; ++i)
+        frames += (i ? "," : "") + QStringLiteral(R"({"filename":"f%1","frame":{"x":%2,"y":0,"w":8,"h":8}})")
+                                       .arg(i).arg(i * 8).toUtf8();
+    const QByteArray json = R"({"frames":[)" + frames + R"(],"meta":{"app":"aseprite","image":"s.png","frameTags":[)"
+                            R"({"name":"all","from":-5,"to":99},{"name":"mid","from":2,"to":3},{"name":"bad","from":4,"to":1}]}})";
+    QString error;
+    const auto doc = AtlasLoader::parse(json, QStringLiteral("json"), QString(), &error);
+    QVERIFY2(doc, qPrintable(error));
+    const QStringList expected{"all", "all", "mid", "mid", "all", "all"};
+    for (int i = 0; i < 6; ++i)
+        QCOMPARE(doc->frames[size_t(i)].tag, expected[i]);
 }
 
 void Test2dFormats::starlingXml()
@@ -500,6 +531,17 @@ void Test2dFormats::atlasRejectsGarbage()
     QVERIFY(!AtlasLoader::parse("BMF", QString(), QString(), &error));
 }
 
+void Test2dFormats::plistTooDeep()
+{
+    // Nesting deep enough to overflow a recursive reader's stack is refused.
+    constexpr int kDepth = 200000;
+    const QByteArray plist = "<?xml version=\"1.0\"?><plist><dict><key>frames</key>" + QByteArray("<array>").repeated(kDepth)
+                             + QByteArray("</array>").repeated(kDepth) + "</dict></plist>";
+    QString error;
+    QVERIFY(!AtlasLoader::parse(plist, QStringLiteral("plist"), QString(), &error));
+    QVERIFY(!error.isEmpty());
+}
+
 // ---------------------------------------------------------------------------
 // Tile maps
 // ---------------------------------------------------------------------------
@@ -692,6 +734,15 @@ void Test2dFormats::isometricPositions()
     QCOMPARE(in[1].x, 64.0f); QCOMPARE(in[1].y, 16.0f);    // (1, 0)
     QCOMPARE(in[2].x, 0.0f);  QCOMPARE(in[2].y, 16.0f);    // (0, 1)
     QCOMPARE(in[3].x, 32.0f); QCOMPARE(in[3].y, 32.0f);    // (1, 1)
+
+    // Hovering a tile's diamond names its cell, though there is no grid overlay.
+    QCOMPARE(r.doc->cells.kind, TileMap::CellLayout::Kind::Isometric);
+    const QPoint expected[] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+    for (int k = 0; k < 4; ++k) {
+        QPoint cell;
+        QVERIFY(TileMap::cellAt(*r.doc, QPointF(in[size_t(k)].x + 32, in[size_t(k)].y + 16), &cell));
+        QCOMPARE(cell, expected[k]);
+    }
 }
 
 void Test2dFormats::staggeredPositions()
@@ -712,6 +763,49 @@ void Test2dFormats::staggeredPositions()
     QCOMPARE(in[1].x, 64.0f); QCOMPARE(in[1].y, 0.0f);     // row 0 is not staggered
     QCOMPARE(in[3].x, 32.0f); QCOMPARE(in[3].y, 16.0f);    // row 1 is: shifted half a tile, half a row down
     QCOMPARE(in[5].x, 160.0f); QCOMPARE(in[5].y, 16.0f);
+
+    // The hover cell of each tile's diamond centre.
+    QCOMPARE(r.doc->cells.kind, TileMap::CellLayout::Kind::Staggered);
+    for (int k = 0; k < 6; ++k) {
+        QPoint cell;
+        QVERIFY(TileMap::cellAt(*r.doc, QPointF(in[size_t(k)].x + 32, in[size_t(k)].y + 16), &cell));
+        QCOMPARE(cell, QPoint(k % 3, k / 3));
+    }
+    // A diamond's left vertex region belongs to the row above, not the box it sits in.
+    QPoint corner;
+    QVERIFY(TileMap::cellAt(*r.doc, QPointF(2, 2), &corner));
+    QCOMPARE(corner, QPoint(-1, -1));
+}
+
+void Test2dFormats::hexagonalCells()
+{
+    // Pointy-top hexagons (stagger axis y, odd rows shifted): 32 x 32 boxes
+    // with 16 px sides, rows 24 px apart, odd rows shifted 16 px right.
+    TileMap::Document doc;
+    doc.cells.kind = TileMap::CellLayout::Kind::Staggered;
+    doc.cells.tileW = 32;
+    doc.cells.tileH = 32;
+    doc.cells.hexSide = 16;
+    QPoint cell;
+    QVERIFY(TileMap::cellAt(doc, QPointF(16, 16), &cell));
+    QCOMPARE(cell, QPoint(0, 0));
+    QVERIFY(TileMap::cellAt(doc, QPointF(32, 40), &cell));    // (0, 1): x 16 + 16, y 24 + 16
+    QCOMPARE(cell, QPoint(0, 1));
+    QVERIFY(TileMap::cellAt(doc, QPointF(96, 40), &cell));
+    QCOMPARE(cell, QPoint(2, 1));
+    QVERIFY(TileMap::cellAt(doc, QPointF(1, 1), &cell));      // the top-left corner is the hexagon above-left
+    QCOMPARE(cell, QPoint(-1, -1));
+
+    // Flat-top (stagger axis x).
+    doc.cells.staggerX = true;
+    QVERIFY(TileMap::cellAt(doc, QPointF(16, 16), &cell));
+    QCOMPARE(cell, QPoint(0, 0));
+    QVERIFY(TileMap::cellAt(doc, QPointF(40, 32), &cell));    // column 1 shifted down: x 24 + 16, y 16 + 16
+    QCOMPARE(cell, QPoint(1, 0));
+
+    // No cells at all: no coordinates.
+    TileMap::Document none;
+    QVERIFY(!TileMap::cellAt(none, QPointF(5, 5), &cell));
 }
 
 void Test2dFormats::tilesetSheetWithAnimation()
@@ -734,8 +828,15 @@ void Test2dFormats::tilesetSheetWithAnimation()
     QVERIFY(!(in[1].flags & TileMap::Animated));
     QVERIFY(r.doc->hasAnimations);
     QCOMPARE(r.doc->layers[0].animated.size(), size_t(1));
-    QCOMPARE(r.doc->tilesets[0].animations.value(0).size(), size_t(2));
+    QCOMPARE(r.doc->tilesets[0].animations.value(0).frames.size(), size_t(2));
     QCOMPARE(r.doc->tilesets[0].animationTotalMs(0), 300);
+    QCOMPARE(r.doc->tilesets[0].animationTotalMs(1), 0);
+    // The animated-tile index finds it for the canvas's live culling.
+    std::vector<uint32_t> live;
+    r.doc->layers[0].animatedGrid.query(QRectF(0, 0, 4, 4), live);
+    QCOMPARE(live.size(), size_t(1));
+    QCOMPARE(live[0], 0u);
+    QCOMPARE(r.doc->layers[0].animatedGrid.countCandidates(QRectF(0, 0, 4, 4)), size_t(1));
 }
 
 void Test2dFormats::externalTilesetTsx()
@@ -901,6 +1002,30 @@ void Test2dFormats::gridIndexQuery()
     QVERIFY(none.empty());
 }
 
+void Test2dFormats::gridIndexHugeExtent()
+{
+    // Extents near the float range (and a NaN) neither overflow the cell
+    // counts nor throw: the cells grow until the table is bounded.
+    std::vector<TileMap::Instance> instances(4);
+    instances[0].x = -3e38f;
+    instances[1].x = 3e38f;
+    instances[1].y = 3e38f;
+    instances[2].x = std::numeric_limits<float>::quiet_NaN();
+    instances[3].x = 5.0f;
+    for (TileMap::Instance &in : instances)
+        in.w = in.h = 16;
+    TileMap::GridIndex grid;
+    grid.build(instances);
+    QVERIFY(grid.cols >= 1 && grid.rows >= 1);
+    QVERIFY(qint64(grid.cols) * grid.rows <= (qint64(1) << 22));
+    std::vector<uint32_t> hits;
+    grid.query(QRectF(0, -1, 10, 2), hits);
+    QVERIFY(std::find(hits.begin(), hits.end(), 3u) != hits.end());
+    QVERIFY(std::is_sorted(hits.begin(), hits.end()));
+    grid.query(QRectF(std::numeric_limits<double>::quiet_NaN(), 0, 1, 1), hits);   // no crash
+    QVERIFY(grid.countCandidates(QRectF(-1e300, -1e300, 2e300, 2e300)) <= instances.size());
+}
+
 void Test2dFormats::tileMapSniffers()
 {
     QVERIFY(TileMapLoader::looksLikeTiledJson(R"({ "compressionlevel":-1, "height":10, "tiledversion":"1.10.2" })"));
@@ -942,6 +1067,130 @@ void Test2dFormats::tileMapCancel()
     const auto r = TileMapLoader::load(path, cancel);
     QVERIFY(r.cancelled);
     QVERIFY(!r.doc);
+}
+
+// ---------------------------------------------------------------------------
+// Crafted inputs
+// ---------------------------------------------------------------------------
+
+void Test2dFormats::tiledCraftedSheetNumbers()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    writeTiles(dir);
+    // Negative spacing cancelling the tile width used to divide by zero; a
+    // made-up tile count used to size per-tile caches.
+    const QByteArray tileset =
+        R"({"firstgid":1,"name":"t","tilewidth":16,"tileheight":16,"spacing":-16,"margin":-4,"columns":2000000000,)"
+        R"("tilecount":2000000000,"image":"tiles.png"})";
+    const auto r = loadMap(dir, QStringLiteral("n.tmj"),
+        orthoMap(R"({"type":"tilelayer","name":"g","width":2,"height":1,"offsetx":1e300,"data":[1,2]},)"
+                 R"({"type":"tilelayer","name":"h","width":2,"height":1,"data":[1,2]})", tileset, 2, 1));
+    QVERIFY2(r.doc, qPrintable(r.error));
+    const TileMap::Tileset &ts = r.doc->tilesets[0];
+    QCOMPARE(ts.spacing, 0);
+    QCOMPARE(ts.margin, 0);
+    QCOMPARE(ts.columns, 2);          // from the image, like Tiled
+    QCOMPARE(ts.tileCount, 2);        // what the 32 x 16 sheet holds
+    // A layer pushed beyond any sane coordinate is dropped, not a broken view.
+    QVERIFY(r.doc->layers[0].instances.empty());
+    QCOMPARE(r.doc->layers[1].instances.size(), size_t(2));
+    QVERIFY(std::isfinite(r.doc->bounds.width()) && r.doc->bounds.width() < 1e6);
+}
+
+void Test2dFormats::tiledHugeTileId()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    writeTiles(dir);
+    // A collection tile id near INT_MAX must not size the image table.
+    const QByteArray json =
+        R"({"name":"c","tilewidth":16,"tileheight":16,"tilecount":2,"columns":0,"tiles":[)"
+        R"({"id":2000000000,"image":"tiles.png"},{"id":1,"image":"tiles.png","x":16,"y":0,"width":16,"height":16}]})";
+    const auto r = loadMap(dir, QStringLiteral("c.tsj"), json);
+    QVERIFY2(r.doc, qPrintable(r.error));
+    QCOMPARE(r.doc->tilesets[0].tiles.size(), size_t(2));
+    QCOMPARE(r.doc->tilesets[0].tiles[1].size(), QSize(16, 16));
+    QVERIFY(!r.doc->warnings.isEmpty());
+    QCOMPARE(r.doc->layers[0].instances.size(), size_t(1));
+}
+
+void Test2dFormats::ldtkCraftedSheetNumbers()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    writeTiles(dir);
+    // grid 1 + spacing -1 used to divide by zero.
+    const QByteArray json =
+        R"({"__header__":{},"jsonVersion":"1.5.3","defaultGridSize":16,"worldLayout":"Free","defs":{"layers":[],)"
+        R"("tilesets":[{"uid":10,"identifier":"T","relPath":"tiles.png","tileGridSize":1,"spacing":-1,"padding":-7}],"entities":[]},)"
+        R"("levels":[{"identifier":"L0","worldX":0,"worldY":0,"pxWid":32,"pxHei":16,"layerInstances":[)"
+        R"({"__identifier":"Tiles","__type":"Tiles","__gridSize":1,"__tilesetDefUid":10,"__pxTotalOffsetX":0,"__pxTotalOffsetY":0,)"
+        R"("gridTiles":[{"px":[0,0],"src":[3,2],"f":0},{"px":[1,0],"src":[-5,1e300],"f":0}]}]}]})";
+    const auto r = loadMap(dir, QStringLiteral("p.ldtk"), json);
+    QVERIFY2(r.doc, qPrintable(r.error));
+    const auto &tiles = r.doc->layers[0].instances;
+    QCOMPARE(tiles.size(), size_t(1));      // the out-of-sheet source is skipped
+    QCOMPARE(tiles[0].tile, 2 * 32 + 3);
+}
+
+void Test2dFormats::tmxTooDeep()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    constexpr int kDepth = 200000;
+    const QByteArray tmx = "<map orientation=\"orthogonal\" width=\"1\" height=\"1\" tilewidth=\"16\" tileheight=\"16\">"
+                           + QByteArray("<group>").repeated(kDepth) + QByteArray("</group>").repeated(kDepth) + "</map>";
+    const auto r = loadMap(dir, QStringLiteral("deep.tmx"), tmx);
+    QVERIFY(!r.doc);
+    QVERIFY(!r.error.isEmpty());
+
+    // Within the limit, nested groups still load (and name their layers by path).
+    const QByteArray ok = "<map orientation=\"orthogonal\" width=\"1\" height=\"1\" tilewidth=\"16\" tileheight=\"16\">"
+                          "<group name=\"a\"><group name=\"b\"><objectgroup name=\"o\"/></group></group></map>";
+    const auto shallow = loadMap(dir, QStringLiteral("ok.tmx"), ok);
+    QVERIFY2(shallow.doc, qPrintable(shallow.error));
+    QCOMPARE(shallow.doc->layers.size(), size_t(1));
+    QCOMPARE(shallow.doc->layers[0].name, QStringLiteral("a/b/o"));
+}
+
+void Test2dFormats::networkPathsRefused()
+{
+    QVERIFY(AssetFileUtil::isNetworkPath(u"\\\\host\\share\\a.png"));
+    QVERIFY(AssetFileUtil::isNetworkPath(u"//host/share/a.png"));
+    QVERIFY(AssetFileUtil::isNetworkPath(u"\\/host/a.png"));
+    QVERIFY(AssetFileUtil::isNetworkPath(u"\\\\?\\UNC\\host\\a.png"));
+    QVERIFY(!AssetFileUtil::isNetworkPath(u"/usr/share/a.png"));
+    QVERIFY(!AssetFileUtil::isNetworkPath(u"C:\\a.png"));
+    QVERIFY(!AssetFileUtil::isNetworkPath(u"tiles/a.png"));
+    QVERIFY(!AssetFileUtil::isNetworkPath(u""));
+
+    // A tile map's tileset image on a share: refused with a warning, tiles
+    // become placeholders.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto r = loadMap(dir, QStringLiteral("unc.tmj"),
+        orthoMap(R"({"type":"tilelayer","name":"g","width":2,"height":2,"data":[1,2,1,2]})",
+                 tilesetJson(QStringLiteral("//nohost.invalid/share/tiles.png"))));
+    QVERIFY2(r.doc, qPrintable(r.error));
+    QCOMPARE(r.doc->layers[0].instances[0].tileset, int16_t(-1));
+    QVERIFY(r.doc->warnings.join(QLatin1Char('\n')).contains(QStringLiteral("network")));
+    QVERIFY(!r.doc->warnings.join(QLatin1Char('\n')).contains(QStringLiteral("not found")));
+
+    // An external tileset on a share is refused the same way.
+    const auto ext = loadMap(dir, QStringLiteral("unc2.tmj"),
+        orthoMap(R"({"type":"tilelayer","name":"g","width":1,"height":1,"data":[1]})",
+                 R"({"firstgid":1,"source":"\\\\nohost.invalid\\share\\t.tsx"})", 1, 1));
+    QVERIFY2(ext.doc, qPrintable(ext.error));
+    QVERIFY(ext.doc->warnings.join(QLatin1Char('\n')).contains(QStringLiteral("network")));
+
+    // An atlas page on a share is treated as missing.
+    QString error;
+    const auto atlas = AtlasLoader::parse(
+        R"({"frames":[{"filename":"a","frame":{"x":0,"y":0,"w":8,"h":8}}],"meta":{"image":"\\\\nohost.invalid\\share\\a.png"}})",
+        QStringLiteral("json"), dir.path(), &error);
+    QVERIFY2(atlas, qPrintable(error));
+    QVERIFY(atlas->pages[0].path.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(Test2dFormats)

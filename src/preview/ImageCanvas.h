@@ -17,9 +17,11 @@
 // Per paint the work is bounded by the viewport, never by the image: the
 // visible rect is taken from the pyramid level matching the display scale,
 // converted once (channel view, exposure, premultiply) into a crop that is
-// cached with a margin, and scaled by QPainter. Pyramids are built on the
-// global thread pool. SVG documents are re-rasterised for the visible region at
-// device resolution when the zoom passes the base raster.
+// cached with a margin, and scaled by QPainter. Tiling (3 x 3) wraps the
+// visible rect's source coordinates into the same single crop. Pyramids are
+// built on the global thread pool. SVG documents are re-rasterised for the
+// visible region at device resolution when the zoom passes the base raster,
+// from one parsed renderer per document (one render job at a time).
 class ImageCanvas : public QWidget
 {
     Q_OBJECT
@@ -107,11 +109,13 @@ private:
         QRectF imageRect;        // image coordinates it covers
         double deviceScale = 0;
     };
+    struct SvgSource;            // the document's SVG and its parsed renderer
 
     int currentSurfaceIndex() const;
     const QImage *currentSurface() const;
     ImagePyramidPtr pyramidFor(int surfaceIndex);
     void requestPyramid(int surfaceIndex);
+    void storePyramid(int surfaceIndex, ImagePyramidPtr pyramid);
     void applyZoom(double zoom, QPointF anchor, bool fit);
     void viewChanged();
     void updateMathGeometry();
@@ -120,8 +124,6 @@ private:
     void scheduleVectorRender();
     void startVectorRender();
     void paintSurface(QPainter &p, const QImage *level, int levelIndex, double levelScaleX, double levelScaleY);
-    QImage wholeLevel(int surfaceIndex, int levelIndex, const QImage &level);
-    QRectF tileRect(int i, int j) const;
     QSizeF logicalSize() const;   // one tile, in view units at 100%
     QSizeF contentSize() const;   // logicalSize, x3 when tiled
 
@@ -146,6 +148,9 @@ private:
     VectorTile m_vectorTile;
     QTimer m_vectorTimer;
     quint64 m_vectorGeneration = 0;
+    std::shared_ptr<SvgSource> m_svg;   // parsed on the first render job
+    bool m_vectorBusy = false;          // a render job is running
+    bool m_vectorPending = false;       // the view changed while it ran
 
     QTimer m_frameTimer;
     bool m_playing = false;

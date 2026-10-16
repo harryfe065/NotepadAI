@@ -1,6 +1,7 @@
 #include "WaveformView.h"
 
 #include "MediaFormat.h"
+#include "PaletteMix.h"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -15,12 +16,6 @@ namespace {
 constexpr int kRulerHeight = 18;
 constexpr double kBuckets = WaveformPeaks::kBucketsPerSecond;
 constexpr double kMinPixelsPerBucket = 2.0;
-
-QColor mix(const QColor &a, const QColor &b, double t)
-{
-    return QColor::fromRgbF(float(a.redF() * (1 - t) + b.redF() * t), float(a.greenF() * (1 - t) + b.greenF() * t),
-                            float(a.blueF() * (1 - t) + b.blueF() * t));
-}
 
 // Ruler step (seconds) giving labels at least `minPixels` apart.
 double rulerStep(double pixelsPerSecond, double minPixels)
@@ -170,7 +165,7 @@ void WaveformView::paintEvent(QPaintEvent *event)
     const QPalette &pal = palette();
     const QColor base = pal.color(QPalette::Base);
     const QColor accent = pal.color(QPalette::Highlight);
-    const QColor muted = mix(pal.color(QPalette::Text), base, 0.55);
+    const QColor muted = paletteMix(pal.color(QPalette::Text), base, 0.55);
     p.fillRect(clip, base);
 
     const int top = kRulerHeight;
@@ -191,7 +186,7 @@ void WaveformView::paintEvent(QPaintEvent *event)
         }
     }
 
-    p.setPen(mix(muted, base, 0.5));
+    p.setPen(paletteMix(muted, base, 0.5));
     p.drawLine(QPointF(clip.left(), mid), QPointF(clip.right() + 1, mid));
 
     // One vertical line per pixel column, folded over the buckets it covers.
@@ -203,13 +198,9 @@ void WaveformView::paintEvent(QPaintEvent *event)
     for (int x = clip.left(); x <= clip.right(); ++x) {
         const qsizetype b0 = qsizetype(std::floor(xToSeconds(x) * kBuckets));
         const qsizetype b1 = std::max(b0 + 1, qsizetype(std::floor(xToSeconds(x + 1) * kBuckets)));
-        if (b1 <= 0 || b0 >= count)
+        qint8 lo = 0, hi = 0;
+        if (!WaveformPeaks::fold(m_peaks.data(), count, b0, b1, &lo, &hi))
             continue;
-        qint8 lo = 127, hi = -127;
-        for (qsizetype b = std::max<qsizetype>(0, b0), end = std::min(b1, count); b < end; ++b) {
-            lo = std::min(lo, m_peaks[size_t(b)].min);
-            hi = std::max(hi, m_peaks[size_t(b)].max);
-        }
         const double yTop = mid - hi / 127.0 * half;
         const double yBottom = std::max(yTop + 1.0, mid - lo / 127.0 * half);
         (x + 0.5 < playX ? played : ahead).append(QLineF(x + 0.5, yTop, x + 0.5, yBottom));

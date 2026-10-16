@@ -36,6 +36,9 @@ struct Result {
 Result failed(const QString &error);
 Result tooLarge(qint64 bytes);
 Result cancelled();
+// A converter's outcome: cancelled, else too large (tooLargeBytes > 0), else
+// the error, else the document.
+Result finish(ModelDocumentPtr doc, const QString &error, quint64 tooLargeBytes, const std::atomic_bool &cancel);
 
 // Suffix first, then magic (files the resolver sniffed without an extension).
 Format formatFor(const QString &suffixLower, QByteArrayView head);

@@ -27,15 +27,29 @@ protected:
     void startLoad(bool reload) override;
 
 private:
+    struct Loaded {
+        FontFile::Document doc;
+        int face = 0;
+        QByteArray faceBytes;   // standalone sfnt of `face`, built on the worker
+    };
+    struct FaceBuild {
+        quint64 serial = 0;     // m_loadSerial when started: a reload voids it
+        int face = 0;
+        QByteArray bytes;
+    };
+
     void onLoaded();
     void selectFace(int index);
+    void applyFace(int index, const QByteArray &bytes);
     void rebuildSources();
     void applySource();
     void updateInfo();
     void showHover(int index);
     QString defaultSample() const;
 
-    QFutureWatcher<FontFile::Document> m_watcher;
+    QFutureWatcher<Loaded> m_watcher;
+    QFutureWatcher<FaceBuild> m_faceWatcher;    // collection face rebuilds
+    quint64 m_loadSerial = 0;
     FontFile::Document m_doc;
     QRawFont m_raw;
     int m_face = -1;

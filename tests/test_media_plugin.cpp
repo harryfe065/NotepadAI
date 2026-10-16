@@ -29,6 +29,14 @@ public:
         widget->setParent(&toolbar);
         ++toolWidgets;
     }
+    QToolButton *addToolButton(const QString &text, const QString &, bool checkable) override
+    {
+        auto *b = new QToolButton(&toolbar);
+        b->setText(text);
+        b->setCheckable(checkable);
+        ++toolWidgets;
+        return b;
+    }
     void addToolGap() override {}
     void setInfoText(const QString &text) override { info = text; }
     void setInfoToolTip(const QString &) override {}
