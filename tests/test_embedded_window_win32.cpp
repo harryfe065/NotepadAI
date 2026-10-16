@@ -255,6 +255,8 @@ private slots:
     void embedIsOwnedPopupOutOfTaskbar();
     void followsWindowMoves();
     void hidesWithItsTab();
+    void putsBackAnEmbedThatMovedItself();
+    void restoresAnEmbedThatMinimizedItself();
     void modalDialogDisablesEmbed();
     void blenderGetsModifierKeys();
     void benchmarkNativeSiblingCost();
@@ -973,6 +975,35 @@ void TestEmbeddedWindowWin32::hidesWithItsTab()
     QTRY_VERIFY_WITH_TIMEOUT(!IsWindowVisible(t), 1000);
     h->window.showNormal();
     QTRY_VERIFY_WITH_TIMEOUT(hostFilledByChild(), 1500);
+}
+
+// The app moves or resizes its own window (Blender applies the window size a
+// .blend stores, Win+arrow snaps the foreground embed): the watchdog tick
+// (EmbeddedWindowManager::platTick -> sync) must put it back over the host,
+// even though the host itself did not move.
+void TestEmbeddedWindowWin32::putsBackAnEmbedThatMovedItself()
+{
+    QVERIFY(embed());
+    QTRY_VERIFY_WITH_TIMEOUT(hostFilledByChild(), 1500);
+    HWND t = h->target.hwnd();
+    RECT r{};
+    QVERIFY(GetWindowRect(t, &r));
+    QVERIFY(SetWindowPos(t, nullptr, r.left + 400, r.top + 300, 200, 150,
+                         SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER));
+    QVERIFY(!hostFilledByChild(false));
+    QTRY_VERIFY_WITH_TIMEOUT((h->host->sync(), hostFilledByChild()), 1500);
+}
+
+// The app minimizes itself (Win+Down on the foreground embed): the host stays
+// empty unless the tick restores it.
+void TestEmbeddedWindowWin32::restoresAnEmbedThatMinimizedItself()
+{
+    QVERIFY(embed());
+    QTRY_VERIFY_WITH_TIMEOUT(hostFilledByChild(), 1500);
+    HWND t = h->target.hwnd();
+    ShowWindow(t, SW_SHOWMINNOACTIVE);
+    QTRY_VERIFY_WITH_TIMEOUT(IsIconic(t), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT((h->host->sync(), hostFilledByChild()), 1500);
 }
 
 void TestEmbeddedWindowWin32::modalDialogDisablesEmbed()

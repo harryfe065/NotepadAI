@@ -639,7 +639,12 @@ QJsonObject toolDefinition()
              "`[grill_me answers]`; `no answer` = skipped, re-ask later; `needs clarification` = explain and "
              "re-ask only those questions (same ids), the other answers are final. A chat reply replaces the "
              "form. Once the plan is settled or the user said to implement, stop asking: never ask how or "
-             "whether to proceed or offer invented next-step menus.")},
+             "whether to proceed or offer invented next-step menus. The closing check (\"is this the shared "
+             "understanding?\", the final plan summary to accept) is never a form question: write the settled "
+             "plan as plain text in your reply and let the user confirm or correct it in chat. Once you have "
+             "written that summary, the rounds are over: do not call this tool again for the rest of that "
+             "work (implementation, follow-up questions, next steps) unless the user starts a new question "
+             "round.")},
         {QStringLiteral("inputSchema"), schema},
     };
 }
@@ -661,7 +666,9 @@ constexpr QLatin1String kQuestionRoundCommands[] = {
 
 constexpr QLatin1String kQuestionRoundHint(
     "[NotepadAI note, not part of the request] Deliver each question round of this command through the "
-    "`ask` tool of the `grill_me` MCP server (one call per round, then end your turn), never as plain text.");
+    "`ask` tool of the `grill_me` MCP server (one call per round, then end your turn), never as plain text. "
+    "The final plan summary and its confirmation are not a round: write them as plain text, not through `ask`, "
+    "and never call `ask` again after that summary.");
 
 } // namespace
 

@@ -79,7 +79,6 @@ void EmbeddedWindowWorker::State::run(const std::shared_ptr<State> &self)
     if (!s.attached)
         return;
     quint64 appliedStamp = 0;
-    quint64 appliedRect = ~quint64(0);
     quint64 appliedActivate = 0;
     quint64 appliedForeground = 0;
     int appliedEnabled = -1;
@@ -103,10 +102,20 @@ void EmbeddedWindowWorker::State::run(const std::shared_ptr<State> &self)
             const quint64 g = s.geometry.load(std::memory_order_relaxed);
             const auto field = [g](int shift) { return static_cast<int>(static_cast<qint16>((g >> shift) & 0xffff)); };
             const bool visible = stamp & 1;
-            // Same rect (a tab switch): only show/hide, so the app gets no
-            // move/size messages at all.
-            const UINT keep = g == appliedRect ? SWP_NOMOVE | SWP_NOSIZE : 0;
-            appliedRect = g;
+            // The app minimized or maximized itself (Win+arrow on the
+            // foreground embed): leave that state through its own window
+            // procedure first, or SetWindowPos only moves the restore rect.
+            if (visible && (IsIconic(s.target) || IsZoomed(s.target)))
+                ShowWindow(s.target, SW_SHOWNOACTIVATE);
+            // Already where it should be (a tab switch): only show/hide, so
+            // the app gets no move/size messages at all. Compare with where
+            // the window is, never with what we last asked for: an app that
+            // moved itself must be put back by the next request.
+            RECT current{};
+            const bool sameRect = GetWindowRect(s.target, &current)
+                && current.left == field(0) && current.top == field(16)
+                && current.right - current.left == field(32) && current.bottom - current.top == field(48);
+            const UINT keep = sameRect ? SWP_NOMOVE | SWP_NOSIZE : 0;
             // NOZORDER: an owned window always stays above its owner; keep its
             // place among our other owned windows (dialogs, menus, docks).
             const UINT flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | keep;
