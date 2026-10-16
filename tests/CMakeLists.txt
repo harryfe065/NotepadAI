@@ -2802,3 +2802,50 @@ target_sources(test_2d_formats PRIVATE
     ${CMAKE_SOURCE_DIR}/src/preview/atlas/AtlasLoader.cpp
 )
 add_test(NAME TwoDFormats COMMAND test_2d_formats)
+
+# --- Media preview: waveform envelope, audio headers, media sniffers ---
+qt_add_executable(test_media_formats test_media_formats.cpp)
+target_include_directories(test_media_formats PRIVATE ${CMAKE_SOURCE_DIR}/src/preview/media)
+target_link_libraries(test_media_formats PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_media_formats PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/media/WaveformPeaks.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/media/AudioFileInfo.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/media/MediaSniffers.cpp
+)
+add_test(NAME MediaFormats COMMAND test_media_formats)
+
+# --- Font preview: sfnt / TTC / WOFF containers, tables, Unicode blocks ---
+qt_add_executable(test_font_file test_font_file.cpp)
+target_include_directories(test_font_file PRIVATE ${CMAKE_SOURCE_DIR}/src/preview/font)
+target_link_libraries(test_font_file PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_font_file PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/font/FontFile.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/font/UnicodeBlocks.cpp
+)
+add_test(NAME FontFile COMMAND test_font_file)
+
+# --- Hex view: page cache, offsets / patterns / copy formats, chunked search ---
+qt_add_executable(test_hex_view test_hex_view.cpp)
+target_include_directories(test_hex_view PRIVATE ${CMAKE_SOURCE_DIR}/src/preview/hex)
+target_link_libraries(test_hex_view PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_hex_view PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/hex/HexSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/hex/HexFormat.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/hex/HexSearch.cpp
+)
+add_test(NAME HexView COMMAND test_hex_view)
+
+# --- Media plugin end to end: QPluginLoader, factory, audio / PDF views (offscreen) ---
+if(TARGET NotepadAIMedia)
+    qt_add_executable(test_media_plugin test_media_plugin.cpp)
+    target_include_directories(test_media_plugin PRIVATE ${CMAKE_SOURCE_DIR}/src/preview/media)
+    target_link_libraries(test_media_plugin PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+    target_compile_definitions(test_media_plugin PRIVATE
+        NOTEPADAI_MEDIA_PLUGIN_PATH="$<TARGET_FILE:NotepadAIMedia>")
+    if(TARGET Qt6::Pdf AND TARGET Qt6::PdfWidgets)
+        target_compile_definitions(test_media_plugin PRIVATE NOTEPADAI_MEDIA_HAS_PDF)
+    endif()
+    add_dependencies(test_media_plugin NotepadAIMedia)
+    add_test(NAME MediaPlugin COMMAND test_media_plugin)
+    set_tests_properties(MediaPlugin PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()

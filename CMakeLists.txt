@@ -53,6 +53,10 @@ find_package(Qt6 6.5
             OpenGL
 )
 
+# Media preview plugin (add-media-preview): optional. Without these modules
+# audio, video and PDF files open as they did before.
+find_package(Qt6 6.5 QUIET OPTIONAL_COMPONENTS Multimedia MultimediaWidgets Pdf PdfWidgets)
+
 option(NOTEPADAI_BUILD_TESTS "Build unit tests" OFF)
 if(NOTEPADAI_BUILD_TESTS)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)

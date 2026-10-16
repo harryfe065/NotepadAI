@@ -66,6 +66,11 @@
         <file>icons/model-preview.svg</file>
         <file>icons/tilemap-preview.svg</file>
         <file>icons/atlas-preview.svg</file>
+        <file>icons/audio-preview.svg</file>
+        <file>icons/video-preview.svg</file>
+        <file>icons/pdf-preview.svg</file>
+        <file>icons/font-preview.svg</file>
+        <file>icons/hex-preview.svg</file>
         <file>icons/mini-app.svg</file>
         <file>icons/arrow-left.svg</file>
         <file>icons/arrow-right.svg</file>

@@ -77,7 +77,8 @@ jobs:
           version: ${{ matrix.qt_version }}
           # qtwayland is included in the base Qt Linux archives; not a valid aqt add-on module
           # qtimageformats: WebP/TIFF/ICNS plugins for the image preview.
-          modules: qt5compat qtimageformats
+          # qtmultimedia / qtpdf: the audio, video and PDF preview plugin.
+          modules: qt5compat qtimageformats qtmultimedia qtpdf
           cache: true
 
       - name: Setup Visual Studio Tools

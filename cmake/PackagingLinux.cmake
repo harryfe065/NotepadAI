@@ -75,12 +75,21 @@ add_custom_target(download_linuxdeploy
     COMMAND chmod +x ${LINUXDEPLOY} ${LINUXDEPLOY_QT}
 )
 
+# The media plugin (add-media-preview) is installed to usr/lib; deploy the
+# libraries it needs and the Qt Multimedia / Pdf plugins with them.
+set(APPIMAGE_MEDIA_ARGS "")
+if(TARGET NotepadAIMedia)
+    set(APPIMAGE_MEDIA_ARGS --deploy-deps-only=${APPDIR_USR}/lib/NotepadAIMedia.so)
+    list(APPEND APPIMAGE_ENV_VARS "EXTRA_QT_MODULES=multimedia;pdf")
+endif()
+
 add_custom_target(appimage
     COMMAND ${CMAKE_COMMAND} -E env
         ${APPIMAGE_ENV_VARS}
         ${LINUXDEPLOY}
         --appdir ${APPDIR}
         --executable ${APPDIR_USR}/bin/NotepadAI
+        ${APPIMAGE_MEDIA_ARGS}
         --desktop-file ${APPDIR_USR}/share/applications/NotepadAI.desktop
         --icon-file ${APPDIR_USR}/share/icons/hicolor/scalable/apps/NotepadAI.svg
         --plugin qt

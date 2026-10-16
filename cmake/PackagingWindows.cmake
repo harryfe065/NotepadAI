@@ -22,6 +22,15 @@ if(PACKAGE_CONFIG STREQUAL "Debug")
 endif()
 list(APPEND WINDEPLOYQT_ARGS "${PACKAGE_DIR}/NotepadAI.exe")
 
+# The media plugin (add-media-preview) sits next to the exe; windeployqt
+# deploys its Qt Multimedia / Pdf modules and the FFmpeg backend with it.
+set(MEDIA_PLUGIN_COPY "")
+if(TARGET NotepadAIMedia)
+	list(APPEND WINDEPLOYQT_ARGS "${PACKAGE_DIR}/NotepadAIMedia.dll")
+	set(MEDIA_PLUGIN_COPY COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		"$<TARGET_FILE:NotepadAIMedia>" "${PACKAGE_DIR}/NotepadAIMedia.dll")
+endif()
+
 file(GLOB EXTRA_DLLS "${EXTRA_DLL_DIR}/*.dll")
 
 # Define the package target
@@ -51,6 +60,8 @@ add_custom_target(package
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		"${CMAKE_SOURCE_DIR}/deploy/windows/WebView2Loader.dll"
 		"${PACKAGE_DIR}/WebView2Loader.dll"
+
+	${MEDIA_PLUGIN_COPY}
 
 	# Run windeployqt with correct flags
 	COMMAND windeployqt ${WINDEPLOYQT_ARGS}

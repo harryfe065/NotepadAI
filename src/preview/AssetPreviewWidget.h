@@ -56,6 +56,9 @@ protected:
     QHBoxLayout *toolbarLayout() const { return m_toolbarLayout; }
     void setContentWidget(QWidget *content);
     void setInfoText(const QString &text);
+    void setInfoToolTip(const QString &text);
+    // "Open as text" for the current file (the toolbar button's action).
+    void requestOpenAsText();
 
     void showBanner(BannerKind kind, const QString &text,
                     const QString &actionText = QString(), std::function<void()> action = {});

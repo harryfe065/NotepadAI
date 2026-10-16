@@ -4,7 +4,13 @@
 #include "AtlasLoader.h"
 #include "AtlasPreviewWidget.h"
 #include "DdsDecoder.h"
+#include "FontFile.h"
+#include "FontPreviewWidget.h"
+#include "HexPreviewWidget.h"
 #include "ImagePreviewWidget.h"
+#include "MediaPluginLoader.h"
+#include "MediaPreviewWidget.h"
+#include "MediaSniffers.h"
 #include "ModelLoader.h"
 #include "ModelPreviewWidget.h"
 #include "RasterDecoders.h"
@@ -190,6 +196,80 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
     atlas.sniffExtensions = {QStringLiteral("json"), QStringLiteral("xml"), QStringLiteral("plist"), QStringLiteral("txt")};
     atlas.contentSniffer = AtlasLoader::looksLikeAtlasContent;
     manager->registerType(QStringLiteral("atlas"), atlas);
+
+    // Fonts (add-media-preview): rendered in the app with QRawFont. .fnt stays
+    // with the atlas type (BMFont far more often than a Windows bitmap font).
+    PreviewTabManager::TypeRegistration font;
+    font.extensions = {QStringLiteral("ttf"), QStringLiteral("otf"), QStringLiteral("ttc"), QStringLiteral("otc"),
+                       QStringLiteral("woff"), QStringLiteral("woff2")};
+    font.iconPath = QStringLiteral(":/icons/font-preview.svg");
+    font.factory = [](QWidget *parent) -> PreviewContentWidget * {
+        return new FontPreviewWidget(QStringLiteral("font"), QStringLiteral("Font"), parent);
+    };
+    font.wantsFilePath = true;
+    font.displayName = QStringLiteral("Font");
+    font.opensByDefault = true;
+    font.watchFile = true;
+    font.sniffers = {FontFile::looksLikeFont};
+    manager->registerType(QStringLiteral("font"), font);
+
+    // Audio, video and PDF: viewers from the NotepadAIMedia plugin, loaded on
+    // first use. Registered only when the plugin was built and is installed,
+    // so without it these files open as before. (.ts is TypeScript, never video.)
+    auto media = [manager](const QString &typeId, const QString &displayName, MediaPlugin::Kind kind,
+                           const QString &icon, QStringList extensions, FileKindResolver::Sniffer sniffer) {
+        PreviewTabManager::TypeRegistration reg;
+        reg.extensions = std::move(extensions);
+        reg.iconPath = icon;
+        reg.factory = [typeId, displayName, kind](QWidget *parent) -> PreviewContentWidget * {
+            return new MediaPreviewWidget(typeId, displayName, kind, parent);
+        };
+        reg.wantsFilePath = true;
+        reg.displayName = displayName;
+        reg.opensByDefault = true;
+        reg.watchFile = true;
+        reg.sniffers = {std::move(sniffer)};
+        manager->registerType(typeId, reg);
+    };
+    const bool havePlugin = !MediaPluginLoader::path().isEmpty();
+#ifdef NOTEPADAI_MEDIA_AUDIO_VIDEO
+    if (havePlugin) {
+        media(QStringLiteral("audio"), QStringLiteral("Audio"), MediaPlugin::Kind::Audio,
+              QStringLiteral(":/icons/audio-preview.svg"),
+              {QStringLiteral("wav"), QStringLiteral("wave"), QStringLiteral("mp3"), QStringLiteral("ogg"),
+               QStringLiteral("oga"), QStringLiteral("opus"), QStringLiteral("flac"), QStringLiteral("m4a"),
+               QStringLiteral("aac"), QStringLiteral("aif"), QStringLiteral("aiff"), QStringLiteral("aifc"),
+               QStringLiteral("wma")},
+              MediaSniffers::isAudio);
+        media(QStringLiteral("video"), QStringLiteral("Video"), MediaPlugin::Kind::Video,
+              QStringLiteral(":/icons/video-preview.svg"),
+              {QStringLiteral("mp4"), QStringLiteral("m4v"), QStringLiteral("mov"), QStringLiteral("mkv"),
+               QStringLiteral("webm"), QStringLiteral("avi"), QStringLiteral("wmv"), QStringLiteral("ogv"),
+               QStringLiteral("flv"), QStringLiteral("mpg"), QStringLiteral("mpeg")},
+              MediaSniffers::isVideo);
+    }
+#endif
+#ifdef NOTEPADAI_MEDIA_PDF
+    if (havePlugin) {
+        media(QStringLiteral("pdf"), QStringLiteral("PDF"), MediaPlugin::Kind::Pdf,
+              QStringLiteral(":/icons/pdf-preview.svg"), {QStringLiteral("pdf")}, MediaSniffers::isPdf);
+    }
+#endif
+    Q_UNUSED(media);
+    Q_UNUSED(havePlugin);
+
+    // Unrecognised binaries (add-hex-preview): no extensions or sniffers; the
+    // resolver's Binary verdict routes here (MainWindow::assetPreviewTypeFor).
+    PreviewTabManager::TypeRegistration hex;
+    hex.iconPath = QStringLiteral(":/icons/hex-preview.svg");
+    hex.factory = [](QWidget *parent) -> PreviewContentWidget * {
+        return new HexPreviewWidget(QStringLiteral("hex"), QStringLiteral("Hex"), parent);
+    };
+    hex.wantsFilePath = true;
+    hex.displayName = QStringLiteral("Hex");
+    hex.opensByDefault = true;
+    hex.watchFile = true;
+    manager->registerType(QStringLiteral("hex"), hex);
 
     // Known text extensions skip the head read entirely. Snapshotted from the
     // Lua language table on first use (the table is loaded by then and never

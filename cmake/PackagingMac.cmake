@@ -33,9 +33,17 @@ add_custom_target(install_local
 
 find_program(MACDEPLOYQT_EXECUTABLE macdeployqt REQUIRED)
 
+# The media plugin (add-media-preview) lives in Contents/PlugIns; macdeployqt
+# must see it to bundle Qt Multimedia / Pdf and fix its rpaths.
+set(MACDEPLOYQT_MEDIA_ARGS "")
+if(TARGET NotepadAIMedia)
+    set(MACDEPLOYQT_MEDIA_ARGS -executable=${INSTALL_DIR}/NotepadAI.app/Contents/PlugIns/NotepadAIMedia.so)
+endif()
+
 add_custom_target(dmg
     COMMAND ${MACDEPLOYQT_EXECUTABLE}
         ${INSTALL_DIR}/NotepadAI.app
+        ${MACDEPLOYQT_MEDIA_ARGS}
         -dmg
     COMMAND ${CMAKE_COMMAND} -E rename
         ${INSTALL_DIR}/NotepadAI.dmg

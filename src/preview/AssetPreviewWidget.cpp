@@ -62,10 +62,7 @@ AssetPreviewWidget::AssetPreviewWidget(const QString &typeId, const QString &dis
     m_openAsText->setToolTip(tr("Open the file's bytes in a text editor tab"));
     m_openAsText->setAutoRaise(true);
     m_toolbarLayout->addWidget(m_openAsText);
-    connect(m_openAsText, &QToolButton::clicked, this, [this]() {
-        if (!m_path.isEmpty())
-            emit openAsTextRequested(m_path);
-    });
+    connect(m_openAsText, &QToolButton::clicked, this, &AssetPreviewWidget::requestOpenAsText);
 
     applyTheme(palette(), false);
 }
@@ -139,6 +136,17 @@ void AssetPreviewWidget::setInfoText(const QString &text)
 {
     if (m_info->text() != text)
         m_info->setText(text);
+}
+
+void AssetPreviewWidget::setInfoToolTip(const QString &text)
+{
+    m_info->setToolTip(text);
+}
+
+void AssetPreviewWidget::requestOpenAsText()
+{
+    if (!m_path.isEmpty())
+        emit openAsTextRequested(m_path);
 }
 
 void AssetPreviewWidget::showBanner(BannerKind kind, const QString &text,

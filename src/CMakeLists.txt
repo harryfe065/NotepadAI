@@ -745,6 +745,77 @@ target_sources(NotepadAI PRIVATE
     preview/atlas/AtlasPreviewWidget.cpp preview/atlas/AtlasPreviewWidget.h
 )
 
+# Font tabs and the media tab shell (add-media-preview). The audio, video and
+# PDF viewers are the NotepadAIMedia plugin, loaded on first use (D1), so Qt
+# Multimedia and Qt Pdf never load at startup.
+target_sources(NotepadAI PRIVATE
+    preview/media/MediaFormat.h
+    preview/media/MediaPluginInterface.h
+    preview/media/MediaPluginLoader.cpp preview/media/MediaPluginLoader.h
+    preview/media/MediaPreviewWidget.cpp preview/media/MediaPreviewWidget.h
+    preview/media/MediaSniffers.cpp preview/media/MediaSniffers.h
+    preview/font/FontFile.cpp preview/font/FontFile.h
+    preview/font/UnicodeBlocks.cpp preview/font/UnicodeBlocks.h
+    preview/font/GlyphGridView.cpp preview/font/GlyphGridView.h
+    preview/font/FontSampleView.cpp preview/font/FontSampleView.h
+    preview/font/FontPreviewWidget.cpp preview/font/FontPreviewWidget.h
+)
+
+# Hex tab for unrecognised binaries (add-hex-preview): paged reads, no mapping.
+target_sources(NotepadAI PRIVATE
+    preview/hex/HexSource.cpp preview/hex/HexSource.h
+    preview/hex/HexFormat.cpp preview/hex/HexFormat.h
+    preview/hex/HexSearch.cpp preview/hex/HexSearch.h
+    preview/hex/HexView.cpp preview/hex/HexView.h
+    preview/hex/HexPreviewWidget.cpp preview/hex/HexPreviewWidget.h
+)
+
+if(TARGET Qt6::Multimedia AND TARGET Qt6::MultimediaWidgets)
+    qt_add_plugin(NotepadAIMedia SHARED CLASS_NAME MediaPluginFactory
+        preview/media/plugin/MediaPlugin.cpp preview/media/plugin/MediaPlugin.h
+        preview/media/plugin/AudioView.cpp preview/media/plugin/AudioView.h
+        preview/media/plugin/WaveformView.cpp preview/media/plugin/WaveformView.h
+        preview/media/plugin/WaveformBuilder.cpp preview/media/plugin/WaveformBuilder.h
+        preview/media/plugin/VideoView.cpp preview/media/plugin/VideoView.h
+        preview/media/MediaPluginInterface.h
+        preview/media/MediaFormat.h
+        preview/media/AudioFileInfo.cpp preview/media/AudioFileInfo.h
+        preview/media/WaveformPeaks.cpp preview/media/WaveformPeaks.h
+    )
+    target_include_directories(NotepadAIMedia PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/media
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/media/plugin)
+    target_link_libraries(NotepadAIMedia PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent Qt6::Multimedia Qt6::MultimediaWidgets)
+    if(TARGET Qt6::Pdf AND TARGET Qt6::PdfWidgets)
+        target_sources(NotepadAIMedia PRIVATE preview/media/plugin/PdfView.cpp preview/media/plugin/PdfView.h)
+        target_link_libraries(NotepadAIMedia PRIVATE Qt6::Pdf Qt6::PdfWidgets)
+        target_compile_definitions(NotepadAIMedia PRIVATE NOTEPADAI_MEDIA_HAS_PDF)
+        target_compile_definitions(NotepadAI PRIVATE NOTEPADAI_MEDIA_PDF)
+    endif()
+    # MediaPluginLoader looks for exactly this name next to the executable.
+    if(WIN32)
+        set(NOTEPADAI_MEDIA_SUFFIX ".dll")
+    else()
+        set(NOTEPADAI_MEDIA_SUFFIX ".so")
+    endif()
+    set_target_properties(NotepadAIMedia PROPERTIES
+        PREFIX ""
+        SUFFIX "${NOTEPADAI_MEDIA_SUFFIX}"
+        LIBRARY_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:NotepadAI>"
+        RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:NotepadAI>"
+    )
+    target_compile_definitions(NotepadAI PRIVATE NOTEPADAI_MEDIA_AUDIO_VIDEO)
+    add_dependencies(NotepadAI NotepadAIMedia)
+    if(APPLE)
+        install(TARGETS NotepadAIMedia LIBRARY DESTINATION NotepadAI.app/Contents/PlugIns)
+    elseif(NOT WIN32)
+        install(TARGETS NotepadAIMedia LIBRARY DESTINATION lib)
+    endif()
+else()
+    message(STATUS "Qt Multimedia not found: audio, video and PDF previews are not built")
+endif()
+
 # Platform-conditional CredentialStore backend + native API link.
 if(WIN32)
     target_sources(NotepadAI PRIVATE ai/CredentialStore_Windows.cpp)
@@ -795,6 +866,9 @@ target_include_directories(NotepadAI
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/model
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/tilemap
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/atlas
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/media
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/font
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/hex
         ${CMAKE_CURRENT_SOURCE_DIR}/remote
         ${CMAKE_CURRENT_SOURCE_DIR}/widgets
         ${CMAKE_CURRENT_SOURCE_DIR}
