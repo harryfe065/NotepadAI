@@ -80,7 +80,9 @@ add_custom_target(download_linuxdeploy
 set(APPIMAGE_MEDIA_ARGS "")
 if(TARGET NotepadAIMedia)
     set(APPIMAGE_MEDIA_ARGS --deploy-deps-only=${APPDIR_USR}/lib/NotepadAIMedia.so)
-    list(APPEND APPIMAGE_ENV_VARS "EXTRA_QT_MODULES=multimedia;pdf")
+    # Escaped: an unescaped ";" splits this into a stray "pdf" argument that
+    # `cmake -E env` then tries to execute.
+    list(APPEND APPIMAGE_ENV_VARS "EXTRA_QT_MODULES=multimedia\;pdf")
 endif()
 
 add_custom_target(appimage
@@ -96,4 +98,5 @@ add_custom_target(appimage
         --output appimage
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS appdir download_linuxdeploy
+    VERBATIM
 )
