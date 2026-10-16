@@ -2780,3 +2780,25 @@ target_sources(test_model_loaders PRIVATE
     ${CMAKE_SOURCE_DIR}/src/preview/model/ModelCamera.cpp
 )
 add_test(NAME ModelLoaders COMMAND test_model_loaders)
+
+# --- 2D game formats: Tiled / LDtk tile maps, texture atlases, BMFont ---
+qt_add_executable(test_2d_formats test_2d_formats.cpp)
+target_include_directories(test_2d_formats PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/preview ${CMAKE_SOURCE_DIR}/src/preview/tilemap
+    ${CMAKE_SOURCE_DIR}/src/preview/atlas)
+target_link_libraries(test_2d_formats PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Svg Qt6::Concurrent Qt6::Test stb_image bcdec tinyexr miniz)
+target_sources(test_2d_formats PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/ImageDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/DdsDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/RasterDecoders.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/AsepriteDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/tilemap/TileMapDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/tilemap/TileMapLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/tilemap/TiledLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/tilemap/LdtkLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/atlas/AtlasDocument.cpp
+    ${CMAKE_SOURCE_DIR}/src/preview/atlas/AtlasLoader.cpp
+)
+add_test(NAME TwoDFormats COMMAND test_2d_formats)

@@ -96,6 +96,10 @@ void PreviewTabManager::registerType(const QString &typeId, const TypeRegistrati
     m_registry.insert(typeId, reg);
     for (const QString &ext : reg.extensions)
         m_typeByExtension.insert(ext.toLower(), typeId);
+    if (reg.contentSniffer) {
+        for (const QString &ext : reg.sniffExtensions)
+            m_sniffableExtensions.insert(ext.toLower());
+    }
     if (reg.opensByDefault) {
         m_resolver.addPreviewExtensions(typeId, reg.extensions);
         for (const auto &sniffer : reg.sniffers)
@@ -105,11 +109,29 @@ void PreviewTabManager::registerType(const QString &typeId, const TypeRegistrati
 
 const PreviewTabManager::TypeRegistration *PreviewTabManager::findRegistration(const QString &filePath) const
 {
-    const auto it = m_typeByExtension.constFind(QFileInfo(filePath).suffix().toLower());
+    const QString suffix = QFileInfo(filePath).suffix().toLower();
+    const auto it = m_typeByExtension.constFind(suffix);
     if (it == m_typeByExtension.constEnd())
-        return nullptr;
+        return sniffRegistration(filePath, suffix);
     const auto reg = m_registry.constFind(it.value());
     return reg != m_registry.constEnd() ? &reg.value() : nullptr;
+}
+
+const PreviewTabManager::TypeRegistration *PreviewTabManager::sniffRegistration(const QString &filePath,
+                                                                                const QString &suffixLower) const
+{
+    if (!m_sniffableExtensions.contains(suffixLower))
+        return nullptr;
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly))
+        return nullptr;
+    const QByteArray head = file.read(4096);
+    for (auto it = m_registry.constBegin(); it != m_registry.constEnd(); ++it) {
+        const TypeRegistration &reg = it.value();
+        if (reg.contentSniffer && reg.sniffExtensions.contains(suffixLower) && reg.contentSniffer(head))
+            return &reg;
+    }
+    return nullptr;
 }
 
 bool PreviewTabManager::canPreview(const QString &filePath) const

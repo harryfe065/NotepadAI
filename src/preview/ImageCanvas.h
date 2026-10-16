@@ -10,6 +10,8 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <functional>
+
 // Paints one surface of an ImageDocument with zoom and pan, on the CPU.
 //
 // Per paint the work is bounded by the viewport, never by the image: the
@@ -52,6 +54,16 @@ public:
     double zoom() const { return m_math.zoom; }
     bool isFit() const { return m_fit; }
 
+    // Vector overlay painted over the image (atlas frames, glyph boxes). It gets
+    // the canvas painter in view coordinates and the current view math
+    // (imageToView / visibleImageRect) so it culls to what is on screen. Empty
+    // clears it. updateOverlay() repaints after the overlay's own state changed.
+    using OverlayPainter = std::function<void(QPainter &, const ImageViewMath &)>;
+    void setOverlay(OverlayPainter painter);
+    void updateOverlay() { update(); }
+    // Centres the view on an image-space rect, zooming in only when it would not fit.
+    void revealImageRect(const QRectF &rect);
+
 public slots:
     void zoomIn();
     void zoomOut();
@@ -63,6 +75,10 @@ signals:
     void hoverPixelChanged(const QString &text);
     void frameChanged(int layer);
     void playingChanged(bool playing);
+    // Image-space position under the cursor (-1e9 when it left) and the image
+    // point of a click (press + release without dragging).
+    void imagePointHovered(const QPointF &imagePos);
+    void imageClicked(const QPointF &imagePos);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -133,6 +149,9 @@ private:
 
     QTimer m_frameTimer;
     bool m_playing = false;
+
+    OverlayPainter m_overlay;
+    QPointF m_pressPos;
 
     bool m_panning = false;
     QPointF m_lastPan;

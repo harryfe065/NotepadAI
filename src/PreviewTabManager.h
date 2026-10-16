@@ -49,6 +49,12 @@ public:
         bool watchFile = false;
         // Content sniffers for files whose extension is missing or unknown.
         QVector<FileKindResolver::Sniffer> sniffers;
+        // Generic extensions (json, xml, plist, txt, ...) whose content decides
+        // whether this type can preview the file. Consulted only by the explicit
+        // Preview actions (editor toolbar / tree menu), never by plain open, so
+        // a .json is never hijacked. The predicate sees the first 4 KB.
+        QStringList sniffExtensions;
+        FileKindResolver::Sniffer contentSniffer;
     };
 
     enum class OpenMode { Transient, Pinned };
@@ -119,6 +125,8 @@ private:
     };
 
     const TypeRegistration *findRegistration(const QString &filePath) const;
+    // Content-sniff fallback of findRegistration for sniffExtensions.
+    const TypeRegistration *sniffRegistration(const QString &filePath, const QString &suffixLower) const;
     // Resolves an editor to its preview type: file-extension match first, then
     // Scintilla language-name fallback for unsaved buffers. Returns nullptr for
     // a wantsFilePath type on a buffer with no on-disk path (CSV/TSV need mmap),
@@ -138,6 +146,7 @@ private:
     DockedEditor *m_dockedEditor;
     QHash<QString, TypeRegistration> m_registry;
     QHash<QString, QString> m_typeByExtension;
+    QSet<QString> m_sniffableExtensions;
     FileKindResolver m_resolver;
     QHash<ScintillaNext *, PreviewEntry> m_previews;
     QHash<QString, QPointer<ads::CDockWidget>> m_previewsByPath;

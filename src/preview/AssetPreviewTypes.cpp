@@ -1,11 +1,15 @@
 #include "AssetPreviewTypes.h"
 
 #include "AsepriteDecoder.h"
+#include "AtlasLoader.h"
+#include "AtlasPreviewWidget.h"
 #include "DdsDecoder.h"
 #include "ImagePreviewWidget.h"
 #include "ModelLoader.h"
 #include "ModelPreviewWidget.h"
 #include "RasterDecoders.h"
+#include "TileMapLoader.h"
+#include "TileMapPreviewWidget.h"
 #include "LuaState.h"
 #include "NotepadNextApplication.h"
 #include "PreviewTabManager.h"
@@ -149,6 +153,43 @@ void registerAssetPreviewTypes(PreviewTabManager *manager, NotepadNextApplicatio
     model.sniffers = {ModelLoader::looksLikeGlb, ModelLoader::looksLikeFbx, ModelLoader::looksLikePly,
                       ModelLoader::looksLikeVox};
     manager->registerType(QStringLiteral("model"), model);
+
+    // Tile maps (add-2d-game-format-preview). .tmx / .tsx are claimed by content
+    // only: .tsx is TypeScript JSX and .tmx is also Translation Memory XML, so
+    // an extension alone must never open them. .json maps are previewed on
+    // request (the explicit Preview actions), never by plain open.
+    PreviewTabManager::TypeRegistration tilemap;
+    tilemap.extensions = {QStringLiteral("tmj"), QStringLiteral("tsj"), QStringLiteral("ldtk"), QStringLiteral("ldtkl")};
+    tilemap.iconPath = QStringLiteral(":/icons/tilemap-preview.svg");
+    tilemap.factory = [](QWidget *parent) -> PreviewContentWidget * {
+        return new TileMapPreviewWidget(QStringLiteral("tilemap"), QStringLiteral("Tile map"), parent);
+    };
+    tilemap.wantsFilePath = true;
+    tilemap.displayName = QStringLiteral("Tile map");
+    tilemap.opensByDefault = true;
+    tilemap.watchFile = true;
+    tilemap.sniffers = {TileMapLoader::looksLikeTiledXml};
+    tilemap.sniffExtensions = {QStringLiteral("tmx"), QStringLiteral("tsx"), QStringLiteral("json")};
+    tilemap.contentSniffer = TileMapLoader::looksLikeTileMap;
+    manager->registerType(QStringLiteral("tilemap"), tilemap);
+
+    // Texture atlases and bitmap fonts. .atlas / .tpsheet are unique to them and
+    // .fnt is BMFont far more often than a Windows font (which shows an error
+    // with "Open as text"); JSON / XML / plist / txt files are matched by content.
+    PreviewTabManager::TypeRegistration atlas;
+    atlas.extensions = {QStringLiteral("atlas"), QStringLiteral("tpsheet"), QStringLiteral("fnt")};
+    atlas.iconPath = QStringLiteral(":/icons/atlas-preview.svg");
+    atlas.factory = [](QWidget *parent) -> PreviewContentWidget * {
+        return new AtlasPreviewWidget(QStringLiteral("atlas"), QStringLiteral("Atlas"), parent);
+    };
+    atlas.wantsFilePath = true;
+    atlas.displayName = QStringLiteral("Atlas");
+    atlas.opensByDefault = true;
+    atlas.watchFile = true;
+    atlas.sniffers = {AtlasLoader::looksLikeBmFont};
+    atlas.sniffExtensions = {QStringLiteral("json"), QStringLiteral("xml"), QStringLiteral("plist"), QStringLiteral("txt")};
+    atlas.contentSniffer = AtlasLoader::looksLikeAtlasContent;
+    manager->registerType(QStringLiteral("atlas"), atlas);
 
     // Known text extensions skip the head read entirely. Snapshotted from the
     // Lua language table on first use (the table is loaded by then and never

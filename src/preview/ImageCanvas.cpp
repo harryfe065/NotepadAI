@@ -504,6 +504,34 @@ void ImageCanvas::paintEvent(QPaintEvent *)
         p.setPen(QPen(QColor(128, 128, 128, 110), 0));
         p.drawLines(lines);
     }
+
+    if (m_overlay) {
+        p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        m_overlay(p, m_math);
+    }
+}
+
+void ImageCanvas::setOverlay(OverlayPainter painter)
+{
+    m_overlay = std::move(painter);
+    update();
+}
+
+void ImageCanvas::revealImageRect(const QRectF &rect)
+{
+    if (!m_doc || rect.isEmpty()) return;
+    const QRectF visible(m_math.viewToImage({0, 0}), m_math.viewToImage({m_math.viewport.width(), m_math.viewport.height()}));
+    double zoom = m_math.zoom;
+    // Zoom in only when the rect is tiny on screen or does not fit.
+    const double fit = std::min(m_math.viewport.width() / (rect.width() * 3.0),
+                                m_math.viewport.height() / (rect.height() * 3.0));
+    if (rect.width() > visible.width() || rect.height() > visible.height() || zoom < fit * 0.5)
+        zoom = std::clamp(fit, ImageViewMath::kMinZoom, 16.0);
+    m_fit = false;
+    m_math.zoom = zoom;
+    m_math.center = rect.center();
+    m_math.clampCenter();
+    viewChanged();
 }
 
 void ImageCanvas::scheduleVectorRender()
@@ -566,6 +594,8 @@ void ImageCanvas::updateHover(QPointF pos)
 {
     m_hoverPos = pos;
     m_hoverValid = true;
+    if (m_overlay)
+        emit imagePointHovered(m_math.viewToImage(pos));
     const QImage *surf = currentSurface();
     if (!surf || surf->isNull()) {
         emit hoverPixelChanged(QString());
@@ -630,6 +660,7 @@ void ImageCanvas::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) {
         m_panning = true;
         m_lastPan = event->position();
+        m_pressPos = event->position();
         setCursor(Qt::ClosedHandCursor);
         event->accept();
         return;
@@ -653,6 +684,9 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_panning && (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton)) {
         m_panning = false;
         unsetCursor();
+        if (event->button() == Qt::LeftButton && m_overlay
+            && (event->position() - m_pressPos).manhattanLength() < 4)
+            emit imageClicked(m_math.viewToImage(event->position()));
         event->accept();
         return;
     }
@@ -670,6 +704,8 @@ void ImageCanvas::leaveEvent(QEvent *event)
 {
     QWidget::leaveEvent(event);
     m_hoverValid = false;
+    if (m_overlay)
+        emit imagePointHovered(QPointF(-1e9, -1e9));
     emit hoverPixelChanged(QString());
 }
 

@@ -64,6 +64,8 @@
         <file>icons/csv-preview.svg</file>
         <file>icons/image-preview.svg</file>
         <file>icons/model-preview.svg</file>
+        <file>icons/tilemap-preview.svg</file>
+        <file>icons/atlas-preview.svg</file>
         <file>icons/mini-app.svg</file>
         <file>icons/arrow-left.svg</file>
         <file>icons/arrow-right.svg</file>

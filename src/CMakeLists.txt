@@ -731,6 +731,20 @@ target_sources(NotepadAI PRIVATE
 )
 target_link_libraries(NotepadAI PRIVATE Qt6::OpenGL cgltf ufbx fast_obj)
 
+# 2D game format tabs (add-2d-game-format-preview): Tiled / LDtk tile maps with
+# the chunk-cached canvas, and atlases / bitmap fonts on the image canvas.
+target_sources(NotepadAI PRIVATE
+    preview/tilemap/TileMapDocument.cpp preview/tilemap/TileMapDocument.h
+    preview/tilemap/TileMapLoader.cpp preview/tilemap/TileMapLoader.h preview/tilemap/TileMapLoaderInternal.h
+    preview/tilemap/TiledLoader.cpp
+    preview/tilemap/LdtkLoader.cpp
+    preview/tilemap/TileMapCanvas.cpp preview/tilemap/TileMapCanvas.h
+    preview/tilemap/TileMapPreviewWidget.cpp preview/tilemap/TileMapPreviewWidget.h
+    preview/atlas/AtlasDocument.cpp preview/atlas/AtlasDocument.h
+    preview/atlas/AtlasLoader.cpp preview/atlas/AtlasLoader.h
+    preview/atlas/AtlasPreviewWidget.cpp preview/atlas/AtlasPreviewWidget.h
+)
+
 # Platform-conditional CredentialStore backend + native API link.
 if(WIN32)
     target_sources(NotepadAI PRIVATE ai/CredentialStore_Windows.cpp)
@@ -779,6 +793,8 @@ target_include_directories(NotepadAI
         ${CMAKE_CURRENT_SOURCE_DIR}/git
         ${CMAKE_CURRENT_SOURCE_DIR}/preview
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/model
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/tilemap
+        ${CMAKE_CURRENT_SOURCE_DIR}/preview/atlas
         ${CMAKE_CURRENT_SOURCE_DIR}/remote
         ${CMAKE_CURRENT_SOURCE_DIR}/widgets
         ${CMAKE_CURRENT_SOURCE_DIR}
