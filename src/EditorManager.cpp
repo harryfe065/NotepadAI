@@ -168,7 +168,7 @@ EditorManager::EditorManager(ApplicationSettings *settings, QObject *parent)
     connect(settings, &ApplicationSettings::showLineNumbersChanged, this, [=](bool b){
         for (auto &editor : getEditors()) {
             // Diff views own margin 0 themselves (per-row old/new file line numbers
-            // rendered by GitDiffPainter). Their LineNumbers decorator was disabled
+            // filled by DiffView). Their LineNumbers decorator was disabled
             // at creation; don't let the user's "Show Line Numbers" toggle clobber it.
             if (isDiffView(editor)) continue;
             LineNumbers *decorator = editor->findChild<LineNumbers *>(QString(), Qt::FindDirectChildrenOnly);
@@ -389,9 +389,9 @@ void EditorManager::setupEditor(ScintillaNext *editor)
     // applied (lexerChanged is emitted *after* SetLanguage from
     // NotepadNextApplication::setEditorLanguage) so dark mode survives.
     connect(editor, &ScintillaNext::lexerChanged, this, [this, editor]() {
-        // Diff views own their palette (GitDiffPainter); the chrome theme's
-        // defaultBack does not match canvasBg, so applying it would corrupt
-        // the diff colors until the next configureEditor call.
+        // Diff views own their palette (DiffView); the chrome theme's
+        // defaultBack does not match the diff canvas, so applying it would
+        // corrupt the diff colors.
         if (isDiffView(editor)) return;
         applyThemeToEditor(editor, darkTheme, /*initialSetup=*/false);
     });
@@ -518,12 +518,10 @@ void EditorManager::applyTheme(bool dark)
     for (auto &editor : getEditors()) {
         if (!editor) continue;
 
-        // Diff views own their palette via GitDiffPainter::configureEditor and
-        // are re-skinned by GitDiffViewController::setDarkPalette on the
-        // effectiveThemeChanged signal. Running applyThemeToEditor on them
-        // would overwrite canvasBg/canvasFg with the chrome's defaultBack
-        // (visible as gray banding under the diff content) until the diff
-        // controller's slot fires next tick.
+        // Diff views own their palette (DiffView::setDark, driven by the
+        // controllers on effectiveThemeChanged). Running applyThemeToEditor
+        // on them would overwrite the diff canvas with the chrome's
+        // defaultBack (visible as gray banding under the diff content).
         if (isDiffView(editor)) continue;
 
         if (transitionToLight) {
@@ -714,6 +712,9 @@ void EditorManager::registerAsDiffView(ScintillaNext *editor)
 {
     if (!editor) return;
     m_diffViews.insert(editor);
+    // Diff views keep no undo history; the tag stops DockedEditor::initialEditor
+    // from taking one for a pristine scratch tab.
+    editor->QObject::setProperty("nn_diffView", true);
     // Auto-untrack on destruction. Capturing the raw pointer is safe because
     // QObject::destroyed fires before the pointer is invalidated for QSet ops.
     connect(editor, &QObject::destroyed, this, [this](QObject *obj) {

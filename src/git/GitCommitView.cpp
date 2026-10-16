@@ -18,10 +18,11 @@
 
 #include "GitCommitView.h"
 
+#include "ApplicationSettings.h"
 #include "CrashContext.h"
+#include "DiffViewApp.h"
 #include "EditorManager.h"
 #include "GitCommitFetcher.h"
-#include "GitDiffPainter.h"
 #include "GitDiffPalette.h"
 #include "GitFileAtShaFetcher.h"
 #include "GitWatcher.h"
@@ -29,13 +30,27 @@
 #include "ScintillaNext.h"
 
 #include "Scintilla.h"
-#include "ScintillaTypes.h"
 
-#include <QFileInfo>
-
-#include <algorithm>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 
 namespace {
+
+// Built commit documents kept for revisits (cost = approximate bytes).
+constexpr qsizetype kContentCacheBytes = 64 * 1024 * 1024;
+
+bool ignoreWhitespace()
+{
+    ApplicationSettings *settings = DiffViewApp::settings();
+    return settings && settings->diffIgnoreWhitespace();
+}
+
+qsizetype contentCost(const DiffView::Content &content)
+{
+    if (!content.doc) return 1;
+    // Text + style bytes + the parsed rows kept for Load diff.
+    return 3 * content.doc->text.size() + 16 * qsizetype(content.doc->rowCount()) + 4096;
+}
 
 QString tabTitleForCommit(const GitCommitDetail &detail)
 {
@@ -45,6 +60,11 @@ QString tabTitleForCommit(const GitCommitDetail &detail)
     if (shortSha.isEmpty()) return subj;
     if (subj.isEmpty()) return shortSha;
     return shortSha + QStringLiteral(" — ") + subj;
+}
+
+QString placeholderTitle(const QByteArray &sha)
+{
+    return QStringLiteral("[Commit ") + QString::fromLatin1(sha.left(7)) + QStringLiteral("]");
 }
 
 QString tabTitleForFileAtSha(const QByteArray &sha, const QString &relPath)
@@ -60,6 +80,19 @@ QByteArray makeFileAtShaKey(const QByteArray &sha, const QString &relPath)
     return k;
 }
 
+int bgr(const QColor &c)
+{
+    return c.red() | (c.green() << 8) | (c.blue() << 16);
+}
+
+void goToLine(ScintillaNext *editor, int line)
+{
+    if (line <= 1) return;
+    editor->ensureVisible(line - 1);
+    editor->gotoLine(line - 1);
+    editor->verticalCentreCaret();
+}
+
 } // namespace
 
 GitCommitView::GitCommitView(const QString &repoRoot,
@@ -71,11 +104,17 @@ GitCommitView::GitCommitView(const QString &repoRoot,
       m_fetcher(new GitCommitFetcher(this)),
       m_fileFetcher(new GitFileAtShaFetcher(this))
 {
+    m_contentCache.setMaxCost(kContentCacheBytes);
     m_fetcher->setRepoRoot(repoRoot);
     m_fileFetcher->setRepoRoot(repoRoot);
 }
 
 GitCommitView::~GitCommitView() = default;
+
+QByteArray GitCommitView::contentKey(const QByteArray &sha, bool ignoreWhitespace)
+{
+    return ignoreWhitespace ? sha + QByteArrayLiteral(":w") : sha;
+}
 
 void GitCommitView::setRepoRoot(const QString &repoRoot)
 {
@@ -83,6 +122,8 @@ void GitCommitView::setRepoRoot(const QString &repoRoot)
     m_repoRoot = repoRoot;
     m_fetcher->setRepoRoot(repoRoot);
     m_fileFetcher->setRepoRoot(repoRoot);
+    m_contentCache.clear();
+    if (m_view) m_view->setRepoRoot(repoRoot);
 }
 
 void GitCommitView::setRunnerScope(const QString &scope)
@@ -95,21 +136,73 @@ void GitCommitView::setDarkPalette(bool dark)
 {
     if (m_dark == dark) return;
     m_dark = dark;
-    // Re-apply palette to the shared editors. Scintilla style lookup tables
-    // refresh on configureEditor; the buffer's style bytes don't need rewriting.
-    const GitDiffPalette &pal = GitDiffPalette::current(m_dark);
-    if (auto *e = m_detailEditor.data()) {
-        GitDiffPainter::configureEditor(e, pal);
-    }
-    if (auto *e = m_fileAtShaEditor.data()) {
-        GitDiffPainter::configureEditor(e, pal);
-    }
+    // Restyles the shown document in place; nothing is refetched.
+    if (m_view) m_view->setDark(dark);
+    styleFileAtShaEditor();
+}
+
+void GitCommitView::styleFileAtShaEditor()
+{
+    ScintillaNext *e = m_fileAtShaEditor.data();
+    if (!e) return;
+    // Registered as a diff view, so the editor theme skips it: paint the
+    // plain text in the diff canvas colours.
+    const DiffViewColors colors = DiffViewColors::make(m_dark);
+    e->send(SCI_STYLESETFORE, STYLE_DEFAULT, bgr(colors.text));
+    e->send(SCI_STYLESETBACK, STYLE_DEFAULT, bgr(colors.canvas));
+    e->send(SCI_STYLECLEARALL);
+    e->send(SCI_STYLESETFORE, STYLE_LINENUMBER, bgr(colors.muted));
+    e->send(SCI_SETCARETFORE, bgr(colors.text));
 }
 
 void GitCommitView::setWatcher(GitWatcher *watcher)
 {
     if (!watcher) return;
     m_fetcher->connectWatcher(watcher);
+    connect(watcher, &GitWatcher::headChanged, this, [this] { m_contentCache.clear(); });
+    connect(watcher, &GitWatcher::refsChanged, this, [this] { m_contentCache.clear(); });
+}
+
+ScintillaNext *GitCommitView::ensureDetailEditor(const QByteArray &sha)
+{
+    if (m_detailEditor) {
+        // Placeholder title while the new content is fetched.
+        m_detailEditor->setName(placeholderTitle(sha));
+        return m_detailEditor;
+    }
+    ScintillaNext *editor = m_editorManager->createEditor(placeholderTitle(sha));
+    m_editorManager->registerAsDiffView(editor);
+    // DiffView fills margin 0 with the diff's own line numbers.
+    if (auto *ln = editor->findChild<LineNumbers *>(QString(), Qt::FindDirectChildrenOnly))
+        ln->setEnabled(false);
+
+    auto *view = new DiffView(editor, DiffView::Mode::Commit);
+    view->setDark(m_dark);
+    view->setRepoRoot(m_repoRoot);
+    connect(view, &DiffView::contentApplied, this, [this](const DiffView::Content &content) {
+        if (!m_currentKey.isEmpty() && !m_contentCache.contains(m_currentKey))
+            m_contentCache.insert(m_currentKey, new DiffView::Content(content), contentCost(content));
+        if (m_detailEditor) emit commitDetailRendered(m_detailEditor);
+    });
+    connect(view, &DiffView::openCommitRequested, this, [this](const QByteArray &sha) {
+        openForSha(sha);
+        emit commitShown(sha);
+    });
+    connect(view, &DiffView::openFileRequested, this, &GitCommitView::onOpenFileRequested);
+    connect(view, &DiffView::revealRequested, this, &GitCommitView::revealRequested);
+    connect(view, &DiffView::ignoreWhitespaceChanged, this, [this](bool) {
+        if (m_detailEditor && !m_currentSha.isEmpty()) load(m_currentSha, true);
+    });
+    // User closed the tab → drop our state so the next click creates a fresh one.
+    connect(editor, &QObject::destroyed, this, [this](QObject *) {
+        ++m_loadSerial;
+        m_currentSha.clear();
+        m_currentKey.clear();
+    });
+    m_view = view;
+    m_detailEditor = editor;
+    emit newCommitEditorCreated(editor);
+    return editor;
 }
 
 void GitCommitView::openForSha(const QByteArray &sha)
@@ -123,118 +216,109 @@ void GitCommitView::openForSha(const QByteArray &sha)
         emit focusExistingCommitEditor(m_detailEditor.data());
         return;
     }
+    ensureDetailEditor(sha);
+    load(sha, false);
+}
 
-    const bool needNewEditor = !m_detailEditor;
-    ScintillaNext *editor = m_detailEditor.data();
+void GitCommitView::load(const QByteArray &sha, bool keepPosition)
+{
+    const quint64 serial = ++m_loadSerial;
+    const bool ws = ignoreWhitespace();
+    m_currentSha = sha;
+    m_currentKey = contentKey(sha, ws);
+    m_view->cancel();
 
-    if (needNewEditor) {
-        editor = m_editorManager->createEditor(
-            QStringLiteral("[Commit ") + QString::fromLatin1(sha.left(7))
-            + QStringLiteral("]"));
-        m_editorManager->registerAsDiffView(editor);
-        if (auto *ln = editor->findChild<LineNumbers *>(QString(),
-                                                         Qt::FindDirectChildrenOnly)) {
-            ln->setEnabled(false);
-        }
-        const GitDiffPalette &pal = GitDiffPalette::current(m_dark);
-        GitDiffPainter::configureEditor(editor, pal);
-        m_detailEditor = editor;
-
-        // Indicator-click hook (file paths in diff section). Pattern mirrors
-        // URLFinder decorator — there's no dedicated indicatorClick signal on
-        // ScintillaEditBase.
-        connect(editor, &ScintillaEditBase::notify, this,
-                [this, editor](Scintilla::NotificationData *scn) {
-            if (!scn) return;
-            if (scn->nmhdr.code != Scintilla::Notification::IndicatorClick) return;
-            onIndicatorClicked(editor, static_cast<int>(scn->position));
-        });
-        // User closed the tab → drop our pointer + state so next click
-        // creates a fresh one.
-        connect(editor, &QObject::destroyed, this, [this](QObject *) {
-            m_currentSha.clear();
-            m_currentFileLinks.clear();
-        });
-
-        emit newCommitEditorCreated(editor);
-    } else {
-        // Reusing the existing tab — show a placeholder title while the new
-        // content is being fetched so the user gets immediate feedback.
-        editor->setName(QStringLiteral("[Commit ") + QString::fromLatin1(sha.left(7))
-                        + QStringLiteral("]"));
+    if (const DiffView::Content *hit = m_contentCache.object(m_currentKey)) {
+        m_fetcher->cancel();
+        const DiffView::Content content = *hit;
+        if (content.doc && content.doc->input && content.doc->input->commit)
+            m_detailEditor->setName(tabTitleForCommit(*content.doc->input->commit));
+        m_view->showContent(content, keepPosition);
+        return;
     }
 
-    m_currentSha = sha;
-    m_currentFileLinks.clear();
-
-    m_fetcher->requestDetail(sha,
-        [this, sha](const std::shared_ptr<const GitCommitDetail> &detail) {
-        // Stale guard — user may have clicked another SHA before this fetch
-        // returned. m_currentSha tracks the latest click.
-        if (sha != m_currentSha) return;
-        ScintillaNext *e = m_detailEditor.data();
-        if (!e) return;
+    m_fetcher->requestDetail(sha, ws,
+        [this, serial, sha, keepPosition](const std::shared_ptr<const GitCommitDetail> &detail) {
+        // Stale guard — the user may have clicked another SHA meanwhile.
+        if (serial != m_loadSerial || !m_detailEditor) return;
         if (!detail || detail->isEmpty()) {
             emit fetchFailed(sha, tr("Could not load commit %1")
                                     .arg(QString::fromLatin1(sha.left(7))));
             return;
         }
-        e->setName(tabTitleForCommit(*detail));
-        QVector<GitCommitRenderer::FileLink> links;
-        renderInto(e, *detail, links);
-        m_currentFileLinks = std::move(links);
-        emit commitDetailRendered(e);
+        showDetail(serial, detail, keepPosition);
     });
 }
 
-void GitCommitView::renderInto(ScintillaNext *editor,
-                                const GitCommitDetail &detail,
-                                QVector<GitCommitRenderer::FileLink> &outLinks)
+void GitCommitView::showDetail(quint64 serial, const std::shared_ptr<const GitCommitDetail> &detail,
+                               bool keepPosition)
 {
-    if (!editor) return;
-    auto res = GitCommitRenderer::render(editor, detail,
-                                          GitDiffPalette::current(m_dark));
-    outLinks = std::move(res.fileLinks);
-    // Pre-sort by start for binary search in onIndicatorClicked.
-    std::sort(outLinks.begin(), outLinks.end(),
-              [](const GitCommitRenderer::FileLink &a,
-                 const GitCommitRenderer::FileLink &b) {
-                  return a.start < b.start;
-              });
+    m_detailEditor->setName(tabTitleForCommit(*detail));
+
+    // Parse on the pool: check-attr needs the file list before the build.
+    using Parsed = std::shared_ptr<const GitDiffParser::Result>;
+    auto *watcher = new QFutureWatcher<Parsed>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, serial, detail, keepPosition] {
+        watcher->deleteLater();
+        if (serial != m_loadSerial || !m_view) return;
+        Parsed parsed = watcher->result();
+        DiffView::Source source;
+        source.parsed = parsed;
+        source.commit = detail;
+        if (parsed->files.size() < 2) {
+            source.issueUrlBase = m_fetcher->issueUrlBase();
+            m_view->show(std::move(source), keepPosition);
+            return;
+        }
+        // Generated files start collapsed only in views of 2+ files.
+        QVector<QByteArray> paths;
+        paths.reserve(parsed->files.size());
+        for (const auto &f : parsed->files) paths.append(f.path());
+        m_fetcher->requestLinguistGenerated(paths,
+            [this, serial, keepPosition, source = std::move(source)](QVector<bool> generated) mutable {
+            if (serial != m_loadSerial || !m_view) return;
+            source.linguistGenerated = std::move(generated);
+            source.issueUrlBase = m_fetcher->issueUrlBase();
+            m_view->show(std::move(source), keepPosition);
+        });
+    });
+    watcher->setFuture(QtConcurrent::run([detail]() -> Parsed {
+        return std::make_shared<const GitDiffParser::Result>(GitDiffParser::parse(detail->diffBytes));
+    }));
 }
 
-void GitCommitView::onIndicatorClicked(ScintillaNext *editor, int position)
+void GitCommitView::onOpenFileRequested(const QString &relPath, int line, DiffView::Side side)
 {
-    if (!editor || editor != m_detailEditor.data()) return;
-    if (m_currentSha.isEmpty() || m_currentFileLinks.isEmpty()) return;
-
-    const auto &links = m_currentFileLinks;
-    int lo = 0, hi = links.size() - 1;
-    int hit = -1;
-    while (lo <= hi) {
-        const int mid = (lo + hi) / 2;
-        const auto &fl = links[mid];
-        if (position < fl.start) {
-            hi = mid - 1;
-        } else if (position >= fl.start + fl.length) {
-            lo = mid + 1;
-        } else {
-            hit = mid;
+    // The commit on screen: a newer one may already be loading.
+    const DiffDoc::Document *doc = m_view ? m_view->document() : nullptr;
+    const GitCommitDetail *shown = doc && doc->input ? doc->input->commit.get() : nullptr;
+    switch (side) {
+        case DiffView::Side::Working:
+            emit openWorkingFileRequested(relPath, line);
+            break;
+        case DiffView::Side::Revision:
+            if (shown) openFileAtSha(shown->sha, relPath, line);
+            break;
+        case DiffView::Side::ParentRevision: {
+            if (!shown) return;
+            const QByteArray parents = shown->parents;
+            const qsizetype space = parents.indexOf(' ');
+            const QByteArray first = space < 0 ? parents : parents.left(space);
+            if (!first.isEmpty()) openFileAtSha(first, relPath, line);
             break;
         }
     }
-    if (hit < 0) return;
-    const QString relPath = QString::fromUtf8(links[hit].path);
-    openFileAtSha(m_currentSha, relPath);
 }
 
-void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath)
+void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath, int line)
 {
     if (sha.isEmpty() || relPath.isEmpty() || !m_editorManager) return;
     const QByteArray key = makeFileAtShaKey(sha, relPath);
+    m_fileAtShaLine = line;
 
     // Same (sha, relPath) already showing → just focus.
     if (m_fileAtShaEditor && key == m_currentFileAtShaKey) {
+        goToLine(m_fileAtShaEditor.data(), line);
         emit focusExistingFileAtShaEditor(m_fileAtShaEditor.data());
         return;
     }
@@ -246,6 +330,7 @@ void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath)
         editor = m_editorManager->createEditor(tabTitleForFileAtSha(sha, relPath));
         m_editorManager->registerAsDiffView(editor);
         m_fileAtShaEditor = editor;
+        styleFileAtShaEditor();
         connect(editor, &QObject::destroyed, this, [this](QObject *) {
             m_currentFileAtShaKey.clear();
         });
@@ -278,5 +363,6 @@ void GitCommitView::openFileAtSha(const QByteArray &sha, const QString &relPath)
             }
         }
         e->send(SCI_SETREADONLY, 1, 0);
+        goToLine(e, m_fileAtShaLine);
     });
 }

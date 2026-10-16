@@ -18,12 +18,12 @@
 
 #include "GitCommitFetcher.h"
 
-#include "GitNumstatParser.h"
 #include "GitProcessRunner.h"
 #include "GitRunnerFactory.h"
 #include "GitWatcher.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QStringList>
 #include <QTimer>
 
@@ -33,12 +33,12 @@ namespace {
 
 constexpr int kCommitTimeoutMs = 60000;
 
-// Format string for `git show --no-patch --format=...`.
+// Format string for `git show --format=...`.
 // Fields in order:
 //   %H = full SHA, %P = parents, %an = author name, %ae = author email,
 //   %at = author epoch, %cn = committer name, %ce = committer email,
 //   %ct = committer epoch, %s = subject, %B = full body
-//   each separated by US (0x1f), terminated by RS (0x1e).
+//   each separated by US (0x1f), terminated by RS (0x1e). The patch follows.
 constexpr const char *kShowHeaderFormat =
     "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%s%x1f%B%x1e";
 
@@ -85,6 +85,8 @@ void GitCommitFetcher::setRepoRoot(const QString &repoToplevel)
     cancel();
     invalidateAll();
     m_repoRoot = repoToplevel;
+    m_issueUrlBase.clear();
+    m_issueUrlKnown = false;
     if (m_runner) m_runner->asQObject()->deleteLater();
     const QString scope = m_runnerScope.isEmpty() ? m_repoRoot : m_runnerScope;
     m_runner = GitRunnerFactory::createForRepo(scope, this);
@@ -103,7 +105,12 @@ void GitCommitFetcher::connectWatcher(GitWatcher *watcher)
     connect(watcher, &GitWatcher::refsChanged, this, &GitCommitFetcher::invalidateAll);
 }
 
-void GitCommitFetcher::requestDetail(const QByteArray &sha, Callback cb)
+QByteArray GitCommitFetcher::cacheKey(const QByteArray &sha, bool ignoreWhitespace)
+{
+    return ignoreWhitespace ? sha + QByteArrayLiteral(":w") : sha;
+}
+
+void GitCommitFetcher::requestDetail(const QByteArray &sha, bool ignoreWhitespace, Callback cb)
 {
     if (sha.isEmpty() || m_repoRoot.isEmpty()) {
         if (cb) cb({});
@@ -111,43 +118,41 @@ void GitCommitFetcher::requestDetail(const QByteArray &sha, Callback cb)
     }
     // Cache hit — fire callback asynchronously to keep call-site semantics
     // consistent (always "later" not "sometimes immediate").
-    if (auto *hit = m_cache.object(sha)) {
+    if (auto *hit = m_cache.object(cacheKey(sha, ignoreWhitespace))) {
         std::shared_ptr<const GitCommitDetail> shared = *hit;
-        QTimer::singleShot(0, this, [cb = std::move(cb), shared]() {
-            if (cb) cb(shared);
+        cancel();
+        const quint64 gen = m_generation;
+        QTimer::singleShot(0, this, [this, gen, cb = std::move(cb), shared]() {
+            if (gen == m_generation && cb) cb(shared);
         });
         emit requestCompleted(sha, true);
         return;
     }
-
-    cancel();
-    ++m_generation;
-    m_inflight = std::make_unique<InFlight>();
-    m_inflight->sha = sha;
-    m_inflight->cb = std::move(cb);
-    m_inflight->partial = std::make_shared<GitCommitDetail>();
-    m_inflight->generation = m_generation;
-    m_inflight->uncapped = false;
-    launchHeader(*m_inflight);
+    start(sha, ignoreWhitespace, false, std::move(cb));
 }
 
-void GitCommitFetcher::requestDetailUncapped(const QByteArray &sha, Callback cb)
+void GitCommitFetcher::requestDetailUncapped(const QByteArray &sha, bool ignoreWhitespace, Callback cb)
 {
     if (sha.isEmpty() || m_repoRoot.isEmpty()) {
         if (cb) cb({});
         return;
     }
-    cancel();
     // Evict any cached truncated copy.
-    m_cache.remove(sha);
-    ++m_generation;
+    m_cache.remove(cacheKey(sha, ignoreWhitespace));
+    start(sha, ignoreWhitespace, true, std::move(cb));
+}
+
+void GitCommitFetcher::start(const QByteArray &sha, bool ignoreWhitespace, bool uncapped, Callback cb)
+{
+    cancel();
     m_inflight = std::make_unique<InFlight>();
     m_inflight->sha = sha;
     m_inflight->cb = std::move(cb);
     m_inflight->partial = std::make_shared<GitCommitDetail>();
     m_inflight->generation = m_generation;
-    m_inflight->uncapped = true;
-    launchHeader(*m_inflight);
+    m_inflight->uncapped = uncapped;
+    m_inflight->ignoreWhitespace = ignoreWhitespace;
+    launchShow(*m_inflight, false);
 }
 
 void GitCommitFetcher::cancel()
@@ -155,115 +160,159 @@ void GitCommitFetcher::cancel()
     if (m_runner && m_runner->isRunning()) m_runner->cancelAsync();
     ++m_generation;
     if (m_inflight) m_inflight.reset();
+    m_runner->setMaxOutputBytes(kDefaultCapBytes);
 }
 
-void GitCommitFetcher::launchHeader(InFlight &state)
+void GitCommitFetcher::launchShow(InFlight &state, bool legacyMerges)
 {
-    state.step = 0;
     const quint64 myGen = state.generation;
-    const QStringList argv = {
-        QStringLiteral("-c"), QStringLiteral("color.ui=never"),
-        QStringLiteral("show"), QStringLiteral("--no-patch"),
-        QString::fromLatin1(kShowHeaderFormat),
-        QString::fromLatin1(state.sha)
-    };
-    m_runner->run(m_repoRoot, argv, QByteArray(), kCommitTimeoutMs, false,
-                  [this, myGen](int exit, const QByteArray &out, const QByteArray &err) {
-        if (myGen != m_generation) return;
-        if (!m_inflight) return;
-        if (exit != 0) {
-            const QString msg = QString::fromUtf8(err).trimmed();
-            qWarning("git show --no-patch failed: %s", qPrintable(msg));
-            completeFail(*m_inflight);
-            return;
-        }
-        parseHeader(out, *m_inflight->partial);
-        parseTrailers(*m_inflight->partial);
-        if (m_inflight->partial->sha.isEmpty()) {
-            // Header parse failed — surface as fail.
-            completeFail(*m_inflight);
-            return;
-        }
-        launchNumstat(*m_inflight);
-    });
-}
-
-void GitCommitFetcher::launchNumstat(InFlight &state)
-{
-    state.step = 1;
-    const quint64 myGen = state.generation;
-    // For merge commits, --first-parent diff is what the patch step shows.
-    // Match here so the numstat row count agrees with the rendered diff.
-    QStringList argv = {
-        QStringLiteral("-c"), QStringLiteral("color.ui=never"),
-        QStringLiteral("show"), QStringLiteral("--numstat"), QStringLiteral("-z"),
-        QStringLiteral("--format=")
-    };
-    if (state.partial->isMerge()) argv << QStringLiteral("--first-parent");
-    argv << QString::fromLatin1(state.sha);
-    m_runner->run(m_repoRoot, argv, QByteArray(), kCommitTimeoutMs, false,
-                  [this, myGen](int exit, const QByteArray &out, const QByteArray &err) {
-        if (myGen != m_generation) return;
-        if (!m_inflight) return;
-        if (exit != 0) {
-            qWarning("git show --numstat failed: %s",
-                     qPrintable(QString::fromUtf8(err).trimmed()));
-            // Don't fail — diff might still render; just skip numstat data.
-        } else {
-            const QHash<QString, GitNumstatParser::Stat> stats =
-                GitNumstatParser::parse(out);
-            QVector<GitCommitDetail::FileStat> fs;
-            fs.reserve(stats.size());
-            for (auto it = stats.constBegin(); it != stats.constEnd(); ++it) {
-                GitCommitDetail::FileStat e;
-                e.path = it.key().toUtf8();
-                e.added = it.value().added;
-                e.deleted = it.value().deleted;
-                e.isBinary = it.value().isBinary;
-                fs.append(e);
-            }
-            // Stable order: alphabetical by path. Cheap (<200 entries
-            // usually) and gives consistent UI for the same commit.
-            std::sort(fs.begin(), fs.end(),
-                      [](const GitCommitDetail::FileStat &a,
-                         const GitCommitDetail::FileStat &b) {
-                          return a.path < b.path;
-                      });
-            m_inflight->partial->fileStats = std::move(fs);
-        }
-        launchPatch(*m_inflight);
-    });
-}
-
-void GitCommitFetcher::launchPatch(InFlight &state)
-{
-    state.step = 2;
-    const quint64 myGen = state.generation;
-    // Adjust runner cap before launch. Reset back to default afterwards in
-    // completeOk/Fail.
     m_runner->setMaxOutputBytes(state.uncapped ? 0 : kDefaultCapBytes);
     QStringList argv = {
         QStringLiteral("-c"), QStringLiteral("color.ui=never"),
-        QStringLiteral("show"), QStringLiteral("--no-color"),
-        QStringLiteral("-p"), QStringLiteral("--format=")
+        QStringLiteral("-c"), QStringLiteral("core.quotepath=false"),
+        QStringLiteral("show"), QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"),
+        // Renames are always detected, whatever diff.renames says.
+        QStringLiteral("-M"), QStringLiteral("-p"),
+        QStringLiteral("--src-prefix=a/"), QStringLiteral("--dst-prefix=b/"),
+        QString::fromLatin1(kShowHeaderFormat)
     };
-    if (state.partial->isMerge()) argv << QStringLiteral("--first-parent");
+    // A merge shows its diff against the first parent.
+    if (legacyMerges)
+        argv << QStringLiteral("-m") << QStringLiteral("--first-parent");
+    else
+        argv << QStringLiteral("--diff-merges=first-parent");
+    if (state.ignoreWhitespace) argv << QStringLiteral("-w");
     argv << QString::fromLatin1(state.sha);
+
     m_runner->run(m_repoRoot, argv, QByteArray(), kCommitTimeoutMs, false,
-                  [this, myGen](int exit, const QByteArray &out, const QByteArray &err) {
+                  [this, myGen, legacyMerges](int exit, const QByteArray &out, const QByteArray &err) {
         if (myGen != m_generation) return;
         if (!m_inflight) return;
         const bool truncated = (exit == GitProcessRunner::kExitTruncated);
         if (exit != 0 && !truncated) {
-            qWarning("git show -p failed: %s",
-                     qPrintable(QString::fromUtf8(err).trimmed()));
+            // git < 2.31 has no --diff-merges.
+            if (!legacyMerges && err.contains("diff-merges")) {
+                launchShow(*m_inflight, true);
+                return;
+            }
+            qWarning("git show failed: %s", qPrintable(QString::fromUtf8(err).trimmed()));
             completeFail(*m_inflight);
             return;
         }
-        m_inflight->partial->diffBytes = out;
+        if (!splitShowOutput(out, *m_inflight->partial)) {
+            completeFail(*m_inflight);
+            return;
+        }
         m_inflight->partial->truncated = truncated;
+        if (!m_issueUrlKnown)
+            launchRemoteUrl(*m_inflight);
+        else
+            completeOk(*m_inflight);
+    });
+}
+
+void GitCommitFetcher::launchRemoteUrl(InFlight &state)
+{
+    const quint64 myGen = state.generation;
+    m_runner->setMaxOutputBytes(kDefaultCapBytes);
+    const QStringList argv = { QStringLiteral("config"), QStringLiteral("--get"),
+                               QStringLiteral("remote.origin.url") };
+    m_runner->run(m_repoRoot, argv, QByteArray(), kCommitTimeoutMs, false,
+                  [this, myGen](int exit, const QByteArray &out, const QByteArray &) {
+        if (myGen != m_generation) return;
+        if (!m_inflight) return;
+        // exit 1 = no origin: #N stays plain text.
+        m_issueUrlBase = exit == 0 ? issueUrlBaseFor(out.trimmed()) : QByteArray();
+        m_issueUrlKnown = true;
         completeOk(*m_inflight);
     });
+}
+
+void GitCommitFetcher::requestLinguistGenerated(const QVector<QByteArray> &paths, GeneratedCallback cb)
+{
+    if (paths.isEmpty() || m_repoRoot.isEmpty()) {
+        if (cb) cb({});
+        return;
+    }
+    cancel();
+    const quint64 myGen = m_generation;
+    QByteArray input;
+    for (const QByteArray &p : paths) {
+        input += p;
+        input += '\0';
+    }
+    const QStringList argv = { QStringLiteral("check-attr"), QStringLiteral("-z"), QStringLiteral("--stdin"),
+                               QStringLiteral("linguist-generated") };
+    m_runner->run(m_repoRoot, argv, input, kCommitTimeoutMs, false,
+                  [this, myGen, paths, cb = std::move(cb)](int exit, const QByteArray &out, const QByteArray &) {
+        if (myGen != m_generation) return;
+        if (cb) cb(exit == 0 ? parseCheckAttr(out, paths) : QVector<bool>());
+    });
+}
+
+QVector<bool> GitCommitFetcher::parseCheckAttr(const QByteArray &out, const QVector<QByteArray> &paths)
+{
+    // -z output: <path> NUL <attribute> NUL <value> NUL, per path.
+    QHash<QByteArray, bool> generated;
+    const QList<QByteArray> fields = out.split('\0');
+    for (qsizetype i = 0; i + 2 < fields.size(); i += 3) {
+        const QByteArray &value = fields[i + 2];
+        if (value == "set" || value == "true") generated.insert(fields[i], true);
+    }
+    QVector<bool> result(paths.size(), false);
+    for (qsizetype i = 0; i < paths.size(); ++i) result[i] = generated.value(paths[i], false);
+    return result;
+}
+
+QByteArray GitCommitFetcher::issueUrlBaseFor(const QByteArray &remoteUrl)
+{
+    QByteArray url = remoteUrl.trimmed();
+    if (url.isEmpty()) return {};
+    QByteArray host;
+    QByteArray path;
+    const qsizetype scheme = url.indexOf("://");
+    if (scheme >= 0) {
+        QByteArray rest = url.mid(scheme + 3);
+        const qsizetype slash = rest.indexOf('/');
+        if (slash < 0) return {};
+        host = rest.left(slash);
+        path = rest.mid(slash + 1);
+        const qsizetype at = host.lastIndexOf('@');
+        if (at >= 0) host = host.mid(at + 1);            // credentials / ssh user
+        const qsizetype colon = host.indexOf(':');
+        if (colon >= 0) host = host.left(colon);          // port
+    } else {
+        // scp-like: [user@]host:owner/repo
+        const qsizetype colon = url.indexOf(':');
+        if (colon < 0) return {};
+        host = url.left(colon);
+        path = url.mid(colon + 1);
+        const qsizetype at = host.lastIndexOf('@');
+        if (at >= 0) host = host.mid(at + 1);
+    }
+    while (path.endsWith('/')) path.chop(1);
+    if (path.endsWith(".git")) path.chop(4);
+    while (path.startsWith('/')) path = path.mid(1);
+    host = host.toLower();
+    if (host.isEmpty() || path.isEmpty() || !path.contains('/')) return {};
+
+    const QByteArray web = "https://" + host + '/' + path;
+    if (host == "github.com" || host == "codeberg.org" || host == "bitbucket.org" || host.contains("gitea"))
+        return web + "/issues/";
+    if (host.contains("gitlab")) return web + "/-/issues/";
+    return {};
+}
+
+bool GitCommitFetcher::splitShowOutput(const QByteArray &out, GitCommitDetail &detail)
+{
+    parseHeader(out, detail);
+    if (detail.sha.isEmpty()) return false;
+    parseTrailers(detail);
+    const qsizetype rs = out.indexOf('\x1e');
+    qsizetype patch = rs < 0 ? out.size() : rs + 1;
+    while (patch < out.size() && (out[patch] == '\n' || out[patch] == '\r')) ++patch;
+    detail.diffBytes = out.mid(patch);
+    return true;
 }
 
 void GitCommitFetcher::completeOk(InFlight &state)
@@ -272,7 +321,7 @@ void GitCommitFetcher::completeOk(InFlight &state)
     // Cache. QCache takes ownership of the heap pointer; wrap the shared_ptr
     // in another heap allocation so QCache can delete it.
     if (!state.uncapped) {
-        m_cache.insert(state.sha,
+        m_cache.insert(cacheKey(state.sha, state.ignoreWhitespace),
                        new std::shared_ptr<const GitCommitDetail>(shared));
     }
     auto cb = std::move(state.cb);

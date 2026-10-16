@@ -194,7 +194,9 @@ ScintillaNext *DockedEditor::initialEditor() const
     // Reject anything the user might care about: a temporary buffer, a real or
     // missing file, or a buffer with undo/redo history (i.e. it was edited).
     // Only a truly pristine "New X" survives and may be transparently closed.
-    if (editor->isTemporary() || editor->isFile() || editor->canUndo() || editor->canRedo())
+    // Diff views (EditorManager::registerAsDiffView) have no undo history either.
+    if (editor->isTemporary() || editor->isFile() || editor->canUndo() || editor->canRedo()
+        || editor->QObject::property("nn_diffView").toBool())
         return nullptr;
 
     return editor;

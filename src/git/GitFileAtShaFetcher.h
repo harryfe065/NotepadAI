@@ -32,10 +32,8 @@ class IGitProcessRunner;
 //   git -c color.ui=never show <sha>:<relPath>
 //
 // Used by the "click filename in commit detail diff → open file at that
-// revision" flow. Output is bounded by a 5MB cap; binary detection is the
-// caller's responsibility (use GitCommitDetail::FileStat::isBinary). The
-// fetcher will still return whatever bytes git produces for a binary file —
-// the host UI must check the flag and decide whether to render.
+// revision" flow. Output is bounded by a 5MB cap. The fetcher returns
+// whatever bytes git produces, binary files included.
 class GitFileAtShaFetcher : public QObject
 {
     Q_OBJECT

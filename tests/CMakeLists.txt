@@ -1284,6 +1284,76 @@ target_sources(test_git_diff_parser PRIVATE
 )
 add_test(NAME GitDiffParser COMMAND test_git_diff_parser)
 
+# --- DiffFileClassifier: which files of a diff start collapsed and why
+#     (binary, lockfile, generated, deleted, large; first rule wins). ---
+qt_add_executable(test_diff_file_classifier test_diff_file_classifier.cpp)
+target_include_directories(test_diff_file_classifier PRIVATE ${CMAKE_SOURCE_DIR}/src/git)
+target_link_libraries(test_diff_file_classifier PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_diff_file_classifier PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileClassifier.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileClassifier.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.h
+)
+add_test(NAME DiffFileClassifier COMMAND test_diff_file_classifier)
+
+# --- DiffDocumentBuilder: the diff view's buffer (file headers, hunks, body
+#     rows, commit card, links, word spans, lexer slots) built off-thread.
+#     Fragments for Load diff must equal the inline build. ---
+qt_add_executable(test_diff_document_builder test_diff_document_builder.cpp)
+target_include_directories(test_diff_document_builder PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/git
+    ${CMAKE_SOURCE_DIR}/thirdparty/scintilla/include
+    ${CMAKE_SOURCE_DIR}/thirdparty/lexilla/include
+)
+target_link_libraries(test_diff_document_builder PRIVATE Qt6::Core Qt6::Test lexilla)
+target_sources(test_diff_document_builder PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/git/DiffDocument.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffDocumentBuilder.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffDocumentBuilder.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileClassifier.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileClassifier.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffSyntaxMapper.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffSyntaxMapper.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitRelativeTime.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitRelativeTime.h
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
+)
+add_test(NAME DiffDocumentBuilder COMMAND test_diff_document_builder)
+
+# --- DiffLanguages: language detection from a Lua snapshot (file name, Lua
+#     name pattern, extension) and the per-document lexer style-slot
+#     allocator (compaction, LexCPP inactive fold, overflow). ---
+qt_add_executable(test_diff_languages test_diff_languages.cpp)
+target_include_directories(test_diff_languages PRIVATE ${CMAKE_SOURCE_DIR}/src/git)
+target_link_libraries(test_diff_languages PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_diff_languages PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/git/DiffLanguages.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffLanguages.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.h
+)
+add_test(NAME DiffLanguages COMMAND test_diff_languages)
+
+# --- DiffFileTreeModel: the commit view's changed-files tree (directories
+#     first, compacted chains, delegate roles, filter keeps ancestors). ---
+qt_add_executable(test_diff_file_tree_model test_diff_file_tree_model.cpp)
+target_include_directories(test_diff_file_tree_model PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/git)
+target_link_libraries(test_diff_file_tree_model PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+target_sources(test_diff_file_tree_model PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileTreeModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileTreeModel.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.h
+)
+add_test(NAME DiffFileTreeModel COMMAND test_diff_file_tree_model)
+
 # --- GitGutterMarkers: pure diff → editor-marker line mapping.
 #     Verifies that hunk classification (Added vs Modified vs Deleted) and
 #     line indexing land where the gutter painter expects them. ---
@@ -2722,3 +2792,71 @@ target_sources(test_acp_grill_me_permission PRIVATE
     ${CMAKE_SOURCE_DIR}/src/LocalAcpProcessChannel.h
 )
 add_test(NAME AcpGrillMePermission COMMAND test_acp_grill_me_permission)
+
+# --- bench_diff_view_apply: manual timing of the diff view's UI-thread work
+#     (apply, first paint, page scroll, expand) on a real ScintillaNext under
+#     the offscreen platform. No ctest. Numbers go in the redesign-diff-reading
+#     design (D14). ---
+qt_add_executable(bench_diff_view_apply bench_diff_view_apply.cpp)
+target_include_directories(bench_diff_view_apply PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/git
+    ${CMAKE_SOURCE_DIR}/src/widgets
+    ${CMAKE_SOURCE_DIR}/thirdparty/scintilla/include
+    ${CMAKE_SOURCE_DIR}/thirdparty/lexilla/include
+)
+target_link_libraries(bench_diff_view_apply PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent scintilla lexilla uchardet)
+target_sources(bench_diff_view_apply PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/ApplicationSettings.h
+    ${CMAKE_SOURCE_DIR}/src/ScintillaNext.cpp
+    ${CMAKE_SOURCE_DIR}/src/ScintillaNext.h
+    ${CMAKE_SOURCE_DIR}/src/RangeAllocator.cpp
+    ${CMAKE_SOURCE_DIR}/src/RangeAllocator.h
+    ${CMAKE_SOURCE_DIR}/src/ScintillaCommenter.cpp
+    ${CMAKE_SOURCE_DIR}/src/ScintillaCommenter.h
+    ${CMAKE_SOURCE_DIR}/src/SelectionTracker.cpp
+    ${CMAKE_SOURCE_DIR}/src/SelectionTracker.h
+    ${CMAKE_SOURCE_DIR}/src/UndoAction.cpp
+    ${CMAKE_SOURCE_DIR}/src/UndoAction.h
+    ${CMAKE_SOURCE_DIR}/src/ByteArrayUtils.h
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProfileScope.h
+    ${CMAKE_SOURCE_DIR}/src/remote/IFileSystemBackend.h
+    ${CMAKE_SOURCE_DIR}/src/remote/SshProfile.h
+    ${CMAKE_SOURCE_DIR}/src/QRegexSearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/QRegexSearch.h
+    ${CMAKE_SOURCE_DIR}/src/DarkPalette.h
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.cpp
+    ${CMAKE_SOURCE_DIR}/src/widgets/TerminalIcons.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffDocument.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffDocumentBuilder.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffDocumentBuilder.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileClassifier.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileClassifier.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileTreeModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffFileTreeModel.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffLanguages.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffLanguages.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffLanguagesLua.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffStickyHeader.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffStickyHeader.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffView.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/DiffView.h
+    ${CMAKE_SOURCE_DIR}/src/git/DiffViewApp.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffPalette.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffParser.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffSyntaxMapper.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitDiffSyntaxMapper.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitNumstatParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitNumstatParser.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitRelativeTime.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitRelativeTime.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusItemDelegate.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusItemDelegate.h
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/git/GitStatusModel.h
+)

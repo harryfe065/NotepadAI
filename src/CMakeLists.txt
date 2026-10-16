@@ -364,6 +364,23 @@ qt_add_executable(NotepadAI
 	git/CommitComposer.cpp
 	git/CommitComposer.h
 	git/CommitSubmitPolicy.h
+	git/DiffDocument.h
+	git/DiffDocumentBuilder.cpp
+	git/DiffDocumentBuilder.h
+	git/DiffFileClassifier.cpp
+	git/DiffFileClassifier.h
+	git/DiffFileTreeModel.cpp
+	git/DiffFileTreeModel.h
+	git/DiffLanguages.cpp
+	git/DiffLanguages.h
+	git/DiffLanguagesLua.cpp
+	git/DiffLanguagesLua.h
+	git/DiffStickyHeader.cpp
+	git/DiffStickyHeader.h
+	git/DiffView.cpp
+	git/DiffView.h
+	git/DiffViewApp.cpp
+	git/DiffViewApp.h
 	git/FileEncodingDetector.cpp
 	git/FileEncodingDetector.h
 	git/ForceRemovePath.cpp
@@ -379,16 +396,12 @@ qt_add_executable(NotepadAI
 	git/GitCommitFetcher.cpp
 	git/GitCommitFetcher.h
 	git/GitCommitInfo.h
-	git/GitCommitRenderer.cpp
-	git/GitCommitRenderer.h
 	git/GitCommitView.cpp
 	git/GitCommitView.h
 	git/GitDiffCache.cpp
 	git/GitDiffCache.h
 	git/GitDiffFetcher.cpp
 	git/GitDiffFetcher.h
-	git/GitDiffPainter.cpp
-	git/GitDiffPainter.h
 	git/GitDiffPalette.cpp
 	git/GitDiffPalette.h
 	git/GitDiffParser.cpp
@@ -418,6 +431,8 @@ qt_add_executable(NotepadAI
 	git/GitNumstatParser.h
 	git/GitProcessRunner.cpp
 	git/GitProcessRunner.h
+	git/GitRelativeTime.cpp
+	git/GitRelativeTime.h
 	git/GitRunnerFactory.cpp
 	git/GitRunnerFactory.h
 	git/PathStatusIndex.cpp

@@ -29,6 +29,7 @@
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -241,6 +242,16 @@ void GitHistoryView::onFetchFinished(bool reachedEnd, const QString &errorMessag
     }
     updateFooter();
     emit busyChanged(false);
+}
+
+void GitHistoryView::selectCommit(const QByteArray &sha)
+{
+    const int row = m_model->rowOfSha(sha);
+    if (row < 0) return;
+    const QModelIndex index = m_proxy->mapFromSource(m_model->index(row, 0));
+    if (!index.isValid()) return;
+    m_list->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect);
+    m_list->scrollTo(index);
 }
 
 void GitHistoryView::onRowActivated(const QModelIndex &index)

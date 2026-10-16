@@ -58,16 +58,11 @@ void GitDiffCache::put(Key k, Entry value, qsizetype rawDiffBytes)
     if (!value) return;
     // Estimate footprint: parsed.texts byte total + small per-row overhead.
     // We approximate with raw diff bytes + a 1.3x fudge for QVector headers.
-    // Overlay (if present) adds its own row styling + word span overhead;
-    // worst case it doubles the footprint, so include a small overhead.
+    // The built document holds its text and one style byte per text byte,
+    // plus ~12 bytes of row tables per row.
     qsizetype footprint = (rawDiffBytes * 13) / 10;
-    if (value.overlay) {
-        // Each row holds a QByteArray of style bytes (same byte count as
-        // texts) plus QVector header overhead; word spans cost 12 bytes each.
-        footprint += rawDiffBytes;
-        footprint += static_cast<qsizetype>(value.overlay->addWordSpans.size() +
-                                            value.overlay->delWordSpans.size()) * 12;
-    }
+    if (value.doc)
+        footprint += 2 * value.doc->text.size() + 12 * static_cast<qsizetype>(value.doc->rowCount());
 
     if (const auto it = m_map.find(k); it != m_map.end()) {
         m_sizeBytes -= it->bytes;

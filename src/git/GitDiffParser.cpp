@@ -35,28 +35,183 @@ inline qint32 parseDec(const char *p, const char *q)
     return v;
 }
 
-// Parse hunk header "@@ -O[,L] +N[,L] @@ ...". Writes oldStart/newStart out.
-// Returns true if parsed. We don't actually need the lengths — we re-derive
-// counts by walking lines.
-bool parseHunkHeader(const char *p, const char *end, qint32 &oldStart, qint32 &newStart)
+// Parse one "start[,len]" range of a hunk header starting at p. A missing
+// length means 1 (git omits ",1").
+bool parseRange(const char *&p, const char *end, qint32 &start, qint32 &len)
+{
+    const char *q = p;
+    while (q < end && *q >= '0' && *q <= '9') ++q;
+    start = parseDec(p, q);
+    if (start < 0) return false;
+    len = 1;
+    if (q < end && *q == ',') {
+        const char *r = ++q;
+        while (r < end && *r >= '0' && *r <= '9') ++r;
+        len = parseDec(q, r);
+        if (len < 0) return false;
+        q = r;
+    }
+    p = q;
+    return true;
+}
+
+// Parse hunk header "@@ -O[,L] +N[,L] @@ ...".
+bool parseHunkHeader(const char *p, const char *end, qint32 &oldStart, qint32 &oldLen,
+                     qint32 &newStart, qint32 &newLen)
 {
     if (end - p < 8) return false;
     if (p[0] != '@' || p[1] != '@' || p[2] != ' ') return false;
     p += 3;
     if (*p != '-') return false;
     ++p;
-    const char *commaOrSpace = p;
-    while (commaOrSpace < end && *commaOrSpace != ',' && *commaOrSpace != ' ') ++commaOrSpace;
-    oldStart = parseDec(p, commaOrSpace);
-    if (oldStart < 0) return false;
-    // Skip to next '+'
-    while (p < end && *p != '+') ++p;
-    if (p >= end || *p != '+') return false;
+    if (!parseRange(p, end, oldStart, oldLen)) return false;
+    if (end - p < 2 || p[0] != ' ' || p[1] != '+') return false;
+    p += 2;
+    return parseRange(p, end, newStart, newLen);
+}
+
+bool startsWith(const char *p, qsizetype len, const char *lit)
+{
+    const qsizetype n = static_cast<qsizetype>(std::strlen(lit));
+    return len >= n && std::memcmp(p, lit, static_cast<size_t>(n)) == 0;
+}
+
+quint32 parseOctal(const char *p, const char *end)
+{
+    quint32 v = 0;
+    while (p < end && *p >= '0' && *p <= '7') v = v * 8 + quint32(*p++ - '0');
+    return v;
+}
+
+// Undo git's C-style path quoting ("a/f\303\266o\tbar"). Unquoted input is
+// returned as is.
+QByteArray unquotePath(const char *p, const char *end)
+{
+    if (end - p < 2 || *p != '"') return QByteArray(p, end - p);
+    QByteArray out;
+    out.reserve(end - p);
     ++p;
-    const char *commaOrSpace2 = p;
-    while (commaOrSpace2 < end && *commaOrSpace2 != ',' && *commaOrSpace2 != ' ') ++commaOrSpace2;
-    newStart = parseDec(p, commaOrSpace2);
-    return newStart >= 0;
+    while (p < end && *p != '"') {
+        char c = *p++;
+        if (c == '\\' && p < end) {
+            c = *p++;
+            switch (c) {
+                case 'n': c = '\n'; break;
+                case 't': c = '\t'; break;
+                case 'r': c = '\r'; break;
+                case 'a': c = '\a'; break;
+                case 'b': c = '\b'; break;
+                case 'f': c = '\f'; break;
+                case 'v': c = '\v'; break;
+                default:
+                    if (c >= '0' && c <= '7') {
+                        int v = c - '0';
+                        for (int k = 0; k < 2 && p < end && *p >= '0' && *p <= '7'; ++k)
+                            v = v * 8 + (*p++ - '0');
+                        c = static_cast<char>(v);
+                    }
+                    break;  // '\\' and '"' map to themselves
+            }
+        }
+        out.append(c);
+    }
+    return out;
+}
+
+// Path from a "---"/"+++" line body: "a/x", "b/x", "/dev/null" or quoted.
+// Returns false for /dev/null. Trailing tab metadata is dropped.
+bool sidePath(const char *p, const char *end, QByteArray &out)
+{
+    if (end - p >= 9 && std::memcmp(p, "/dev/null", 9) == 0) return false;
+    QByteArray path = unquotePath(p, end);
+    if (*p != '"') {
+        const qsizetype tab = path.indexOf('\t');
+        if (tab >= 0) path.truncate(tab);
+    }
+    if (path.size() >= 2 && (path.startsWith("a/") || path.startsWith("b/"))) path.remove(0, 2);
+    out = path;
+    return true;
+}
+
+// "diff --git a/x b/y": the paths are exact only when quoted or when both
+// sides are equal; renames are corrected later by "rename from/to" and the
+// ---/+++ lines.
+void pathsFromDiffGit(const char *p, const char *end, GitDiffParser::FileSpan &f)
+{
+    p += 11;  // "diff --git "
+    if (p >= end) return;
+    if (*p == '"') {
+        const char *q = p + 1;
+        while (q < end && !(*q == '"' && q[-1] != '\\')) ++q;
+        if (q >= end) return;
+        sidePath(p, q + 1, f.oldPath);
+        p = q + 1;
+        if (p < end && *p == ' ') ++p;
+        sidePath(p, end, f.newPath);
+        return;
+    }
+    // Unquoted "a/P b/Q": with equal sides the split point is the middle.
+    const qsizetype n = end - p;
+    if (n >= 7 && (n - 1) % 2 == 0) {
+        const qsizetype half = (n - 1) / 2;
+        if (p[half] == ' ' && std::memcmp(p + 2, p + half + 3, static_cast<size_t>(half - 2)) == 0) {
+            f.oldPath = QByteArray(p + 2, half - 2);
+            f.newPath = f.oldPath;
+            return;
+        }
+    }
+    const char *b = end;
+    while (b > p + 2 && !(b[-1] == ' ' && b[0] == 'b' && b[1] == '/')) --b;
+    if (b > p + 2) {
+        sidePath(p, b - 1, f.oldPath);
+        sidePath(b, end, f.newPath);
+    }
+}
+
+// Fold one extended header line into the file's summary.
+void applyHeaderLine(const char *p, qsizetype len, GitDiffParser::FileSpan &f)
+{
+    const char *end = p + len;
+    if (startsWith(p, len, "--- ")) {
+        if (!sidePath(p + 4, end, f.oldPath)) { f.oldPath.clear(); f.status = 'A'; }
+    } else if (startsWith(p, len, "+++ ")) {
+        if (!sidePath(p + 4, end, f.newPath)) { f.newPath.clear(); f.status = 'D'; }
+    } else if (startsWith(p, len, "index ")) {
+        const char *sp = static_cast<const char *>(std::memchr(p + 6, ' ', static_cast<size_t>(len - 6)));
+        if (sp) {
+            const quint32 mode = parseOctal(sp + 1, end);
+            if (!f.oldMode && f.status != 'A') f.oldMode = mode;
+            if (!f.newMode && f.status != 'D') f.newMode = mode;
+        }
+    } else if (startsWith(p, len, "new file mode ")) {
+        f.status = 'A';
+        f.newMode = parseOctal(p + 14, end);
+        f.oldPath.clear();
+    } else if (startsWith(p, len, "deleted file mode ")) {
+        f.status = 'D';
+        f.oldMode = parseOctal(p + 18, end);
+        f.newPath.clear();
+    } else if (startsWith(p, len, "old mode ")) {
+        f.oldMode = parseOctal(p + 9, end);
+    } else if (startsWith(p, len, "new mode ")) {
+        f.newMode = parseOctal(p + 9, end);
+    } else if (startsWith(p, len, "rename from ")) {
+        f.status = 'R';
+        f.oldPath = unquotePath(p + 12, end);
+    } else if (startsWith(p, len, "rename to ")) {
+        f.status = 'R';
+        f.newPath = unquotePath(p + 10, end);
+    } else if (startsWith(p, len, "copy from ")) {
+        f.status = 'C';
+        f.oldPath = unquotePath(p + 10, end);
+    } else if (startsWith(p, len, "copy to ")) {
+        f.status = 'C';
+        f.newPath = unquotePath(p + 8, end);
+    } else if (startsWith(p, len, "similarity index ")) {
+        f.similarity = static_cast<quint8>(qBound(0, parseDec(p + 17, end - 1), 100));
+    } else if (startsWith(p, len, "Binary files ") || startsWith(p, len, "GIT binary patch")) {
+        f.binary = true;
+    }
 }
 
 } // namespace
@@ -77,8 +232,13 @@ GitDiffParser::Result GitDiffParser::parse(const QByteArray &diff)
 
     qint32 curOld = -1;
     qint32 curNew = -1;
-    bool inHunk = false;
+    // Lines still owed to the current hunk, from its header. While either is
+    // positive every line is body, so a deleted "-- comment" is never taken
+    // for a "--- a/x" header.
+    qint32 oldLeft = 0;
+    qint32 newLeft = 0;
     bool sawBinary = false;
+    FileSpan *file = nullptr;
 
     qsizetype i = 0;
     while (i < n) {
@@ -91,75 +251,76 @@ GitDiffParser::Result GitDiffParser::parse(const QByteArray &diff)
         const char *p = data + i;
         const qsizetype len = lineEnd - i;
         const char first = (len > 0) ? *p : '\0';
+        const auto row = static_cast<qint32>(r.kinds.size());
+        const bool inHunk = oldLeft > 0 || newLeft > 0;
 
         LineKind kind;
         qint32 oLn = -1, nLn = -1;
         qsizetype textStart = i;
         qsizetype textLen = len;
 
-        if (len >= 4 && p[0] == '@' && p[1] == '@') {
-            qint32 os = -1, ns = -1;
-            if (parseHunkHeader(p, p + len, os, ns)) {
-                curOld = os;
-                curNew = ns;
-                inHunk = true;
-            }
-            kind = LineKind::HunkHeader;
-        }
-        else if (len == 0) {
-            kind = LineKind::Empty;
-            inHunk = false;
-        }
-        else if (!inHunk) {
-            // File header region: "diff --git", "index", "---", "+++", "Binary files differ", etc.
+        if (!inHunk && startsWith(p, len, "diff --git ")) {
+            if (file) file->endRow = row;
+            r.files.append(FileSpan{});
+            file = &r.files.last();
+            file->firstRow = row;
+            pathsFromDiffGit(p, p + len, *file);
             kind = LineKind::FileHeader;
-            if (len >= 7 && std::memcmp(p, "Binary ", 7) == 0) {
-                sawBinary = true;
+        } else {
+            if (!file) {
+                // A bare patch without "diff --git": one file, paths unknown
+                // until ---/+++ name them.
+                r.files.append(FileSpan{});
+                file = &r.files.last();
+                file->firstRow = row;
             }
-        }
-        else if (first == '+') {
-            // Skip "+++ " inside a header? Already handled above. In hunk, '+' = added.
-            if (len >= 4 && p[0] == '+' && p[1] == '+' && p[2] == '+' && p[3] == ' ') {
-                kind = LineKind::FileHeader;
-                inHunk = false;
+            if (inHunk && (first == ' ' || first == '+' || first == '-' || len == 0)) {
+                // Body line. An empty line inside a hunk is a context line
+                // whose leading space was stripped.
+                textStart = len > 0 ? i + 1 : i;
+                textLen = len > 0 ? len - 1 : 0;
+                if (first == '+') {
+                    kind = LineKind::Added;
+                    nLn = curNew++;
+                    --newLeft;
+                    ++r.addedCount;
+                    ++file->added;
+                } else if (first == '-') {
+                    kind = LineKind::Deleted;
+                    oLn = curOld++;
+                    --oldLeft;
+                    ++r.deletedCount;
+                    ++file->deleted;
+                } else {
+                    kind = LineKind::Context;
+                    oLn = curOld++;
+                    nLn = curNew++;
+                    --oldLeft;
+                    --newLeft;
+                }
+                ++file->bodyRows;
+                file->bodyBytes += textLen;
+                file->maxLineBytes = qMax(file->maxLineBytes, static_cast<qint32>(textLen));
+            } else if (first == '\\') {
+                kind = LineKind::NoNewline;
+            } else if (len >= 4 && p[0] == '@' && p[1] == '@') {
+                qint32 os = -1, ol = 0, ns = -1, nl = 0;
+                if (parseHunkHeader(p, p + len, os, ol, ns, nl)) {
+                    curOld = os;
+                    curNew = ns;
+                    oldLeft = ol;
+                    newLeft = nl;
+                }
+                r.hunks.append(HunkSpan{row, static_cast<qint32>(r.files.size() - 1)});
+                kind = LineKind::HunkHeader;
+            } else if (len == 0) {
+                kind = LineKind::Empty;
             } else {
-                kind = LineKind::Added;
-                textStart = i + 1;
-                textLen = len - 1;
-                nLn = curNew++;
-                ++r.addedCount;
-            }
-        }
-        else if (first == '-') {
-            if (len >= 4 && p[0] == '-' && p[1] == '-' && p[2] == '-' && p[3] == ' ') {
+                // Extended header: index, mode, rename, ---/+++, Binary files...
                 kind = LineKind::FileHeader;
-                inHunk = false;
-            } else {
-                kind = LineKind::Deleted;
-                textStart = i + 1;
-                textLen = len - 1;
-                oLn = curOld++;
-                ++r.deletedCount;
+                applyHeaderLine(p, len, *file);
+                if (file->binary) sawBinary = true;
             }
-        }
-        else if (first == ' ') {
-            kind = LineKind::Context;
-            textStart = i + 1;
-            textLen = len - 1;
-            oLn = curOld++;
-            nLn = curNew++;
-        }
-        else if (first == '\\') {
-            kind = LineKind::NoNewline;
-        }
-        else if (first == 'd' && len >= 4 && std::memcmp(p, "diff", 4) == 0) {
-            kind = LineKind::FileHeader;
-            inHunk = false;
-            // Reset for next file
-            curOld = curNew = -1;
-        }
-        else {
-            kind = LineKind::FileHeader;
         }
 
         r.texts.append(QByteArray(data + textStart, static_cast<int>(textLen)));
@@ -168,6 +329,17 @@ GitDiffParser::Result GitDiffParser::parse(const QByteArray &diff)
         r.newLn.append(nLn);
 
         i = j + 1; // step past the LF (or off end)
+    }
+
+    if (file) file->endRow = static_cast<qint32>(r.kinds.size());
+    constexpr quint32 kTypeMask = 0170000;
+    constexpr quint32 kGitlink = 0160000;
+    for (FileSpan &f : r.files) {
+        if ((f.oldMode & kTypeMask) == kGitlink || (f.newMode & kTypeMask) == kGitlink)
+            f.submodule = true;
+        if (f.status == 'M' && f.oldMode && f.newMode
+            && (f.oldMode & kTypeMask) != (f.newMode & kTypeMask))
+            f.status = 'T';
     }
 
     r.isBinary = sawBinary;

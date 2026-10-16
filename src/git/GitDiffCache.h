@@ -19,8 +19,8 @@
 #ifndef GIT_DIFF_CACHE_H
 #define GIT_DIFF_CACHE_H
 
+#include "DiffDocument.h"
 #include "GitDiffParser.h"
-#include "GitDiffSyntaxMapper.h"
 
 #include <QByteArray>
 #include <QHash>
@@ -31,8 +31,8 @@
 #include <memory>
 
 // LRU cache for parsed diffs, keyed by (repo, relPath, stagedSide). Stores the
-// fully parsed Result + the optional syntax overlay to skip re-parsing and
-// re-lexing on tab re-activation. Cleared en bloc on every status refresh
+// parsed Result + the built diff document (DiffView) to skip re-parsing,
+// re-lexing and re-building on tab re-activation. Cleared en bloc on every status refresh
 // (GitController::statusRefreshed), since a file can change while its status
 // stays the same — smart invalidation would require extra git spawns to verify blob
 // shas, and the win is negligible compared to the cost.
@@ -43,7 +43,7 @@ public:
 
     struct Entry {
         std::shared_ptr<const GitDiffParser::Result> parsed;
-        std::shared_ptr<const GitDiffSyntaxMapper::Overlay> overlay;  // may be null
+        std::shared_ptr<const DiffDoc::Document> doc;   // may be null
         explicit operator bool() const { return static_cast<bool>(parsed); }
     };
 

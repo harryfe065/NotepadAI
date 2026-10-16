@@ -1128,18 +1128,21 @@ void GitController::handleSubmoduleNumstatDone(const QByteArray &out, const QStr
                                   qint32(std::min(deleted, kMax)));
 }
 
-void GitController::requestDiff(const QString &relPath, bool stagedSide)
+void GitController::requestDiff(const QString &relPath, bool stagedSide, const QString &origRelPath,
+                                bool ignoreWhitespace, quint64 token)
 {
     if (m_currentRepo.isEmpty() || relPath.isEmpty()) return;
 
     Op op;
     op.kind = OpKind::DiffPath;
-    op.argv = GitRepoDiscovery::diffArgv(m_currentRepo, stagedSide);
+    op.argv = GitRepoDiscovery::diffArgv(m_currentRepo, stagedSide, ignoreWhitespace);
+    if (stagedSide && !origRelPath.isEmpty() && origRelPath != relPath) op.argv.append(origRelPath);
     op.argv.append(relPath);
     op.timeoutMs = kTimeoutNormal;
     QVariantMap meta;
     meta[QStringLiteral("relPath")] = relPath;
     meta[QStringLiteral("stagedSide")] = stagedSide;
+    meta[QStringLiteral("token")] = token;
     op.meta = meta;
     enqueue(op);
 }
@@ -1266,7 +1269,8 @@ void GitController::onRunFinished(int exit, const QByteArray &out, const QByteAr
         if (kind == OpKind::DiffPath) {
             emit diffFailed(m_current.meta.value(QStringLiteral("relPath")).toString(),
                             m_current.meta.value(QStringLiteral("stagedSide")).toBool(),
-                            QString::fromUtf8(err));
+                            QString::fromUtf8(err),
+                            m_current.meta.value(QStringLiteral("token")).toULongLong());
             popAndAdvance();
             return;
         }
@@ -1338,7 +1342,8 @@ void GitController::onRunFinished(int exit, const QByteArray &out, const QByteAr
         case OpKind::DiffPath:
             emit diffReady(m_current.meta.value(QStringLiteral("relPath")).toString(),
                            m_current.meta.value(QStringLiteral("stagedSide")).toBool(),
-                           out);
+                           out,
+                           m_current.meta.value(QStringLiteral("token")).toULongLong());
             break;
         case OpKind::DiffAllCached:
             if (!out.isEmpty()) {

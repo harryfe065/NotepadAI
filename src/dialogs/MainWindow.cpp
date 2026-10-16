@@ -3692,6 +3692,32 @@ void MainWindow::wireWorkspaceGitSignals(FolderAsWorkspaceDock *dock)
                 qWarning("Commit detail failed for %s: %s",
                          sha.constData(), qPrintable(message));
             });
+    // Diff / commit views: jump to source and "Reveal in file tree".
+    connect(dock, &FolderAsWorkspaceDock::gitOpenFileAtLineRequested,
+            this, [this](const QString &path, int line) {
+                if (path.isEmpty()) return;
+                // A file deleted in the working tree has no source to jump to;
+                // never offer to create it.
+                if (!remote::isSshUri(path) && !QFileInfo(path).isFile()) return;
+                openFile(path);
+                ScintillaNext *editor = app->getEditorManager()->getEditorByFilePath(path);
+                if (!editor || line <= 1) return;
+                auto go = [editor = QPointer<ScintillaNext>(editor), line] {
+                    if (!editor) return;
+                    editor->ensureVisible(line - 1);
+                    editor->gotoLine(line - 1);
+                    editor->verticalCentreCaret();
+                };
+                // A remote file is still loading: go once its text is in.
+                if (editor->loadState() == ScintillaNext::LoadState::Loading)
+                    connect(editor, &ScintillaNext::loaded, editor, go, Qt::SingleShotConnection);
+                else
+                    go();
+            });
+    connect(dock, &FolderAsWorkspaceDock::gitRevealRequested,
+            this, [this](const QString &path) {
+                if (!path.isEmpty()) revealInWorkspace(path);
+            });
 
     connect(dock, &FolderAsWorkspaceDock::gitChangesContextMenuRequested, this,
             [this](QMenu *menu, const GitStatusEntry &entry) {
@@ -5225,10 +5251,9 @@ void MainWindow::addEditor(ScintillaNext *editor)
     QTimer::singleShot(0, editor, [this, editor]() {
         // Skip if a language was already assigned (e.g. by session restore)
         if (!editor->languageName.isEmpty()) return;
-        // Diff views are owned by GitDiffPainter — assigning the "Text"
+        // Diff views own their styles (DiffView) — assigning the "Text"
         // lexer here would emit lexerChanged and re-skin every style with
-        // the chrome's defaultBack, corrupting canvasBg until the next
-        // render pass undoes it.
+        // the chrome's defaultBack, corrupting the diff canvas.
         if (app->getEditorManager()->isDiffView(editor)) return;
         PROFILE_SCOPE("MainWindow::addEditor.detectLanguage");
         detectLanguage(editor);

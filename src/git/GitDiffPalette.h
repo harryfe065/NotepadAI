@@ -59,6 +59,38 @@ struct GitDiffPalette {
     static const GitDiffPalette &light();
     static const GitDiffPalette &dark();
     static const GitDiffPalette &current(bool isDark);
+
+    // `rgba` composited over the opaque `canvas` (Scintilla's base layer
+    // ignores alpha, so translucent Primer tokens are flattened here).
+    static QColor blend(const QColor &canvas, const QColor &rgba);
+};
+
+// Colours of the diff view (DiffView), Primer `diffBlob` tokens composited
+// over the editor canvas. Header and rule colours are derived from the canvas.
+struct DiffViewColors {
+    QColor canvas;
+    QColor text;
+    QColor muted;          // directories, ranges, placeholders, card meta
+    QColor addLine;
+    QColor addNumber;
+    QColor addWord;
+    QColor delLine;
+    QColor delNumber;
+    QColor delWord;
+    QColor hunkLine;
+    QColor hunkText;
+    QColor plus;
+    QColor minus;
+    QColor squareNeutral;
+    QColor header;         // file header row
+    QColor rule;           // separator above a file header
+    QColor link;
+    QColor statusAdded;
+    QColor statusModified;
+    QColor statusDeleted;
+    QColor statusRenamed;
+
+    static DiffViewColors make(bool dark);
 };
 
 #endif // GIT_DIFF_PALETTE_H

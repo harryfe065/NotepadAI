@@ -71,6 +71,8 @@ public:
 
     // Row accessor by SHA (linear in deduper map; O(1) average).
     const GitCommitInfo *findBySha(const QByteArray &sha) const;
+    // Row of `sha`, or -1 when it is not loaded.
+    int rowOfSha(const QByteArray &sha) const { return m_indexBySha.value(sha, -1); }
 
     // Const reference to row by index (bounds-checked).
     const GitCommitInfo *rowAt(int index) const {

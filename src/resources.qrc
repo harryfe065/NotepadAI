@@ -78,6 +78,12 @@
         <file>icons/copy.svg</file>
         <file>icons/messages-square.svg</file>
         <file>icons/ssh-badge.svg</file>
+        <file>icons/external-link.svg</file>
+        <file>icons/panel-left.svg</file>
+        <file>icons/chevrons-up-down.svg</file>
+        <file>icons/chevrons-down-up.svg</file>
+        <file>icons/wrap-text.svg</file>
+        <file>icons/whitespace.svg</file>
         <file>fonts/STIXTwoMath-Regular.ttf</file>
         <file>fonts/STIXTwoMath-OFL.txt</file>
     </qresource>

@@ -19,14 +19,14 @@
 #ifndef GIT_COMMIT_VIEW_H
 #define GIT_COMMIT_VIEW_H
 
+#include "DiffView.h"
 #include "GitCommitDetail.h"
-#include "GitCommitRenderer.h"
 
 #include <QByteArray>
+#include <QCache>
 #include <QObject>
 #include <QPointer>
 #include <QString>
-#include <QVector>
 
 #include <memory>
 
@@ -40,9 +40,7 @@ class ScintillaNext;
 // experience. Mirrors GitDiffViewController shape: a SINGLE shared
 // commit-detail tab whose contents are replaced on each click, plus a
 // SINGLE shared file-at-sha tab for file-link clicks inside that view.
-// This matches Zed's preview-tab UX (and the user's screenshots) — one
-// commit tab open at a time, repeated clicks re-populate it rather
-// than fanning out into N tabs.
+// A DiffView in Commit mode presents the detail tab (card, files, tree).
 class GitCommitView : public QObject
 {
     Q_OBJECT
@@ -59,8 +57,8 @@ public:
 
     void setDarkPalette(bool dark);
 
-    // Hook GitWatcher → invalidate the commit fetcher's cache on refs/HEAD
-    // changes (force-push can re-write SHAs but leave GC'd objects).
+    // Hook GitWatcher → invalidate the caches on refs/HEAD changes
+    // (force-push can re-write SHAs but leave GC'd objects).
     void setWatcher(GitWatcher *watcher);
 
 public slots:
@@ -87,13 +85,24 @@ signals:
     // Surface fetch failures so the host can show a status banner.
     void fetchFailed(const QByteArray &sha, const QString &message);
 
-private:
-    void renderInto(ScintillaNext *editor, const GitCommitDetail &detail,
-                    QVector<GitCommitRenderer::FileLink> &outLinks);
-    void onIndicatorClicked(ScintillaNext *editor, int position);
+    // A parent link moved the tab to another commit (host selects it in
+    // the history list).
+    void commitShown(const QByteArray &sha);
+    // Jump to source / "Open file": the working-tree file at `line` (1-based).
+    void openWorkingFileRequested(const QString &relPath, int line);
+    void revealRequested(const QString &relPath);
 
-    // Show file content at a SHA in the shared file-at-sha tab.
-    void openFileAtSha(const QByteArray &sha, const QString &relPath);
+private:
+    ScintillaNext *ensureDetailEditor(const QByteArray &sha);
+    void load(const QByteArray &sha, bool keepPosition);
+    void showDetail(quint64 serial, const std::shared_ptr<const GitCommitDetail> &detail, bool keepPosition);
+    void onOpenFileRequested(const QString &relPath, int line, DiffView::Side side);
+    void styleFileAtShaEditor();
+
+    // Show file content at a SHA in the shared file-at-sha tab, at `line` (1-based).
+    void openFileAtSha(const QByteArray &sha, const QString &relPath, int line);
+
+    static QByteArray contentKey(const QByteArray &sha, bool ignoreWhitespace);
 
     QString          m_repoRoot;
     EditorManager   *m_editorManager;
@@ -103,12 +112,18 @@ private:
 
     // Shared commit-detail tab. QPointer auto-nulls when the user closes it.
     QPointer<ScintillaNext> m_detailEditor;
+    QPointer<DiffView>      m_view;
     QByteArray              m_currentSha;
-    QVector<GitCommitRenderer::FileLink> m_currentFileLinks;
+    QByteArray              m_currentKey;    // sha + whitespace mode of the shown content
+    quint64                 m_loadSerial = 0;    // latest load wins
+
+    // Built documents of recently shown commits, cost = approximate bytes.
+    QCache<QByteArray, DiffView::Content> m_contentCache;
 
     // Shared file-at-sha tab.
     QPointer<ScintillaNext> m_fileAtShaEditor;
     QByteArray              m_currentFileAtShaKey;
+    int                     m_fileAtShaLine = 1;
 };
 
 #endif // GIT_COMMIT_VIEW_H

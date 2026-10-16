@@ -532,6 +532,11 @@ void GitTabWidget::initializeIfNeeded()
     rebuildController();
 }
 
+void GitTabWidget::selectHistoryCommit(const QByteArray &sha)
+{
+    if (m_historyView) m_historyView->selectCommit(sha);
+}
+
 void GitTabWidget::setOperationManager(GitOperationManager *mgr)
 {
     if (m_opMgr == mgr) return;

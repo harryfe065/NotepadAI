@@ -113,7 +113,11 @@ public slots:
 
     // Request a unified diff for a single path. Side: false = working-tree
     // (unstaged), true = index (staged). Emits diffReady on completion.
-    void requestDiff(const QString &relPath, bool stagedSide);
+    // `origRelPath` (a staged rename's source) is passed too, so the
+    // rename is diffed as one file. `token` comes back with the result, so a
+    // requester can tell repeated requests for one path apart.
+    void requestDiff(const QString &relPath, bool stagedSide, const QString &origRelPath = QString(),
+                     bool ignoreWhitespace = false, quint64 token = 0);
 
     // Request the full repository diff. If the repo has any staged changes,
     // the staged diff (index vs HEAD) is returned; otherwise the worktree
@@ -154,8 +158,8 @@ signals:
     void pullDivergedPromptRequested();
     void pullConflicted();
     void pushRejectedPromptRequested();
-    void diffReady(const QString &relPath, bool stagedSide, const QByteArray &diff);
-    void diffFailed(const QString &relPath, bool stagedSide, const QString &message);
+    void diffReady(const QString &relPath, bool stagedSide, const QByteArray &diff, quint64 token);
+    void diffFailed(const QString &relPath, bool stagedSide, const QString &message, quint64 token);
     void fullDiffReady(const QByteArray &diff);
     void fullDiffFailed(const QString &message);
     // HEAD-blob fetch result for the buffer-diff engine. `relPath` is the

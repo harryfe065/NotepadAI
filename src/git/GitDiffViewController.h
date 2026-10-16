@@ -19,16 +19,17 @@
 #ifndef GIT_DIFF_VIEW_CONTROLLER_H
 #define GIT_DIFF_VIEW_CONTROLLER_H
 
-#include "GitDiffParser.h"
-#include "GitDiffSyntaxMapper.h"
+#include "DiffDocument.h"
 #include "GitStatusEntry.h"
 
 #include <QObject>
 #include <QPointer>
 #include <QString>
 
+#include <functional>
 #include <memory>
 
+class DiffView;
 class EditorManager;
 class GitController;
 class GitDiffFetcher;
@@ -38,6 +39,7 @@ class ScintillaNext;
 // preview tab at a time — clicking a different file replaces its content
 // rather than spawning a new tab. Double-click on the same file (handled in
 // the host MainWindow) opens the real file in a separate, persistent tab.
+// A DiffView presents the tab: built on the pool, applied on the UI thread.
 class GitDiffViewController : public QObject
 {
     Q_OBJECT
@@ -64,11 +66,15 @@ signals:
     void diffRendered(ScintillaNext *editor);
     // Fired when fetching fails — host shows a banner / status message.
     void diffFailed(const QString &relPath, const QString &message);
+    // Jump to source / path click: the working-tree file at `line` (1-based).
+    void openFileRequested(const QString &relPath, int line);
+    void revealRequested(const QString &relPath);
 
 private slots:
-    void onParsedReady(const QString &relPath, bool stagedSide,
-                       const std::shared_ptr<const GitDiffParser::Result> &parsed,
-                       const std::shared_ptr<const GitDiffSyntaxMapper::Overlay> &overlay);
+    void onPatchReady(const QString &relPath, bool stagedSide, const QByteArray &patch,
+                      const std::function<QByteArray()> &produce);
+    void onDocumentReady(const QString &relPath, bool stagedSide,
+                         const std::shared_ptr<const DiffDoc::Document> &doc);
     void onFetchFailed(const QString &relPath, bool stagedSide, const QString &message);
 
 private:
@@ -76,13 +82,15 @@ private:
     EditorManager *m_editorManager;
     GitDiffFetcher *m_fetcher;
     QPointer<ScintillaNext> m_previewEditor;
+    QPointer<DiffView> m_view;
     bool m_isDark = false;
 
-    QString m_currentRelPath;
-    bool m_currentStaged = false;
+    GitStatusEntry m_current;
+    bool m_keepPosition = false;      // re-showing the same file keeps the scroll
 
     ScintillaNext *ensurePreviewEditor();
     void updatePreviewTitle(const QString &relPath, bool stagedSide);
+    bool isCurrent(const QString &relPath, bool stagedSide) const;
 };
 
 #endif // GIT_DIFF_VIEW_CONTROLLER_H
