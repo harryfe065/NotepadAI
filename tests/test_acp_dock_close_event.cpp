@@ -96,6 +96,15 @@ private slots:
     void close_whileProcessingAndUserConfirms_destroysDock();
     void close_whenTwoSlots_closesCurrentKeepsDock();
     void closeGroup_destroysMultiSlotDock();
+    void moveSlot_reordersSessions_keepsOpenSessionOpen();
+    void moveSlot_ofTheOpenSession_carriesItAlong();
+    void moveSlot_noopOrOutOfRange_isRejected();
+    void newestSessionId_staysTheLastAdded_afterReorder();
+    void stripMoveRequested_reordersSessions();
+    void setActivityIndicator_flagsTheNewestSession_afterReorder();
+    void projectMark_quietDock_isNone();
+    void projectMark_runningSession_isWorkingRing_whenDockNotRaised();
+    void projectMark_working_beatsActivity();
     void title_singletonIsBasename_groupedAppendsColon();
     void tooltip_isEmpty_notWindowTitle();
     void tooltip_numberShowsLastUserMessage();
@@ -210,6 +219,172 @@ void TestAcpDockCloseEvent::closeGroup_destroysMultiSlotDock()
     QPointer<TestableAiAgentDock> dockPtr(dock);
     dock->closeGroup();
     QTRY_VERIFY_WITH_TIMEOUT(dockPtr.isNull(), 2000);
+}
+
+namespace {
+
+// A dock holding sessions a, b, c in that order; `a` is open. Models outlive it.
+struct ThreeSessionDock
+{
+    AcpSessionModel a, b, c;
+    TestableAiAgentDock *dock = nullptr;
+
+    explicit ThreeSessionDock(const QString &historyDir)
+        : a(QStringLiteral("a"), QStringLiteral("/proj"), historyDir)
+        , b(QStringLiteral("b"), QStringLiteral("/proj"), historyDir)
+        , c(QStringLiteral("c"), QStringLiteral("/proj"), historyDir)
+    {
+        dock = new TestableAiAgentDock(QStringLiteral("a"), &a, /*confirm=*/false);
+        dock->addSlot(QStringLiteral("b"), QStringLiteral("test-agent"), &b, nullptr, false);
+        dock->addSlot(QStringLiteral("c"), QStringLiteral("test-agent"), &c, nullptr, false);
+    }
+    ~ThreeSessionDock()
+    {
+        QPointer<TestableAiAgentDock> guard(dock);
+        dock->closeGroup();
+        QTRY_VERIFY_WITH_TIMEOUT(guard.isNull(), 2000);
+    }
+
+    QStringList order() const
+    {
+        QStringList ids;
+        for (int i = 0; i < dock->slotCount(); ++i)
+            ids << dock->sessionIdAt(i);
+        return ids;
+    }
+};
+
+} // namespace
+
+void TestAcpDockCloseEvent::moveSlot_reordersSessions_keepsOpenSessionOpen()
+{
+    ThreeSessionDock s(m_historyDir.path());
+    s.dock->switchTo(1); // b is open
+    QCOMPARE(s.order(), (QStringList{"a", "b", "c"}));
+
+    QVERIFY(s.dock->moveSlot(0, 2)); // drag number 1 to the end
+
+    QCOMPARE(s.order(), (QStringList{"b", "c", "a"}));
+    QCOMPARE(s.dock->sessionId(), QStringLiteral("b")); // still the open session
+    QCOMPARE(s.dock->currentIndex(), 0);                // now number 1
+}
+
+void TestAcpDockCloseEvent::moveSlot_ofTheOpenSession_carriesItAlong()
+{
+    ThreeSessionDock s(m_historyDir.path()); // a is open
+
+    QVERIFY(s.dock->moveSlot(0, 2));
+
+    QCOMPARE(s.order(), (QStringList{"b", "c", "a"}));
+    QCOMPARE(s.dock->sessionId(), QStringLiteral("a"));
+    QCOMPARE(s.dock->currentIndex(), 2);
+}
+
+void TestAcpDockCloseEvent::moveSlot_noopOrOutOfRange_isRejected()
+{
+    ThreeSessionDock s(m_historyDir.path());
+
+    QVERIFY(!s.dock->moveSlot(1, 1));
+    QVERIFY(!s.dock->moveSlot(-1, 1));
+    QVERIFY(!s.dock->moveSlot(0, 3));
+    QCOMPARE(s.order(), (QStringList{"a", "b", "c"}));
+}
+
+// ScheduledTaskRunner takes the session it just opened as the newest one.
+void TestAcpDockCloseEvent::newestSessionId_staysTheLastAdded_afterReorder()
+{
+    ThreeSessionDock s(m_historyDir.path());
+    QCOMPARE(s.dock->newestSessionId(), QStringLiteral("c"));
+
+    QVERIFY(s.dock->moveSlot(2, 0)); // c to the front
+
+    QCOMPARE(s.order(), (QStringList{"c", "a", "b"}));
+    QCOMPARE(s.dock->newestSessionId(), QStringLiteral("c"));
+}
+
+void TestAcpDockCloseEvent::stripMoveRequested_reordersSessions()
+{
+    ThreeSessionDock s(m_historyDir.path());
+    AiDockSessionStrip *strip = nullptr;
+    QTRY_VERIFY((strip = s.dock->findChild<AiDockSessionStrip *>()) != nullptr);
+
+    QVERIFY(QMetaObject::invokeMethod(strip, "moveRequested", Q_ARG(int, 0), Q_ARG(int, 1)));
+
+    QCOMPARE(s.order(), (QStringList{"b", "a", "c"}));
+}
+
+// A scheduled task opens its session in the background: that one (the newest,
+// wherever it sits now) is the unseen one, not whichever slot is last.
+void TestAcpDockCloseEvent::setActivityIndicator_flagsTheNewestSession_afterReorder()
+{
+    ThreeSessionDock s(m_historyDir.path());
+    s.dock->switchTo(1);
+    s.dock->switchTo(2);
+    s.dock->switchTo(0); // every session seen, a is open
+    QCOMPARE(s.dock->projectMark(), AiAgentDock::ProjectMark::None);
+
+    QVERIFY(s.dock->moveSlot(2, 0)); // c to the front: c, a, b
+    s.dock->setActivityIndicator(true);
+    QCOMPARE(s.dock->projectMark(), AiAgentDock::ProjectMark::Activity);
+
+    s.dock->switchTo(0); // look at c
+    QCOMPARE(s.dock->projectMark(), AiAgentDock::ProjectMark::None);
+}
+
+namespace {
+
+// The dock's window icon is its tab icon: the middle pixel tells a filled dot
+// (activity, waiting) from a ring (working).
+QColor iconCenter(const QDockWidget &dock)
+{
+    return dock.windowIcon().pixmap(8, 8).toImage().pixelColor(4, 4);
+}
+
+} // namespace
+
+void TestAcpDockCloseEvent::projectMark_quietDock_isNone()
+{
+    AcpSessionModel model(QStringLiteral("sess-quiet"), QStringLiteral("/proj"), m_historyDir.path());
+    auto *dock = new TestableAiAgentDock(QStringLiteral("sess-quiet"), &model, /*confirm=*/false);
+    QCOMPARE(dock->projectMark(), AiAgentDock::ProjectMark::None);
+    QVERIFY(dock->windowIcon().isNull());
+
+    QPointer<TestableAiAgentDock> guard(dock);
+    dock->closeGroup();
+    QTRY_VERIFY_WITH_TIMEOUT(guard.isNull(), 2000);
+}
+
+void TestAcpDockCloseEvent::projectMark_runningSession_isWorkingRing_whenDockNotRaised()
+{
+    AcpSessionModel model(QStringLiteral("sess-run"), QStringLiteral("/proj"), m_historyDir.path());
+    auto *dock = new TestableAiAgentDock(QStringLiteral("sess-run"), &model, /*confirm=*/false);
+
+    model.onPromptStarted();
+    QCOMPARE(dock->projectMark(), AiAgentDock::ProjectMark::Working);
+    QVERIFY(!dock->windowIcon().isNull());
+    QCOMPARE(iconCenter(*dock).alpha(), 0); // a ring, hollow in the middle
+
+    model.onPromptEnded();
+    QCOMPARE(dock->projectMark(), AiAgentDock::ProjectMark::None);
+    QVERIFY(dock->windowIcon().isNull());
+
+    QPointer<TestableAiAgentDock> guard(dock);
+    dock->closeGroup();
+    QTRY_VERIFY_WITH_TIMEOUT(guard.isNull(), 2000);
+}
+
+void TestAcpDockCloseEvent::projectMark_working_beatsActivity()
+{
+    ThreeSessionDock s(m_historyDir.path()); // b and c arrived unseen: activity
+    QCOMPARE(s.dock->projectMark(), AiAgentDock::ProjectMark::Activity);
+    QCOMPARE(iconCenter(*s.dock).alpha(), 255); // a filled dot
+
+    s.a.onPromptStarted();
+    QCOMPARE(s.dock->projectMark(), AiAgentDock::ProjectMark::Working);
+    QCOMPARE(iconCenter(*s.dock).alpha(), 0);
+
+    s.a.onPromptEnded();
+    QCOMPARE(s.dock->projectMark(), AiAgentDock::ProjectMark::Activity);
 }
 
 void TestAcpDockCloseEvent::title_singletonIsBasename_groupedAppendsColon()

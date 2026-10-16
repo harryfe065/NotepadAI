@@ -18,22 +18,100 @@
 
 #include "AiDockSessionStrip.h"
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QHelpEvent>
 #include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
 #include <QPalette>
+#include <QPen>
 #include <QResizeEvent>
 #include <QSizePolicy>
 #include <QTabBar>
+#include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
+#include <QWindow>
+
+namespace {
+
+constexpr int kSpinIntervalMs = 66; // ~15 fps, one timer for the whole strip
+constexpr int kSpinPeriodMs = 1000; // one turn of the arc
+constexpr int kArcSpanDeg = 100;
+
+// A session number that can wear a spinner. Painting only; the size never
+// changes, so a busy session never relayouts the tab bar.
+class SessionNumberButton : public QToolButton
+{
+public:
+    using QToolButton::QToolButton;
+
+    void setBusy(bool busy)
+    {
+        if (m_busy == busy)
+            return;
+        m_busy = busy;
+        update();
+    }
+    void setWaiting(bool waiting)
+    {
+        if (m_waiting == waiting)
+            return;
+        m_waiting = waiting;
+        update();
+    }
+    void setSpinAngle(int degrees)
+    {
+        m_angle = degrees;
+        if (m_busy)
+            update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        if (!m_busy && !m_waiting)
+            return;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        if (m_busy) {
+            const int side = qMin(width(), height()) - 2;
+            QRectF ring(0, 0, side, side);
+            ring.moveCenter(QRectF(rect()).center());
+            QPen pen(palette().color(QPalette::Highlight), 1.5);
+            pen.setCapStyle(Qt::RoundCap);
+            p.setPen(pen);
+            p.drawArc(ring, -m_angle * 16, -kArcSpanDeg * 16);
+        }
+        if (m_waiting) {
+            // A window-coloured rim keeps the dot apart from the digit.
+            const QPointF center(width() - kDotRadius - 1, kDotRadius + 1);
+            p.setPen(QPen(palette().color(QPalette::Window), 1));
+            p.setBrush(AiDockSessionStrip::attentionColor());
+            p.drawEllipse(center, kDotRadius, kDotRadius);
+        }
+    }
+
+private:
+    static constexpr qreal kDotRadius = 3.0; // ~6px dot, top-right corner
+    bool m_busy = false;
+    bool m_waiting = false;
+    int m_angle = 0;
+};
+
+} // namespace
 
 AiDockSessionStrip::AiDockSessionStrip(QWidget *parent)
     : QWidget(parent)
 {
+    m_spinTimer = new QTimer(this);
+    m_spinTimer->setInterval(kSpinIntervalMs);
+    connect(m_spinTimer, &QTimer::timeout, this, &AiDockSessionStrip::onSpinTick);
     m_layout = new QHBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
     m_layout->setSpacing(kSpacingPx);
@@ -46,14 +124,88 @@ AiDockSessionStrip::AiDockSessionStrip(QWidget *parent)
 
 void AiDockSessionStrip::setSlots(int count, int current, const QVector<SlotSnapshot> &snapshots)
 {
-    m_count = qMax(0, count);
-    m_current = (m_count == 0) ? 0 : qBound(0, current, m_count - 1);
-    m_snapshots = snapshots;
-    if (m_snapshots.size() > m_count)
-        m_snapshots.resize(m_count);
-    while (m_snapshots.size() < m_count)
-        m_snapshots.append(SlotSnapshot{});
+    const int newCount = qMax(0, count);
+    const int newCurrent = (newCount == 0) ? 0 : qBound(0, current, newCount - 1);
+    QVector<SlotSnapshot> snaps = snapshots;
+    if (snaps.size() > newCount)
+        snaps.resize(newCount);
+    while (snaps.size() < newCount)
+        snaps.append(SlotSnapshot{});
+    // The dock pushes on every state flicker; nothing to restyle (a stylesheet
+    // reset per button, and none mid-drag) when nothing changed.
+    if (newCount == m_count && newCurrent == m_current && snaps == m_snapshots
+        && m_buttons.size() == newCount) {
+        return;
+    }
+    m_count = newCount;
+    m_current = newCurrent;
+    m_snapshots = std::move(snaps);
     rebuildButtons();
+}
+
+bool AiDockSessionStrip::isSpinning() const
+{
+    return m_spinTimer->isActive();
+}
+
+QColor AiDockSessionStrip::attentionColor()
+{
+    return QColor(0xe5, 0x48, 0x4d);
+}
+
+bool AiDockSessionStrip::waitingAt(int index) const
+{
+    return index >= 0 && index < m_snapshots.size() && m_snapshots.at(index).waiting;
+}
+
+void AiDockSessionStrip::updateSpinTimer()
+{
+    bool anyBusy = false;
+    for (const SlotSnapshot &snap : std::as_const(m_snapshots)) {
+        if (snap.busy) {
+            anyBusy = true;
+            break;
+        }
+    }
+    const QWidget *top = window();
+    const bool want = anyBusy && isVisible() && top && !top->isMinimized();
+    if (want == m_spinTimer->isActive())
+        return;
+    if (want) {
+        m_spinClock.start();
+        m_spinTimer->start();
+    } else {
+        m_spinTimer->stop();
+    }
+}
+
+void AiDockSessionStrip::onSpinTick()
+{
+    const int angle = static_cast<int>((m_spinClock.elapsed() % kSpinPeriodMs) * 360 / kSpinPeriodMs);
+    for (QToolButton *btn : std::as_const(m_buttons))
+        static_cast<SessionNumberButton *>(btn)->setSpinAngle(angle);
+}
+
+void AiDockSessionStrip::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // Minimizing hides no widget: follow the window's own visibility.
+    if (QWindow *handle = window() ? window()->windowHandle() : nullptr; handle != m_trackedWindow) {
+        if (m_trackedWindow)
+            disconnect(m_trackedWindow, nullptr, this, nullptr);
+        m_trackedWindow = handle;
+        if (handle) {
+            connect(handle, &QWindow::visibilityChanged, this, [this]() { updateSpinTimer(); });
+        }
+    }
+    updateSpinTimer();
+}
+
+void AiDockSessionStrip::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    endDrag();
+    updateSpinTimer();
 }
 
 QSize AiDockSessionStrip::sizeHint() const
@@ -119,18 +271,114 @@ bool AiDockSessionStrip::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    if (handleDrag(index, event))
+        return true;
+
     return QWidget::eventFilter(watched, event);
+}
+
+bool AiDockSessionStrip::handleDrag(int index, QEvent *event)
+{
+    const QEvent::Type type = event->type();
+    if (type != QEvent::MouseButtonPress && type != QEvent::MouseMove
+        && type != QEvent::MouseButtonRelease) {
+        return false;
+    }
+    auto *mouse = static_cast<QMouseEvent *>(event);
+
+    if (type == QEvent::MouseButtonPress) {
+        if (mouse->button() == Qt::LeftButton) {
+            m_pressIndex = index;
+            m_pressGlobalPos = mouse->globalPosition().toPoint();
+        }
+        return false; // the button still goes down: a plain click activates
+    }
+    if (m_pressIndex != index)
+        return false;
+
+    const QPoint globalPos = mouse->globalPosition().toPoint();
+    if (type == QEvent::MouseMove) {
+        if (!(mouse->buttons() & Qt::LeftButton)) {
+            // The release never reached us (a popup or modal took it): drop the
+            // half-made drag instead of leaving the numbers scrambled.
+            endDrag();
+            return false;
+        }
+        if (!m_dragging) {
+            if ((globalPos - m_pressGlobalPos).manhattanLength() < QApplication::startDragDistance())
+                return false;
+            m_dragging = true;
+            m_dragPosition = index;
+            // Up without being down: the release below cannot count as a click.
+            m_buttons.at(index)->setDown(false);
+        }
+        moveDraggedButton(dropPositionAt(mapFromGlobal(globalPos).x()));
+        return true;
+    }
+
+    // Release
+    if (mouse->button() != Qt::LeftButton)
+        return false;
+    if (!m_dragging) {
+        m_pressIndex = -1;
+        return false;
+    }
+    const int from = m_pressIndex;
+    const int to = m_dragPosition;
+    endDrag();
+    if (to != from)
+        emit moveRequested(from, to);
+    return true;
+}
+
+int AiDockSessionStrip::dropPositionAt(int stripX) const
+{
+    const int last = m_layout->count() - 1;
+    for (int k = 0; k <= last; ++k) {
+        if (stripX < m_layout->itemAt(k)->geometry().right() + kSpacingPx / 2)
+            return k;
+    }
+    return qMax(0, last);
+}
+
+void AiDockSessionStrip::moveDraggedButton(int position)
+{
+    if (position == m_dragPosition)
+        return;
+    QToolButton *btn = m_buttons.at(m_pressIndex);
+    m_layout->removeWidget(btn);
+    m_layout->insertWidget(position, btn);
+    m_layout->activate();
+    m_dragPosition = position;
+}
+
+// Puts the layout back to creation order; digits are positions, so the owner
+// re-pushes the snapshots after a move.
+void AiDockSessionStrip::endDrag()
+{
+    if (m_dragging && m_pressIndex >= 0 && m_pressIndex < m_buttons.size()) {
+        QToolButton *btn = m_buttons.at(m_pressIndex);
+        m_layout->removeWidget(btn);
+        m_layout->insertWidget(m_pressIndex, btn);
+        m_layout->activate();
+    }
+    m_dragging = false;
+    m_pressIndex = -1;
+    m_dragPosition = -1;
 }
 
 void AiDockSessionStrip::rebuildButtons()
 {
+    // A session opened or closed mid-drag: the dragged index no longer holds.
+    if (m_count != m_buttons.size())
+        endDrag();
     while (m_buttons.size() > m_count) {
         QToolButton *btn = m_buttons.takeLast();
         m_layout->removeWidget(btn);
         delete btn;
     }
     while (m_buttons.size() < m_count) {
-        auto *btn = new QToolButton(this);
+        auto *btn = new SessionNumberButton(this);
         btn->setAutoRaise(true);
         btn->setFocusPolicy(Qt::TabFocus);
         btn->setCursor(Qt::PointingHandCursor);
@@ -158,11 +406,12 @@ void AiDockSessionStrip::restyleButtons()
     for (int i = 0; i < m_buttons.size(); ++i) {
         QToolButton *btn = m_buttons.at(i);
         const bool current = (i == m_current);
-        const bool busyNonCurrent = !current && i < m_snapshots.size() && m_snapshots.at(i).busy;
+        auto *numberBtn = static_cast<SessionNumberButton *>(btn);
+        numberBtn->setBusy(i < m_snapshots.size() && m_snapshots.at(i).busy);
+        numberBtn->setWaiting(waitingAt(i));
 
         QFont font = btn->font();
         font.setBold(current);
-        font.setItalic(busyNonCurrent);
         btn->setFont(font);
 
         QPalette pal = btn->palette();
@@ -184,6 +433,7 @@ void AiDockSessionStrip::restyleButtons()
                 .arg(colorRole, QString::number(kSpacingPx), restBorder));
         btn->setMinimumSize(btn->sizeHint());
     }
+    updateSpinTimer();
     syncIntrinsicSize();
     notifyHostTabBar();
 }
@@ -227,7 +477,13 @@ QString AiDockSessionStrip::tooltipFor(int index) const
 {
     if (index < 0 || index >= m_snapshots.size())
         return {};
-    return m_snapshots.at(index).lastUserPreview;
+    const SlotSnapshot &snap = m_snapshots.at(index);
+    if (!snap.waiting)
+        return snap.lastUserPreview;
+    // Colour is never the only carrier of meaning (ui-dna).
+    const QString waiting = tr("Waiting for your answer");
+    return snap.lastUserPreview.isEmpty() ? waiting
+                                          : waiting + QLatin1Char('\n') + snap.lastUserPreview;
 }
 
 int AiDockSessionStrip::indexOfButton(const QObject *obj) const

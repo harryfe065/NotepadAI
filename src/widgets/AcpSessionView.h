@@ -119,6 +119,18 @@ public:
     // A cancelled form's "ask in plain text" notice is still queued: the goal
     // judge must wait for the turn it starts.
     bool holdsGoalEvaluation() const;
+    // The agent is blocked on the user: a question form is open or a
+    // permission request is unanswered. A form cancelled because nobody is
+    // there to answer (unattended session) does not count.
+    bool isWaitingForUser() const;
+
+    // A draft session is one where the user has sent nothing yet. Only its
+    // model / mode / effort choices become the agent's defaults for new
+    // sessions; after the first user send they apply to this session only.
+    // Goal, scheduled-task and host prompts do not end the draft. Called for
+    // every composer send, and by the dock when Send with Goal sends one.
+    void noteUserSend();
+    bool isDraft() const { return m_draft; }
 
 signals:
     void retryRequested();
@@ -138,6 +150,8 @@ signals:
     void deferredGoalDispatched();
     void deferredGoalRemoved();
     void promptQueueChanged();
+    // isWaitingForUser() flipped.
+    void waitingChanged(bool waiting);
 
 private slots:
     void onShowDebugLogClicked();
@@ -285,6 +299,9 @@ private:
     void sendHostPrompt(const QString &text, const QString &marker, const QString &wireText = {},
                         bool fromGoalAgent = false);
     bool isUnattended() const;
+    // Emits waitingChanged when isWaitingForUser() differs from the last report.
+    void refreshWaiting();
+    void refreshSelectorTooltips();
     void restoreExpiredForm();
     // Scroll so the form's first question is at the top; stops following the stream.
     void scrollToFormTop(QWidget *form);
@@ -489,6 +506,7 @@ private:
     // Form note of a superseded form (never sent). A sent note is not carried.
     QString m_carryNote;
     bool m_scheduledUnattended = false;
+    bool m_lastWaiting = false; // what waitingChanged last reported
 
     bool m_updatingSelectors = false;
 
@@ -496,6 +514,8 @@ private:
     // saved selections (model/mode/effort) back into the agent. Cleared on
     // rebind() so a restarted session re-applies preferences.
     bool m_savedPrefsApplied = false;
+    // True until the user sends something (see noteUserSend()); reset by rebind.
+    bool m_draft = true;
 
     // Auto-scroll state. The transcript is "stuck to the bottom" when the
     // user is parked at (or within a few px of) the maximum scroll value.

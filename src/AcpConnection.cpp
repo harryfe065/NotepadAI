@@ -205,7 +205,7 @@ AcpConnection::AcpConnection(QObject *parent)
 
 AcpConnection::~AcpConnection()
 {
-    cancelAllPendingPermissions();
+    cancelAllPendingPermissions(/*notify=*/false);
     // Tear down terminals.
     for (auto it = m_terminals.begin(); it != m_terminals.end(); ++it) {
         if (it.value().proc) {
@@ -1520,6 +1520,7 @@ void AcpConnection::handleRequestPermission(const QJsonValue &id,
                                                                         optionId,
                                                                         nestedOutcome));
         });
+    emit pendingPermissionsChanged();
     emit permissionRequested(req);
 }
 
@@ -1530,14 +1531,18 @@ void AcpConnection::respondToPermission(const QString &requestId, const QString 
         return;
     }
     cb(outcome, optionId);
+    emit pendingPermissionsChanged();
 }
 
-void AcpConnection::cancelAllPendingPermissions()
+void AcpConnection::cancelAllPendingPermissions(bool notify)
 {
+    const bool hadAny = !m_pendingPermissions.isEmpty();
     for (auto it = m_pendingPermissions.begin(); it != m_pendingPermissions.end(); ++it) {
         it.value()(QStringLiteral("cancelled"), QString());
     }
     m_pendingPermissions.clear();
+    if (notify && hadAny)
+        emit pendingPermissionsChanged();
 }
 
 // ---------- ext_method passthrough --------------------------------------
@@ -1745,6 +1750,16 @@ void AcpConnection::rearmScheduledJobExpiry()
 bool AcpConnection::hasPendingBackgroundWork() const
 {
     return !m_liveAsyncTasks.isEmpty() || (m_bgIdleTimer && m_bgIdleTimer->isActive());
+}
+
+bool AcpConnection::agentWorkPending() const
+{
+    if (hasPendingBackgroundWork())
+        return true;
+    const auto &jobs = m_scheduledJobs.jobs();
+    return std::any_of(jobs.cbegin(), jobs.cend(), [](const AcpProtocol::AcpScheduledJob &job) {
+        return job.kind == AcpProtocol::AcpScheduledJob::Kind::Monitor;
+    });
 }
 
 bool AcpConnection::hasOpenWork() const

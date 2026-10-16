@@ -22,9 +22,12 @@
 #include <QDockWidget>
 #include <QPointer>
 #include <QProcess>
+#include <QRgb>
 #include <QString>
 #include <QStringList>
 #include <QVector>
+
+#include <cstdint>
 
 class AcpAgentManager;
 class AcpAgentRegistry;
@@ -77,15 +80,31 @@ public:
     void insertTextToInput(const QString &text);
     void setActivityIndicator(bool active);
     bool isBusy() const;
+    // A turn or goal is running. Scheduled tasks and the idle reaper go by this.
     bool isSessionBusy(const QString &sessionId) const;
+    // Busy, or background work the agent started (tasks, Monitor watches) is
+    // still alive: what the session number's spinner shows.
+    bool isSessionWorking(const QString &sessionId) const;
+    // A question form or permission request waits on the user, whether or not
+    // the user can see it right now (the number's dot hides while they can).
+    bool isSessionWaiting(const QString &sessionId) const;
+
+    // What the dock's own tab says about its sessions, strongest first. Only a
+    // dock that is not on screen needs to: a raised one shows its numbers.
+    enum class ProjectMark : std::uint8_t { None, Activity, Working, Waiting };
+    ProjectMark projectMark() const;
 
     int slotCount() const { return m_slots.size(); }
     int currentIndex() const { return m_current; }
+    // The session added last, wherever the user has dragged it since.
     QString newestSessionId() const;
     // Started by a scheduled task: forms are cancelled until the user sends a
     // message in this session.
     void markSessionUnattended(const QString &sessionId);
     QString sessionIdAt(int index) const;
+    // Drag-to-reorder from the session strip: session numbers are positions.
+    // The open session stays open; false for a no-op or out-of-range move.
+    bool moveSlot(int from, int to);
 
     void addSlot(QString sessionId,
                  QString agentName,
@@ -150,6 +169,9 @@ private slots:
     void onRetryFromView();
     void onRestartFromView();
     void onProcessingChanged(bool processing);
+    // Background tasks / Monitor watches started or ended, or a session started
+    // or stopped waiting on the user: repaint the marks.
+    void onWorkChanged();
     void onMessageAppended(int idx);
     void generatePromptWithGoal();
     // Stop the attached GoalAgent if (and only if) one is currently running
@@ -193,6 +215,8 @@ private:
     int indexOfSession(const QString &sessionId) const;
     QString resolvedAgentName(const Slot &slot) const;
     bool slotBusy(const Slot &slot) const;
+    bool slotWorking(const Slot &slot) const;
+    bool slotWaiting(const Slot &slot) const;
     void syncSlotBusy(Slot &slot);
     bool tryCloseSlot(int index);
     void detachSlotAt(int index);
@@ -205,7 +229,6 @@ private:
     void hideLocalTabBar();
     void notifySiblingsRefreshStrip();
     void refreshActivityIcon();
-    bool shouldShowActivityIcon() const;
     QTabBar *hostTabBar(int *tabIndex) const;
 
     QString m_workingDirectory;
@@ -215,6 +238,9 @@ private:
 
     QVector<Slot> m_slots;
     int m_current = 0;
+    QString m_newestSessionId; // last addSlot; survives reordering
+    ProjectMark m_iconMark = ProjectMark::None; // what the window icon shows now
+    QRgb m_iconHighlight = 0;                   // ... and in which Highlight colour
 
     QWidget *m_header = nullptr;
     QHBoxLayout *m_headerLayout = nullptr;

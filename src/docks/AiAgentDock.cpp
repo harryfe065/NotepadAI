@@ -104,6 +104,8 @@ AiAgentDock::AiAgentDock(QString sessionId,
         // Hidden docks must reinstall too: tabify rebuilds the area bar and
         // the inactive project's [1][2] live on that bar, not on this widget.
         scheduleStripReinstall();
+        // Whether the open session's red dot shows depends on being on screen.
+        pushStripSnapshots();
         refreshActivityIcon();
     });
 }
@@ -155,6 +157,7 @@ void AiAgentDock::addSlot(QString sessionId,
 {
     Slot slot;
     slot.sessionId = std::move(sessionId);
+    m_newestSessionId = slot.sessionId;
     slot.agentName = std::move(agentName);
     slot.model = model;
     slot.connection = connection;
@@ -197,6 +200,17 @@ void AiAgentDock::wireSlotSignals(Slot &slot)
         connect(slot.connection, &AcpConnection::backgroundIdle,
                 this, &AiAgentDock::onNativeGoalBackgroundIdle,
                 Qt::UniqueConnection);
+        // Background tasks and Monitor watches keep the session number spinning.
+        connect(slot.connection, &AcpConnection::backgroundIdle,
+                this, &AiAgentDock::onWorkChanged, Qt::UniqueConnection);
+        connect(slot.connection, &AcpConnection::scheduledJobsChanged,
+                this, &AiAgentDock::onWorkChanged, Qt::UniqueConnection);
+        connect(slot.connection, &AcpConnection::asyncTasksChanged,
+                this, &AiAgentDock::onWorkChanged, Qt::UniqueConnection);
+    }
+    if (slot.view) {
+        connect(slot.view, &AcpSessionView::waitingChanged,
+                this, &AiAgentDock::onWorkChanged, Qt::UniqueConnection);
     }
     if (slot.view) {
         connect(slot.view, &AcpSessionView::retryRequested,
@@ -440,6 +454,8 @@ void AiAgentDock::rebind(const QString &oldSessionId,
 
     unwireSlot(*slot);
 
+    if (m_newestSessionId == oldSessionId)
+        m_newestSessionId = newSessionId;
     slot->sessionId = std::move(newSessionId);
     slot->agentName = std::move(newAgentName);
     slot->connection = connection;
@@ -482,9 +498,10 @@ AiAgentDock::~AiAgentDock()
 void AiAgentDock::setActivityIndicator(bool active)
 {
     if (active) {
-        if (!m_slots.isEmpty()) {
-            if (m_current != m_slots.size() - 1)
-                m_slots.last().hasActivity = true;
+        // The session added last, wherever the user has dragged it since.
+        if (const int newest = indexOfSession(newestSessionId()); newest >= 0) {
+            if (m_current != newest)
+                m_slots[newest].hasActivity = true;
             else if (!isVisible())
                 m_slots[m_current].hasActivity = true;
         }
@@ -494,33 +511,61 @@ void AiAgentDock::setActivityIndicator(bool active)
     refreshActivityIcon();
 }
 
-bool AiAgentDock::shouldShowActivityIcon() const
+AiAgentDock::ProjectMark AiAgentDock::projectMark() const
 {
     const bool raised = isVisible();
+    bool activity = false;
+    bool working = false;
+    bool waiting = false;
     for (int i = 0; i < m_slots.size(); ++i) {
-        if (!m_slots.at(i).hasActivity)
-            continue;
-        if (!raised || i != m_current)
-            return true;
+        const Slot &slot = m_slots.at(i);
+        if (slot.hasActivity && (!raised || i != m_current))
+            activity = true;
+        // A raised dock already shows each number's own spinner and dot.
+        if (!raised && slotWorking(slot))
+            working = true;
+        if (!raised && slotWaiting(slot))
+            waiting = true;
     }
-    return false;
+    if (waiting)
+        return ProjectMark::Waiting;
+    if (working)
+        return ProjectMark::Working;
+    return activity ? ProjectMark::Activity : ProjectMark::None;
 }
 
 void AiAgentDock::refreshActivityIcon()
 {
-    if (shouldShowActivityIcon()) {
-        QPixmap px(8, 8);
-        px.fill(Qt::transparent);
-        QPainter painter(&px);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(palette().color(QPalette::Highlight));
-        painter.drawEllipse(0, 0, 8, 8);
-        painter.end();
-        setWindowIcon(QIcon(px));
-    } else {
+    constexpr int kSize = 8;
+    const ProjectMark mark = projectMark();
+    const QColor highlight = palette().color(QPalette::Highlight);
+    // Called on every work/waiting/busy change: repaint (and make the tab bar
+    // relayout) only when what the icon shows actually changed.
+    if (mark == m_iconMark && highlight.rgba() == m_iconHighlight)
+        return;
+    m_iconMark = mark;
+    m_iconHighlight = highlight.rgba();
+    if (mark == ProjectMark::None) {
         setWindowIcon(QIcon());
+        return;
     }
+    QPixmap px(kSize, kSize);
+    px.fill(Qt::transparent);
+    QPainter painter(&px);
+    painter.setRenderHint(QPainter::Antialiasing);
+    if (mark == ProjectMark::Working) {
+        // A ring, not a dot: still, so the tab never repaints on a timer.
+        constexpr qreal kPen = 1.5;
+        painter.setPen(QPen(highlight, kPen));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(QRectF(kPen / 2, kPen / 2, kSize - kPen, kSize - kPen));
+    } else {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(mark == ProjectMark::Waiting ? AiDockSessionStrip::attentionColor() : highlight);
+        painter.drawEllipse(0, 0, kSize, kSize);
+    }
+    painter.end();
+    setWindowIcon(QIcon(px));
 }
 
 bool AiAgentDock::isBusy() const
@@ -533,6 +578,38 @@ bool AiAgentDock::isSessionBusy(const QString &sessionId) const
 {
     const Slot *slot = slotById(sessionId);
     return slot && slotBusy(*slot);
+}
+
+bool AiAgentDock::isSessionWorking(const QString &sessionId) const
+{
+    const Slot *slot = slotById(sessionId);
+    return slot && slotWorking(*slot);
+}
+
+bool AiAgentDock::isSessionWaiting(const QString &sessionId) const
+{
+    const Slot *slot = slotById(sessionId);
+    return slot && slotWaiting(*slot);
+}
+
+bool AiAgentDock::slotWaiting(const Slot &slot) const
+{
+    return slot.view && slot.view->isWaitingForUser();
+}
+
+bool AiAgentDock::slotWorking(const Slot &slot) const
+{
+    if (slotBusy(slot))
+        return true;
+    if (slot.connection)
+        return slot.connection->agentWorkPending();
+    return slot.model && slot.model->backgroundTaskCount() > 0;
+}
+
+void AiAgentDock::onWorkChanged()
+{
+    pushStripSnapshots();
+    refreshActivityIcon();
 }
 
 bool AiAgentDock::slotBusy(const Slot &slot) const
@@ -554,6 +631,7 @@ void AiAgentDock::syncSlotBusy(Slot &slot)
         slot.busySinceMs = 0;
     }
     pushStripSnapshots();
+    refreshActivityIcon();
 }
 
 QSize AiAgentDock::sizeHint() const
@@ -704,6 +782,8 @@ AcpConnection *AiAgentDock::connection() const
 
 QString AiAgentDock::newestSessionId() const
 {
+    if (indexOfSession(m_newestSessionId) >= 0)
+        return m_newestSessionId;
     return m_slots.isEmpty() ? QString() : m_slots.last().sessionId;
 }
 
@@ -712,6 +792,28 @@ QString AiAgentDock::sessionIdAt(int index) const
     if (index < 0 || index >= m_slots.size())
         return {};
     return m_slots.at(index).sessionId;
+}
+
+bool AiAgentDock::moveSlot(int from, int to)
+{
+    const int count = m_slots.size();
+    if (from == to || from < 0 || to < 0 || from >= count || to >= count)
+        return false;
+
+    // The open session is whoever it is, not whichever number it had.
+    const QString openId = m_slots.at(m_current).sessionId;
+    m_slots.move(from, to);
+    if (AcpSessionView *view = m_slots.at(to).view) {
+        m_stack->removeWidget(view);
+        m_stack->insertWidget(to, view);
+    }
+
+    m_current = indexOfSession(openId);
+    if (AcpSessionView *open = m_slots.at(m_current).view)
+        m_stack->setCurrentWidget(open);
+    pushStripSnapshots();
+    refreshActivityIcon();
+    return true;
 }
 
 void AiAgentDock::switchTo(int index)
@@ -885,6 +987,7 @@ void AiAgentDock::ensureStrip()
         raise();
     });
     connect(m_strip, &AiDockSessionStrip::closeRequested, this, &AiAgentDock::closeSlot);
+    connect(m_strip, &AiDockSessionStrip::moveRequested, this, &AiAgentDock::moveSlot);
     connect(m_strip, &QObject::destroyed, this, [this]() {
         m_strip = nullptr;
         m_tabBarForStrip = nullptr;
@@ -1021,10 +1124,14 @@ void AiAgentDock::pushStripSnapshots()
         return;
     QVector<AiDockSessionStrip::SlotSnapshot> snaps;
     snaps.reserve(m_slots.size());
-    for (const Slot &slot : m_slots) {
+    const bool raised = isVisible();
+    for (int i = 0; i < m_slots.size(); ++i) {
+        const Slot &slot = m_slots.at(i);
         AiDockSessionStrip::SlotSnapshot snap;
         snap.agent = resolvedAgentName(slot);
-        snap.busy = slotBusy(slot);
+        snap.busy = slotWorking(slot);
+        // The open session of a dock on screen shows its own prompt: no dot.
+        snap.waiting = slotWaiting(slot) && !(raised && i == m_current);
         snap.busySinceMs = slot.busySinceMs;
         snap.activity = slot.hasActivity;
         snap.lastUserPreview = lastUserPreviewFor(slot.model);
@@ -1281,6 +1388,8 @@ void AiAgentDock::sendWithGoal()
             imageList.reserve(composerImages.size());
             for (const auto &p : composerImages)
                 imageList.append(p);
+            if (live->view)
+                live->view->noteUserSend();
             live->model->appendUserMessage(composerText, composerImages);
             const QString wireText = live->view
                                          ? live->view->applyNewWorktreeInstruction(composerText)
@@ -1354,6 +1463,8 @@ void AiAgentDock::sendWithGoal()
     imageList.reserve(composerImages.size());
     for (const auto &p : composerImages)
         imageList.append(p);
+    if (attached->view)
+        attached->view->noteUserSend();
     attached->model->appendUserMessage(composerText, composerImages);
     const QString wireText = attached->view
                                  ? attached->view->applyNewWorktreeInstruction(composerText)

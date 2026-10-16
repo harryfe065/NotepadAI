@@ -875,6 +875,8 @@ void AcpSessionView::wireSignals()
     if (m_connection) {
         connect(m_connection, &AcpConnection::permissionRequested,
                 this, &AcpSessionView::onPermissionRequested);
+        connect(m_connection, &AcpConnection::pendingPermissionsChanged,
+                this, &AcpSessionView::refreshWaiting);
         connect(m_connection, &AcpConnection::requestFailed,
                 this, &AcpSessionView::onRequestFailed);
         connect(m_connection, &AcpConnection::scheduledJobsChanged,
@@ -1036,6 +1038,9 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_model = model;
     m_connection = connection;
     m_savedPrefsApplied = false;
+    // The conversation is gone: a restarted session is a draft again.
+    m_draft = true;
+    refreshSelectorTooltips();
     ++m_scheduledRev; // the cached tooltip described the previous connection's jobs
 
     // Clear the transcript: drop bubbles, cards, plan, permission prompts.
@@ -1085,6 +1090,7 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     }
     // Form widgets went with the layout; the old connection answers nothing.
     m_pendingForm.clear();
+    refreshWaiting();
     m_grillMeCandidates.clear();
     m_grillMeShown.clear();
     m_carryAnswers.clear();
@@ -1598,12 +1604,7 @@ bool AcpSessionView::agentWorkPending() const
         return m_model && m_model->backgroundTaskCount() > 0;
     // Includes the short grace after the last task, before its wake-up turn
     // starts, so the row does not stop and restart in between.
-    if (m_connection->hasPendingBackgroundWork())
-        return true;
-    const auto &jobs = m_connection->scheduledJobs();
-    return std::any_of(jobs.cbegin(), jobs.cend(), [](const AcpProtocol::AcpScheduledJob &job) {
-        return job.kind == AcpProtocol::AcpScheduledJob::Kind::Monitor;
-    });
+    return m_connection->agentWorkPending();
 }
 
 void AcpSessionView::releaseWorkHeldFold(bool force)
@@ -2138,6 +2139,7 @@ void AcpSessionView::onPlanResumeRequested(const QString &prompt)
     if (!m_connection || !m_model) return;
     if (m_model->isProcessing()) return;
 
+    noteUserSend(); // the user's own button: the plan goes out as their message
     m_model->appendUserMessage(prompt, {});
     m_connection->sendPrompt(prompt, {});
     m_stickToBottom = true;
@@ -2255,8 +2257,9 @@ void AcpSessionView::onMetadataChanged()
 
     // After the initial restore, persist any agent-side config changes
     // (e.g. Codex CLI's config_option_update for model/mode/effort) so the
-    // next session/new picks them up.
-    if (m_savedPrefsApplied && m_registry && m_connection) {
+    // next session/new picks them up. Only while the session is a draft: once
+    // the user has sent something, its selections are its own.
+    if (m_savedPrefsApplied && m_draft && m_registry && m_connection) {
         const QString agentId = m_connection->definition().id;
         if (!agentId.isEmpty()) {
             const QString curModel = m_model->currentModelId();
@@ -2503,6 +2506,41 @@ bool AcpSessionView::isUnattended() const
     return m_goalRunning || m_scheduledUnattended;
 }
 
+void AcpSessionView::noteUserSend()
+{
+    if (!m_draft)
+        return;
+    m_draft = false;
+    refreshSelectorTooltips();
+}
+
+void AcpSessionView::refreshSelectorTooltips()
+{
+    // Why a pick no longer becomes the default for new sessions.
+    const QString suffix = m_draft ? QString()
+                                   : QLatin1Char('\n') + tr("Applies to this session only");
+    if (m_modelCombo)
+        m_modelCombo->setToolTip(tr("Model") + suffix);
+    if (m_modeCombo)
+        m_modeCombo->setToolTip(tr("Mode") + suffix);
+    if (m_effortCombo)
+        m_effortCombo->setToolTip(tr("Effort") + suffix);
+}
+
+bool AcpSessionView::isWaitingForUser() const
+{
+    return m_pendingForm || (m_connection && m_connection->hasPendingPermissions());
+}
+
+void AcpSessionView::refreshWaiting()
+{
+    const bool waiting = isWaitingForUser();
+    if (waiting == m_lastWaiting)
+        return;
+    m_lastWaiting = waiting;
+    emit waitingChanged(waiting);
+}
+
 bool AcpSessionView::holdsGoalEvaluation() const
 {
     return m_promptQueue.containsMarker(QLatin1String(GrillMeForm::kMarkerNoHuman));
@@ -2540,6 +2578,14 @@ void AcpSessionView::presentForm(const GrillMeForm::Spec &spec)
 
     form->setNote(carriedNote);
     m_pendingForm = form;
+    refreshWaiting();
+    // A form deleted without being settled (transcript cleared) must not leave
+    // the session waiting; the QPointer is null by the time this runs.
+    QPointer<AcpSessionView> self(this);
+    connect(form, &QObject::destroyed, this, [self]() {
+        if (self)
+            QMetaObject::invokeMethod(self, &AcpSessionView::refreshWaiting, Qt::QueuedConnection);
+    });
     connect(form, &GrillMeFormWidget::submitted, this, &AcpSessionView::onFormSubmitted);
     connect(form, &GrillMeFormWidget::dismissed, this, &AcpSessionView::onFormDismissed);
     connect(form, &GrillMeFormWidget::escapePressed, this, [this]() {
@@ -2582,6 +2628,7 @@ void AcpSessionView::settlePendingForm(GrillMeFormWidget::State state, const QSt
     if (m_pendingForm)
         m_pendingForm->setState(state, detail);
     m_pendingForm.clear();
+    refreshWaiting();
     releaseFormHeldFold();
 }
 
@@ -2962,6 +3009,7 @@ void AcpSessionView::onSendClicked()
 
     // The user is here: forms in this session are answered from now on.
     if (kind != AcpPromptQueue::SendKind::Ignore) {
+        noteUserSend();
         m_scheduledUnattended = false;
         if (m_pendingForm && kind != AcpPromptQueue::SendKind::SidePrompt) {
             // A composer reply while a form is open replaces it and goes out as
@@ -3066,7 +3114,7 @@ void AcpSessionView::onModelComboChanged(int index)
     } else {
         m_connection->setModel(id);
     }
-    if (m_registry) {
+    if (m_registry && m_draft) {
         m_registry->setAgentPreference(m_connection->definition().id, prefKey, id);
     }
     // The advisor tracks the selected model's level: re-point it.
@@ -3081,7 +3129,7 @@ void AcpSessionView::onModeComboChanged(int index)
     const QString id = m_modeCombo->itemData(index).toString();
     if (id.isEmpty()) return;
     m_connection->setMode(id);
-    if (m_registry) {
+    if (m_registry && m_draft) {
         m_registry->setAgentPreference(m_connection->definition().id,
                                        QStringLiteral("mode"), id);
     }
@@ -3093,7 +3141,7 @@ void AcpSessionView::onEffortComboChanged(int index)
     if (m_effortConfigOptionId.isEmpty()) return;
     const QString val = m_effortCombo->itemData(index).toString();
     m_connection->setConfigOption(m_effortConfigOptionId, val);
-    if (m_registry && !val.isEmpty()) {
+    if (m_registry && m_draft && !val.isEmpty()) {
         m_registry->setAgentPreference(m_connection->definition().id,
                                        m_effortConfigOptionId, val);
     }

@@ -115,6 +115,7 @@ public:
     }
 
     void setSessionIdForTest(const QString &id) { m_sessionId = id; }
+    void setDefinitionForTest(const AcpAgentDefinition &agent) { m_agent = agent; }
 
     // The last promptEnded was the agent's own end of a model cycle (a cycle
     // result), not the 250 ms quiet-period guess a wake-up turn otherwise
@@ -141,6 +142,12 @@ public:
     // that wake-up turn starts a moment after the task's final state update.
     // Supervisors (goal judge, auto-compact) must not act before it settles.
     bool hasPendingBackgroundWork() const;
+    // Background work that will wake the agent again: tasks (and the grace
+    // after the last one) or a live Monitor watch. Scheduled wake-ups and cron
+    // jobs are not counted.
+    bool agentWorkPending() const;
+    // A permission request the user has not answered yet.
+    bool hasPendingPermissions() const { return !m_pendingPermissions.isEmpty(); }
     void setBackgroundWakeGraceMsForTest(int ms) { m_bgWakeGraceMs = ms; }
     QJsonArray mcpServersForTest() const { return m_mcpServers; }
 
@@ -199,6 +206,9 @@ signals:
     // Live ScheduleWakeup / CronCreate jobs changed (display only: the agent
     // offers no host-side way to cancel them). Emitted only on a real change.
     void scheduledJobsChanged();
+    // A permission request arrived, was answered, or was dropped (agent exit):
+    // hasPendingPermissions() may have flipped.
+    void pendingPermissionsChanged();
 
     void permissionRequested(const AcpProtocol::AcpPermissionRequest &req);
 
@@ -262,7 +272,7 @@ private:
     bool sandboxRead(const QString &rawPath, QString *canonicalOut, QString *errorOut) const;
     bool sandboxWrite(const QString &rawPath, QString *canonicalOut, QString *errorOut) const;
 
-    void cancelAllPendingPermissions();
+    void cancelAllPendingPermissions(bool notify = true);
     void emitClassifiedError(const QString &raw);
 
     // Idempotent prompt-lifecycle wrappers. The agent may also signal these via

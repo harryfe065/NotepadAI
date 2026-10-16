@@ -19,12 +19,20 @@
 #ifndef AI_DOCK_SESSION_STRIP_H
 #define AI_DOCK_SESSION_STRIP_H
 
+#include <QColor>
+#include <QElapsedTimer>
+#include <QPoint>
+#include <QPointer>
 #include <QString>
 #include <QVector>
 #include <QWidget>
 
 class QHBoxLayout;
+class QHideEvent;
+class QShowEvent;
+class QTimer;
 class QToolButton;
+class QWindow;
 
 // Clickable 1 2 3 session buttons for a project-grouped AI dock.
 // The strip is a pure view: it never queries ACP. The owner pushes a
@@ -40,10 +48,19 @@ public:
     {
         QString agent;
         bool busy = false;
-        qint64 busySinceMs = 0; // 0 = idle; monotonic ms, italic busy-non-current
+        qint64 busySinceMs = 0; // 0 = idle; monotonic ms
         bool activity = false;
+        // The agent is blocked on the user (question form or permission
+        // request): the number wears a red dot until it is answered.
+        bool waiting = false;
         QString lastUserPreview; // truncated last human prompt; empty = no tooltip
+
+        bool operator==(const SlotSnapshot &) const = default;
     };
+
+    // The one red used for "needs you" (documented in ui-dna.md): readable on
+    // light and dark. Shared with the project tab's dock icon.
+    static QColor attentionColor();
 
     explicit AiDockSessionStrip(QWidget *parent = nullptr);
 
@@ -52,6 +69,10 @@ public:
     int slotCount() const { return m_count; }
     int currentIndex() const { return m_current; }
     QString slotTooltip(int index) const { return tooltipFor(index); }
+    // True while the shared spin timer runs: some slot is working and the
+    // strip is on screen. Nothing ticks otherwise.
+    bool isSpinning() const;
+    bool waitingAt(int index) const;
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -59,13 +80,19 @@ public:
 signals:
     void activated(int index);
     void closeRequested(int index);
+    // A drag released over another number: move session `from` to position `to`.
+    void moveRequested(int from, int to);
 
 protected:
     void changeEvent(QEvent *event) override;
     bool event(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
+    void updateSpinTimer();
+    void onSpinTick();
     void rebuildButtons();
     void restyleButtons();
     void syncIntrinsicSize();
@@ -73,12 +100,27 @@ private:
     void detachFromHostTabBar();
     QString tooltipFor(int index) const;
     int indexOfButton(const QObject *obj) const;
+    // Drag-to-reorder: the dragged button slides through the layout while the
+    // cursor moves; the owner is only asked to move the session on release.
+    bool handleDrag(int index, QEvent *event);
+    int dropPositionAt(int stripX) const;
+    void moveDraggedButton(int position);
+    void endDrag();
 
     QHBoxLayout *m_layout = nullptr;
     QVector<QToolButton *> m_buttons;
     QVector<SlotSnapshot> m_snapshots;
     int m_count = 0;
     int m_current = 0;
+
+    QTimer *m_spinTimer = nullptr;
+    QElapsedTimer m_spinClock;
+    QPointer<QWindow> m_trackedWindow;
+
+    int m_pressIndex = -1;
+    QPoint m_pressGlobalPos;
+    bool m_dragging = false;
+    int m_dragPosition = -1; // where the dragged button sits in the layout now
 };
 
 #endif // AI_DOCK_SESSION_STRIP_H

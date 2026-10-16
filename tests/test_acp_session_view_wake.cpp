@@ -12,20 +12,30 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QComboBox>
+#include <QDockWidget>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
 
 #include <memory>
 
+#include "AcpAgentDefinition.h"
+#include "AcpAgentRegistry.h"
 #include "AcpConnection.h"
 #include "AcpSessionModel.h"
+#include "ApplicationSettings.h"
 #include "IAcpProcessChannel.h"
 #include "AcpMessageWidget.h"
 #include "AcpSessionView.h"
 #include "AcpToolCallCard.h"
 #include "AcpTurnFoldRow.h"
+#include "AiAgentDock.h"
+#include "GrillMeFormWidget.h"
+#include "widgets/AiDockSessionStrip.h"
 
 // AcpSessionView fed through AcpConnection + AcpSessionModel with frames shaped
 // like claude-agent-acp 0.90.0's real wire.
@@ -185,16 +195,24 @@ struct Session
     std::unique_ptr<AcpSessionModel> model;
     std::unique_ptr<AcpSessionView> view;
 
-    Session()
+    // With a registry the session belongs to agent "test-agent", so its
+    // selector changes have an agent-defaults entry to write to.
+    explicit Session(AcpAgentRegistry *registry = nullptr)
     {
         channel = new RecordingChannel(&conn);
         conn.attachChannelForTest(channel);
         channel->start();
         conn.setSessionIdForTest(QStringLiteral("s1"));
         conn.setBackgroundWakeGraceMsForTest(100);
+        if (registry) {
+            AcpAgentDefinition agent;
+            agent.id = QStringLiteral("test-agent");
+            agent.name = QStringLiteral("Test agent");
+            conn.setDefinitionForTest(agent);
+        }
         model = std::make_unique<AcpSessionModel>(QStringLiteral("s1"), QStringLiteral("p"), historyDir.path());
         wire(&conn, model.get());
-        view = std::make_unique<AcpSessionView>(model.get(), &conn, nullptr);
+        view = std::make_unique<AcpSessionView>(model.get(), &conn, registry);
         view->resize(520, 900);
         view->show();
     }
@@ -238,10 +256,44 @@ class TestAcpSessionViewWake : public QObject
     Q_OBJECT
 
 private slots:
+    void initTestCase();
+    void init();
     void monitor_keepsTurnOpenUntilStopped();
     void backgroundTask_keepsTurnOpenUntilIdle();
     void wakeUpsWithoutPendingWork_foldAtConfirmedEnd();
+    void dock_monitorKeepsSessionWorking_untilStopped();
+    void dock_backgroundTaskKeepsSessionWorking_untilItEnds();
+    void waiting_permissionRequest_untilAnswered();
+    void waiting_questionForm_untilDismissed();
+    void waiting_formCancelledForUnattendedSession_doesNotCount();
+    void dock_waitingSession_showsDotUntilTheUserCanSeeIt();
+    void dock_waiting_beatsWorking_onTheProjectTab();
+    void draft_selectorChange_becomesAgentDefault();
+    void afterUserSend_selectorChange_staysInThisSession();
+    void goalAndHostPrompts_doNotEndTheDraft();
+    void agentReportedModel_savedWhileDraft_notAfterUserSend();
+    void restart_startsANewDraft();
+    void afterUserSend_selectorTooltipsSaySessionOnly();
+
+private:
+    QTemporaryDir m_settingsDir;
 };
+
+void TestAcpSessionViewWake::initTestCase()
+{
+    QVERIFY(m_settingsDir.isValid());
+    QCoreApplication::setOrganizationName(QStringLiteral("NotepadNextTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("NotepadNextTest_SessionViewWake"));
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settingsDir.path());
+}
+
+void TestAcpSessionViewWake::init()
+{
+    ApplicationSettings settings;
+    settings.clear();
+    settings.sync();
+}
 
 // A Monitor wakes the agent on every line its command prints, so the turn that
 // armed it is not over: it stays open (row ticking, cards and replies shown,
@@ -329,6 +381,347 @@ void TestAcpSessionViewWake::wakeUpsWithoutPendingWork_foldAtConfirmedEnd()
     }
     QCOMPARE(transcript(*s.view), (QStringList{QStringLiteral("user: check back later"),
                                                QStringLiteral("fold"), QStringLiteral("assistant: woke 2")}));
+}
+
+// The session number spins for a Monitor watch too, though no turn is running.
+// isSessionBusy keeps its meaning (a turn or goal): scheduled tasks skip on it.
+void TestAcpSessionViewWake::dock_monitorKeepsSessionWorking_untilStopped()
+{
+    Session s;
+    AiAgentDock dock(QStringLiteral("s1"), QStringLiteral("claude"), QStringLiteral("/tmp"),
+                     s.model.get(), &s.conn, nullptr, nullptr, nullptr);
+    const int id = s.prompt(QStringLiteral("watch it"));
+    for (const QByteArray &f : monitorFrames(QStringLiteral("bp6eipu4t")))
+        s.channel->pushStdout(f);
+    s.endPrompt(id);
+    QTest::qWait(500);
+
+    QVERIFY(!s.model->isProcessing());
+    QVERIFY(!dock.isSessionBusy(QStringLiteral("s1")));
+    QVERIFY(dock.isSessionWorking(QStringLiteral("s1")));
+
+    s.wakeUp({toolStart(QStringLiteral("TaskStop"), QStringLiteral("toolu_stop")),
+              toolInput(QStringLiteral("toolu_stop"), {{QStringLiteral("task_id"), QStringLiteral("bp6eipu4t")}}),
+              toolDone(QStringLiteral("toolu_stop"), QStringLiteral("{\"task_id\":\"bp6eipu4t\"}"))});
+    QTRY_VERIFY(!dock.isSessionWorking(QStringLiteral("s1")));
+}
+
+void TestAcpSessionViewWake::dock_backgroundTaskKeepsSessionWorking_untilItEnds()
+{
+    Session s;
+    AiAgentDock dock(QStringLiteral("s1"), QStringLiteral("claude"), QStringLiteral("/tmp"),
+                     s.model.get(), &s.conn, nullptr, nullptr, nullptr);
+    const int id = s.prompt(QStringLiteral("start the server"));
+    s.channel->pushStdout(toolStart(QStringLiteral("Bash"), QStringLiteral("toolu_t1")));
+    s.channel->pushStdout(update(QStringLiteral("async_task_spawned"),
+                                 {{QStringLiteral("asyncTaskId"), QStringLiteral("t1")},
+                                  {QStringLiteral("name"), QStringLiteral("dev server")},
+                                  {QStringLiteral("canStop"), true},
+                                  {QStringLiteral("toolCallId"), QStringLiteral("toolu_t1")}}));
+    s.channel->pushStdout(toolDone(QStringLiteral("toolu_t1"), QStringLiteral("started")));
+    s.endPrompt(id);
+    QTest::qWait(500);
+    QVERIFY(!dock.isSessionBusy(QStringLiteral("s1")));
+    QVERIFY(dock.isSessionWorking(QStringLiteral("s1")));
+
+    s.channel->pushStdout(update(QStringLiteral("async_task_state_update"),
+                                 {{QStringLiteral("asyncTaskId"), QStringLiteral("t1")},
+                                  {QStringLiteral("state"), QStringLiteral("completed")}}));
+    QTRY_VERIFY(!dock.isSessionWorking(QStringLiteral("s1")));
+}
+
+namespace {
+
+// What claude-agent-acp sends when a tool needs the user's go-ahead.
+QByteArray permissionRequest(int rpcId)
+{
+    return frame({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                  {QStringLiteral("id"), rpcId},
+                  {QStringLiteral("method"), QStringLiteral("session/request_permission")},
+                  {QStringLiteral("params"),
+                   QJsonObject{{QStringLiteral("sessionId"), QStringLiteral("s1")},
+                               {QStringLiteral("toolCall"),
+                                QJsonObject{{QStringLiteral("toolCallId"), QStringLiteral("toolu_perm")},
+                                            {QStringLiteral("title"), QStringLiteral("Run ls")}}},
+                               {QStringLiteral("options"),
+                                QJsonArray{QJsonObject{{QStringLiteral("optionId"), QStringLiteral("allow")},
+                                                       {QStringLiteral("name"), QStringLiteral("Allow")},
+                                                       {QStringLiteral("kind"), QStringLiteral("allow_once")}},
+                                           QJsonObject{{QStringLiteral("optionId"), QStringLiteral("deny")},
+                                                       {QStringLiteral("name"), QStringLiteral("Deny")},
+                                                       {QStringLiteral("kind"), QStringLiteral("reject_once")}}}}}}});
+}
+
+// A completed grill_me ask call: the view turns it into a question form.
+QList<QByteArray> grillMeFrames()
+{
+    const QString id = QStringLiteral("toolu_grill");
+    const QString tool = QStringLiteral("mcp__grill_me__ask");
+    return {toolStart(tool, id),
+            toolInput(id, {{QStringLiteral("questions"),
+                            QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("Q1")},
+                                                   {QStringLiteral("title"), QStringLiteral("Go ahead?")},
+                                                   {QStringLiteral("type"), QStringLiteral("confirm")}}}}}),
+            toolDone(id, QStringLiteral("Form shown."))};
+}
+
+AiDockSessionStrip *stripOf(AiAgentDock &dock)
+{
+    return dock.findChild<AiDockSessionStrip *>();
+}
+
+QColor iconCenter(const QDockWidget &dock)
+{
+    return dock.windowIcon().pixmap(8, 8).toImage().pixelColor(4, 4);
+}
+
+} // namespace
+
+void TestAcpSessionViewWake::waiting_permissionRequest_untilAnswered()
+{
+    Session s;
+    QSignalSpy changes(s.view.get(), &AcpSessionView::waitingChanged);
+    QVERIFY(!s.view->isWaitingForUser());
+    s.prompt(QStringLiteral("list files"));
+
+    s.channel->pushStdout(permissionRequest(41));
+    QVERIFY(s.view->isWaitingForUser());
+    QCOMPARE(changes.count(), 1);
+    QCOMPARE(changes.last().at(0).toBool(), true);
+
+    s.conn.respondToPermission(QStringLiteral("41"), QStringLiteral("selected"), QStringLiteral("allow"));
+    QVERIFY(!s.view->isWaitingForUser());
+    QCOMPARE(changes.count(), 2);
+    QCOMPARE(changes.last().at(0).toBool(), false);
+}
+
+void TestAcpSessionViewWake::waiting_questionForm_untilDismissed()
+{
+    Session s;
+    QSignalSpy changes(s.view.get(), &AcpSessionView::waitingChanged);
+    s.prompt(QStringLiteral("grill me"));
+    for (const QByteArray &f : grillMeFrames())
+        s.channel->pushStdout(f);
+
+    QVERIFY(s.view->isWaitingForUser());
+    QCOMPARE(changes.count(), 1);
+
+    auto *form = s.view->findChild<GrillMeFormWidget *>();
+    QVERIFY(form);
+    QVERIFY(QMetaObject::invokeMethod(form, "dismissed"));
+    QVERIFY(!s.view->isWaitingForUser());
+    QCOMPARE(changes.count(), 2);
+}
+
+// Nobody is there to answer (goal running / scheduled task): the form is
+// cancelled on the spot, so the session is not waiting on anyone.
+void TestAcpSessionViewWake::waiting_formCancelledForUnattendedSession_doesNotCount()
+{
+    Session s;
+    s.view->setScheduledUnattended(true);
+    QSignalSpy changes(s.view.get(), &AcpSessionView::waitingChanged);
+    s.prompt(QStringLiteral("grill me"));
+    for (const QByteArray &f : grillMeFrames())
+        s.channel->pushStdout(f);
+
+    QVERIFY(s.view->findChild<GrillMeFormWidget *>()); // shown, but cancelled
+    QVERIFY(!s.view->isWaitingForUser());
+    QCOMPARE(changes.count(), 0);
+}
+
+// The red dot is for a user who is looking elsewhere: it hides while the open
+// session's dock is on screen, but the session is still waiting.
+void TestAcpSessionViewWake::dock_waitingSession_showsDotUntilTheUserCanSeeIt()
+{
+    Session s;
+    AiAgentDock dock(QStringLiteral("s1"), QStringLiteral("claude"), QStringLiteral("/tmp"),
+                     s.model.get(), &s.conn, nullptr, nullptr, nullptr);
+    s.prompt(QStringLiteral("list files"));
+    QVERIFY(!dock.isSessionWaiting(QStringLiteral("s1")));
+
+    s.channel->pushStdout(permissionRequest(41));
+    QVERIFY(dock.isSessionWaiting(QStringLiteral("s1")));
+    AiDockSessionStrip *strip = nullptr;
+    QTRY_VERIFY((strip = stripOf(dock)) != nullptr);
+    QTRY_VERIFY(strip->waitingAt(0)); // dock not on screen: the dot shows
+
+    dock.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dock));
+    QTRY_VERIFY(!strip->waitingAt(0)); // open session, dock on screen: user sees the prompt
+    QVERIFY(dock.isSessionWaiting(QStringLiteral("s1")));
+
+    dock.hide();
+    QTRY_VERIFY(strip->waitingAt(0));
+
+    s.conn.respondToPermission(QStringLiteral("41"), QStringLiteral("selected"), QStringLiteral("allow"));
+    QVERIFY(!dock.isSessionWaiting(QStringLiteral("s1")));
+    QTRY_VERIFY(!strip->waitingAt(0));
+}
+
+void TestAcpSessionViewWake::dock_waiting_beatsWorking_onTheProjectTab()
+{
+    Session s;
+    AiAgentDock dock(QStringLiteral("s1"), QStringLiteral("claude"), QStringLiteral("/tmp"),
+                     s.model.get(), &s.conn, nullptr, nullptr, nullptr);
+    s.prompt(QStringLiteral("list files")); // a turn is running
+    QCOMPARE(dock.projectMark(), AiAgentDock::ProjectMark::Working);
+
+    s.channel->pushStdout(permissionRequest(41));
+    QCOMPARE(dock.projectMark(), AiAgentDock::ProjectMark::Waiting);
+    QCOMPARE(iconCenter(dock), AiDockSessionStrip::attentionColor()); // a red dot
+
+    s.conn.respondToPermission(QStringLiteral("41"), QStringLiteral("selected"), QStringLiteral("allow"));
+    QCOMPARE(dock.projectMark(), AiAgentDock::ProjectMark::Working);
+}
+
+namespace {
+
+// The model catalogue session/new reports (Opus current unless told otherwise).
+void announceModels(AcpSessionModel &model, const QString &current = QStringLiteral("opus"))
+{
+    model.onInitialized({}, {}, {}, {},
+                        {AcpProtocol::AcpModelInfo{QStringLiteral("opus"), QStringLiteral("Opus 5.5"), {}},
+                         AcpProtocol::AcpModelInfo{QStringLiteral("sonnet"), QStringLiteral("Sonnet 5.5"), {}}},
+                        current, {});
+}
+
+QComboBox *modelCombo(AcpSessionView &view)
+{
+    for (auto *combo : view.findChildren<QComboBox *>()) {
+        if (combo->findData(QStringLiteral("sonnet")) >= 0)
+            return combo;
+    }
+    return nullptr;
+}
+
+void pick(QComboBox *combo, const QString &id)
+{
+    combo->setCurrentIndex(combo->findData(id));
+}
+
+// Types into the composer and presses Enter, as the user does.
+void userSends(AcpSessionView &view, const QString &text)
+{
+    auto *input = view.findChild<QPlainTextEdit *>();
+    QVERIFY(input);
+    input->setPlainText(text);
+    QTest::keyClick(input, Qt::Key_Return);
+}
+
+QString defaultModel(AcpAgentRegistry &registry)
+{
+    return registry.agentPreference(QStringLiteral("test-agent"), QStringLiteral("model"));
+}
+
+} // namespace
+
+// A draft session's choices are the agent defaults: the next new session
+// starts with them.
+void TestAcpSessionViewWake::draft_selectorChange_becomesAgentDefault()
+{
+    ApplicationSettings settings;
+    AcpAgentRegistry registry(&settings);
+    Session s(&registry);
+    announceModels(*s.model);
+    QComboBox *combo = modelCombo(*s.view);
+    QVERIFY(combo);
+
+    pick(combo, QStringLiteral("sonnet"));
+
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+}
+
+// Opus to plan, Sonnet to implement: the switch belongs to this session only.
+void TestAcpSessionViewWake::afterUserSend_selectorChange_staysInThisSession()
+{
+    ApplicationSettings settings;
+    AcpAgentRegistry registry(&settings);
+    Session s(&registry);
+    announceModels(*s.model);
+    QComboBox *combo = modelCombo(*s.view);
+    QVERIFY(combo);
+    pick(combo, QStringLiteral("sonnet")); // chosen before sending: the default
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+
+    userSends(*s.view, QStringLiteral("plan it"));
+    pick(combo, QStringLiteral("opus"));
+
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("opus")); // this session did switch
+}
+
+// A goal's prompts and the host's own are not the user sending anything.
+void TestAcpSessionViewWake::goalAndHostPrompts_doNotEndTheDraft()
+{
+    ApplicationSettings settings;
+    AcpAgentRegistry registry(&settings);
+    Session s(&registry);
+    announceModels(*s.model);
+    QComboBox *combo = modelCombo(*s.view);
+    QVERIFY(combo);
+
+    s.view->enqueueFollowUp(QStringLiteral("/goal ship it"), /*fromGoalAgent=*/true);
+    QTRY_VERIFY(s.model->messages().size() >= 1);
+    pick(combo, QStringLiteral("sonnet"));
+
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+}
+
+// What the agent reports follows the same rule as what the user picks.
+void TestAcpSessionViewWake::agentReportedModel_savedWhileDraft_notAfterUserSend()
+{
+    ApplicationSettings settings;
+    AcpAgentRegistry registry(&settings);
+    Session s(&registry);
+    announceModels(*s.model, QStringLiteral("opus"));
+    QCOMPARE(defaultModel(registry), QStringLiteral("opus"));
+
+    announceModels(*s.model, QStringLiteral("sonnet")); // the agent switched by itself
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+
+    userSends(*s.view, QStringLiteral("go"));
+    announceModels(*s.model, QStringLiteral("opus")); // ... and again, mid-conversation
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+}
+
+// Restarting a session discards its conversation: it is a draft again.
+void TestAcpSessionViewWake::restart_startsANewDraft()
+{
+    ApplicationSettings settings;
+    AcpAgentRegistry registry(&settings);
+    Session s(&registry);
+    announceModels(*s.model);
+    userSends(*s.view, QStringLiteral("go"));
+    QComboBox *combo = modelCombo(*s.view);
+    QVERIFY(combo);
+    pick(combo, QStringLiteral("sonnet"));
+    QVERIFY(defaultModel(registry) != QStringLiteral("sonnet"));
+
+    Session fresh(&registry);
+    s.view->rebind(fresh.model.get(), &fresh.conn);
+    announceModels(*fresh.model);
+    combo = modelCombo(*s.view);
+    QVERIFY(combo);
+    pick(combo, QStringLiteral("sonnet"));
+
+    QCOMPARE(defaultModel(registry), QStringLiteral("sonnet"));
+}
+
+void TestAcpSessionViewWake::afterUserSend_selectorTooltipsSaySessionOnly()
+{
+    ApplicationSettings settings;
+    AcpAgentRegistry registry(&settings);
+    Session s(&registry);
+    announceModels(*s.model);
+    QComboBox *combo = modelCombo(*s.view);
+    QVERIFY(combo);
+    const QString draftTip = combo->toolTip();
+    QVERIFY(!draftTip.contains(QStringLiteral("this session only")));
+
+    userSends(*s.view, QStringLiteral("go"));
+
+    QVERIFY(combo->toolTip().contains(QStringLiteral("Applies to this session only")));
+    QVERIFY(combo->toolTip().contains(draftTip)); // still says what the selector is
 }
 
 QTEST_MAIN(TestAcpSessionViewWake)

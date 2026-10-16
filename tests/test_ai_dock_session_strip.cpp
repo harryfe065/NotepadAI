@@ -9,6 +9,7 @@
  */
 
 #include <QtTest>
+#include <QApplication>
 #include <QPointer>
 #include <QSignalSpy>
 #include <QSizePolicy>
@@ -26,9 +27,16 @@ private slots:
     void captions_areOneBasedDigits();
     void captions_singletonShowsOne();
     void current_isBold_othersRegularPlaceholder();
-    void busyNonCurrent_isItalic();
+    void busySlot_spinsWhileShown_idleStops();
+    void busySlot_hiddenStrip_doesNotSpin();
+    void busyCurrentSlot_alsoSpins();
     void click_emitsActivated();
     void middleClick_emitsCloseRequested_notActivated();
+    void drag_overAnotherNumber_emitsMoveRequested_notActivated();
+    void waitingSlot_showsDot_othersDoNot();
+    void waitingSlot_dotCoexistsWithSpinner();
+    void waitingSlot_tooltipSaysWaiting_keepsPreview();
+    void attentionColor_isAVisibleRed();
     void tooltip_numberShowsLastUserPreview();
     void size_matchesHint_buttonsDoNotShrink();
     void tabBar_tabSizeHint_includesFullStripWidth();
@@ -92,14 +100,43 @@ void TestAiDockSessionStrip::current_isBold_othersRegularPlaceholder()
     QCOMPARE(buttons.at(2)->palette().color(QPalette::ButtonText), muted);
 }
 
-void TestAiDockSessionStrip::busyNonCurrent_isItalic()
+void TestAiDockSessionStrip::busySlot_spinsWhileShown_idleStops()
+{
+    AiDockSessionStrip strip;
+    strip.setSlots(3, 0, threeSnapshots(false));
+    strip.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&strip));
+    QVERIFY(!strip.isSpinning());
+
+    strip.setSlots(3, 0, threeSnapshots(true));
+    QVERIFY(strip.isSpinning());
+
+    strip.setSlots(3, 0, threeSnapshots(false));
+    QVERIFY(!strip.isSpinning());
+}
+
+void TestAiDockSessionStrip::busySlot_hiddenStrip_doesNotSpin()
 {
     AiDockSessionStrip strip;
     strip.setSlots(3, 0, threeSnapshots(true));
-    const auto buttons = stripButtons(&strip);
-    QVERIFY(!buttons.at(0)->font().italic());
-    QVERIFY(buttons.at(1)->font().italic());
-    QVERIFY(!buttons.at(2)->font().italic());
+    QVERIFY(!strip.isSpinning());
+
+    strip.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&strip));
+    QVERIFY(strip.isSpinning());
+
+    strip.hide();
+    QVERIFY(!strip.isSpinning());
+}
+
+void TestAiDockSessionStrip::busyCurrentSlot_alsoSpins()
+{
+    AiDockSessionStrip strip;
+    strip.setSlots(3, 1, threeSnapshots(false));
+    strip.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&strip));
+    strip.setSlots(3, 1, threeSnapshots(true)); // the busy slot is the current one
+    QVERIFY(strip.isSpinning());
 }
 
 void TestAiDockSessionStrip::click_emitsActivated()
@@ -132,6 +169,87 @@ void TestAiDockSessionStrip::middleClick_emitsCloseRequested_notActivated()
     QCOMPARE(closed.count(), 1);
     QCOMPARE(closed.takeFirst().at(0).toInt(), 2);
     QCOMPARE(activated.count(), 0);
+}
+
+// Press on button `from`, pull past the drag threshold, release over `to`.
+// Qt grabs the mouse on the pressed button, so every move goes to it.
+static void dragButton(AiDockSessionStrip *strip, int from, int to)
+{
+    const auto buttons = stripButtons(strip);
+    QToolButton *src = buttons.at(from);
+    QToolButton *dst = buttons.at(to);
+    const QPoint start = src->rect().center();
+    const QPoint target = src->mapFromGlobal(dst->mapToGlobal(dst->rect().center()));
+    QTest::mousePress(src, Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(src, start + QPoint(QApplication::startDragDistance() + 2, 0));
+    QTest::mouseMove(src, target);
+    QTest::mouseRelease(src, Qt::LeftButton, Qt::NoModifier, target);
+}
+
+void TestAiDockSessionStrip::drag_overAnotherNumber_emitsMoveRequested_notActivated()
+{
+    AiDockSessionStrip strip;
+    strip.setSlots(3, 0, threeSnapshots(false));
+    strip.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&strip));
+
+    QSignalSpy moved(&strip, &AiDockSessionStrip::moveRequested);
+    QSignalSpy activated(&strip, &AiDockSessionStrip::activated);
+    dragButton(&strip, 0, 2);
+
+    QCOMPARE(moved.count(), 1);
+    const QList<QVariant> args = moved.takeFirst();
+    QCOMPARE(args.at(0).toInt(), 0);
+    QCOMPARE(args.at(1).toInt(), 2);
+    QCOMPARE(activated.count(), 0);
+}
+
+void TestAiDockSessionStrip::waitingSlot_showsDot_othersDoNot()
+{
+    auto snaps = threeSnapshots(false);
+    snaps[2].waiting = true;
+    AiDockSessionStrip strip;
+    strip.setSlots(3, 0, snaps);
+    QVERIFY(!strip.waitingAt(0));
+    QVERIFY(!strip.waitingAt(1));
+    QVERIFY(strip.waitingAt(2));
+    QVERIFY(!strip.waitingAt(7)); // out of range is simply "no"
+}
+
+void TestAiDockSessionStrip::waitingSlot_dotCoexistsWithSpinner()
+{
+    auto snaps = threeSnapshots(true); // slot 1 is working
+    snaps[1].waiting = true;           // and blocked on a permission request
+    AiDockSessionStrip strip;
+    strip.setSlots(3, 0, snaps);
+    strip.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&strip));
+    QVERIFY(strip.waitingAt(1));
+    QVERIFY(strip.isSpinning());
+}
+
+void TestAiDockSessionStrip::waitingSlot_tooltipSaysWaiting_keepsPreview()
+{
+    auto snaps = threeSnapshots(false);
+    snaps[0].waiting = true;
+    snaps[2].waiting = true;
+    snaps[2].lastUserPreview = QStringLiteral("hello");
+    AiDockSessionStrip strip;
+    strip.setSlots(3, 0, snaps);
+
+    QVERIFY(strip.slotTooltip(0).contains(QStringLiteral("Waiting for your answer")));
+    QVERIFY(strip.slotTooltip(2).contains(QStringLiteral("Waiting for your answer")));
+    QVERIFY(strip.slotTooltip(2).contains(QStringLiteral("hello")));
+    QVERIFY(!strip.slotTooltip(1).contains(QStringLiteral("Waiting")));
+}
+
+void TestAiDockSessionStrip::attentionColor_isAVisibleRed()
+{
+    const QColor c = AiDockSessionStrip::attentionColor();
+    QVERIFY(c.isValid());
+    QVERIFY(c.red() > 180);
+    QVERIFY(c.green() < 110);
+    QVERIFY(c.blue() < 110);
 }
 
 void TestAiDockSessionStrip::tooltip_numberShowsLastUserPreview()
