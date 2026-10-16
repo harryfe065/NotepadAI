@@ -55,6 +55,8 @@ struct Turn
     qint64 workedMs = -1;     // anchor -> survivor wall time; -1 when unknown
 };
 
+// False when the message would render as an empty bubble: whitespace only, or,
+// for an assistant reply, nothing but <br> tags and HTML comments.
 bool messageHasVisibleContent(const AcpMessage &msg);
 
 // Every foldable turn except the newest turn (included when includeNewest is

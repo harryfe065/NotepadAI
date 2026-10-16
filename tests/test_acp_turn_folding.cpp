@@ -32,6 +32,7 @@ private slots:
     void userAndSystemStayPinned();
     void thoughtsFold();
     void emptyAssistantBubbleDoesNotCountAsSurvivor();
+    void markupOnlyAssistantBubbleIsInvisible();
     void goalMessageStartsNewTurn();
     void judgingMarkerDoesNotSplitTurn();
     void workedMsIsAnchorToSurvivor();
@@ -211,6 +212,37 @@ void TestAcpTurnFolding::emptyAssistantBubbleDoesNotCountAsSurvivor()
     const int rep = f.msg("assistant", QStringLiteral("report"));
     f.msg("assistant", QStringLiteral("   "));
     const int t = f.tool(QStringLiteral("t"));
+    f.msg("user", QStringLiteral("q2"));
+
+    const auto turns = f.run();
+    QCOMPARE(turns.size(), 1);
+    QCOMPARE(turns.at(0).survivor, rep);
+    QCOMPARE(turns.at(0).folded, (QVector<int>{t}));
+}
+
+// Claude sometimes replies with a bare "<br>" between tool calls; the markdown
+// pipeline renders it as nothing, so it must not get a bubble (an empty card).
+void TestAcpTurnFolding::markupOnlyAssistantBubbleIsInvisible()
+{
+    const auto visible = [](const char *role, const QString &text) {
+        Fx f;
+        f.msg(role, text);
+        return AcpTurnFolding::messageHasVisibleContent(f.msgs.first());
+    };
+    QVERIFY(!visible("assistant", QStringLiteral("<br>")));
+    QVERIFY(!visible("assistant", QStringLiteral(" <br/>\n<BR />\n\n<!-- x -->\n")));
+    QVERIFY(visible("assistant", QStringLiteral("<br>done")));
+    QVERIFY(visible("assistant", QStringLiteral("`<br>`")));
+    QVERIFY(visible("assistant", QStringLiteral("<br class=x>")));
+    QVERIFY(visible("assistant", QStringLiteral("<!-- unclosed")));
+    // Thoughts and system notices render raw text: "<br>" is visible there.
+    QVERIFY(visible("thought", QStringLiteral("<br>")));
+
+    Fx f;
+    f.msg("user", QStringLiteral("q1"));
+    const int rep = f.msg("assistant", QStringLiteral("report"));
+    const int t = f.tool(QStringLiteral("t"));
+    f.msg("assistant", QStringLiteral("<br>"));
     f.msg("user", QStringLiteral("q2"));
 
     const auto turns = f.run();

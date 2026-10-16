@@ -1933,13 +1933,18 @@ void AcpSessionView::onMessageAppended(int idx)
 void AcpSessionView::onMessageChunkAppended(int idx, const QString &chunk)
 {
     auto *w = m_messageWidgets.value(idx, nullptr);
+    // A bubble that opened with nothing to show ("<br>") gets its widget from
+    // the first visible chunk; that widget is built from the whole message,
+    // which already holds `chunk`.
+    const bool built = !w;
     if (!w) {
         if (m_truncatedMessageIndices.contains(idx)) return;
         appendMessageWidget(idx);
         w = m_messageWidgets.value(idx, nullptr);
     }
     if (w) {
-        w->appendChunk(chunk);
+        if (!built)
+            w->appendChunk(chunk);
         if (w->role() == QLatin1String("assistant") && !m_activeThought.isNull()) {
             m_activeThought->markStreamingDone();
             m_activeThought.clear();
@@ -1957,7 +1962,7 @@ void AcpSessionView::onMessageReplaced(int idx, const QString &fullText)
         w = m_messageWidgets.value(idx, nullptr);
     }
     if (w) {
-        if (fullText.trimmed().isEmpty()) {
+        if (!messageHasVisibleContent(m_model->messages().at(idx))) {
             m_messageWidgets.remove(idx);
             removeTranscriptWidget(w);
             return;

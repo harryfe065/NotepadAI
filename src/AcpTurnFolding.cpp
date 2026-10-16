@@ -37,14 +37,55 @@ bool isUserAnchor(const AcpTimelineEntry &entry, const QVector<AcpMessage> &mess
     return messages.at(entry.messageIndex).role == QLatin1String("user");
 }
 
+// True when `s` has a character that shows. With `markdown` (assistant
+// bubbles), <br> / <br/> / <br /> and closed <!-- --> comments do not count:
+// MarkdownPreprocessor turns them into a line break or drops them, so a reply
+// made only of them would render as an empty card. Stops at the first visible
+// character; no allocation.
+bool hasVisibleText(QStringView s, bool markdown)
+{
+    const qsizetype n = s.size();
+    qsizetype i = 0;
+    while (i < n) {
+        const QChar c = s[i];
+        if (c.isSpace()) {
+            ++i;
+            continue;
+        }
+        if (!markdown || c != QLatin1Char('<'))
+            return true;
+        if (s.mid(i, 4) == QLatin1String("<!--")) {
+            const qsizetype e = s.indexOf(QLatin1String("-->"), i + 4);
+            if (e < 0)
+                return true;
+            i = e + 3;
+            continue;
+        }
+        if (n - i < 4 || s.mid(i + 1, 2).compare(QLatin1String("br"), Qt::CaseInsensitive) != 0)
+            return true;
+        qsizetype j = i + 3;
+        while (j < n && (s[j] == QLatin1Char(' ') || s[j] == QLatin1Char('\t')))
+            ++j;
+        if (j < n && s[j] == QLatin1Char('/'))
+            ++j;
+        while (j < n && (s[j] == QLatin1Char(' ') || s[j] == QLatin1Char('\t')))
+            ++j;
+        if (j >= n || s[j] != QLatin1Char('>'))
+            return true;
+        i = j + 1;
+    }
+    return false;
+}
+
 } // namespace
 
 bool messageHasVisibleContent(const AcpMessage &msg)
 {
+    const bool markdown = msg.role == QLatin1String("assistant");
     for (const auto &block : msg.content) {
         if (block.kind == AcpProtocol::AcpContentBlock::Kind::Image && !block.imageData.isEmpty())
             return true;
-        if (!block.text.trimmed().isEmpty())
+        if (hasVisibleText(block.text, markdown))
             return true;
     }
     return false;
