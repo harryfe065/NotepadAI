@@ -7,6 +7,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -297,7 +298,38 @@ struct PrimJob {
     quint64 indexCount = 0;
     Conv conv = Conv::None;
     bool skinned = false;
+    int uvSet = 0;                 // TEXCOORD_n read into ModelVertex::u/v
 };
+
+// The UV set a texture view samples (KHR_texture_transform may override it).
+int uvSetOf(const cgltf_texture_view &view)
+{
+    return view.has_transform && view.transform.has_texcoord ? view.transform.texcoord : view.texcoord;
+}
+
+// Godot import hints "-colonly" / "-convcolonly" (also "_" and "$" forms):
+// the node is a collision shape only, never drawn. Same test as Godot's
+// _teststr: trailing digits, dots and spaces (Blender ".001") are ignored.
+bool isGodotColliderOnly(const char *name)
+{
+    if (!name)
+        return false;
+    QByteArrayView n(name);
+    while (!n.isEmpty() && (std::isdigit(uchar(n.back())) || uchar(n.back()) <= 32 || n.back() == '.'))
+        n.chop(1);
+    for (const char *hint : {"colonly", "convcolonly"}) {
+        const qsizetype len = qsizetype(std::strlen(hint));
+        if (n.size() > len) {
+            const char sep = n[n.size() - len - 1];
+            if ((sep == '-' || sep == '_') && n.sliced(n.size() - len).compare(hint, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        for (qsizetype at = n.indexOf('$'); at >= 0; at = n.indexOf('$', at + 1))
+            if (n.size() - at - 1 >= len && n.sliced(at + 1, len).compare(hint, Qt::CaseInsensitive) == 0)
+                return true;
+    }
+    return false;
+}
 
 ModelWrap wrapFor(cgltf_wrap_mode mode)
 {
@@ -326,7 +358,7 @@ public:
     QString run(const std::atomic_bool &cancel, quint64 *tooLargeBytes);
 
 private:
-    int textureFor(const cgltf_texture_view &view, bool srgb);
+    int textureFor(const cgltf_texture_view &view, bool srgb, int uvSet);
     ModelMaterial material(const cgltf_material &m);
     void buildNodes();
     void buildSkins();
@@ -341,17 +373,17 @@ private:
     std::vector<void *> m_blobs;        // decoded data-URI images, alive until decode
     std::vector<int> m_nodeMap;         // cgltf node -> doc node
     std::vector<int> m_meshSkin;        // cgltf mesh -> skin of the first node using it
+    std::vector<int> m_materialUvSet;   // cgltf material -> the one UV set its maps use
     bool m_secondUvSkipped = false;
 };
 
-int Converter::textureFor(const cgltf_texture_view &view, bool srgb)
+int Converter::textureFor(const cgltf_texture_view &view, bool srgb, int uvSet)
 {
     const cgltf_texture *tex = view.texture;
     if (!tex)
         return -1;
-    const int texcoord = view.has_transform && view.transform.has_texcoord ? view.transform.texcoord : view.texcoord;
-    if (texcoord != 0) {
-        m_secondUvSkipped = true; // only TEXCOORD_0 is kept
+    if (uvSetOf(view) != uvSet) {
+        m_secondUvSkipped = true; // a vertex keeps one UV set per material
         return -1;
     }
     const cgltf_image *image = tex->has_webp && tex->webp_image ? tex->webp_image : tex->image;
@@ -411,14 +443,28 @@ ModelMaterial Converter::material(const cgltf_material &m)
 {
     ModelMaterial out;
     out.name = m.name ? QString::fromUtf8(m.name) : QString();
+    // The vertex carries one UV set: the base colour map's (the one seen
+    // most), else the first map's. Baked atlases often sit on TEXCOORD_1+.
+    int uvSet = 0;
+    for (const cgltf_texture_view *v :
+         {m.has_pbr_metallic_roughness ? &m.pbr_metallic_roughness.base_color_texture : nullptr,
+          m.has_pbr_specular_glossiness ? &m.pbr_specular_glossiness.diffuse_texture : nullptr,
+          m.has_pbr_metallic_roughness ? &m.pbr_metallic_roughness.metallic_roughness_texture : nullptr,
+          &m.normal_texture, &m.occlusion_texture, &m.emissive_texture}) {
+        if (v && v->texture) {
+            uvSet = uvSetOf(*v);
+            break;
+        }
+    }
+    m_materialUvSet.push_back(uvSet);
     const cgltf_texture_view *transformSource = nullptr;
     if (m.has_pbr_metallic_roughness) {
         const cgltf_pbr_metallic_roughness &pbr = m.pbr_metallic_roughness;
         std::copy_n(pbr.base_color_factor, 4, out.baseColor.begin());
         out.metallic = pbr.metallic_factor;
         out.roughness = pbr.roughness_factor;
-        out.baseColorTexture = textureFor(pbr.base_color_texture, true);
-        const int mr = textureFor(pbr.metallic_roughness_texture, false);
+        out.baseColorTexture = textureFor(pbr.base_color_texture, true, uvSet);
+        const int mr = textureFor(pbr.metallic_roughness_texture, false, uvSet);
         out.metallicTexture = mr;
         out.roughnessTexture = mr;
         out.metallicChannel = 2;
@@ -429,7 +475,7 @@ ModelMaterial Converter::material(const cgltf_material &m)
         std::copy_n(sg.diffuse_factor, 4, out.baseColor.begin());
         out.metallic = 0.0f;
         out.roughness = 1.0f - sg.glossiness_factor;
-        out.baseColorTexture = textureFor(sg.diffuse_texture, true);
+        out.baseColorTexture = textureFor(sg.diffuse_texture, true, uvSet);
         transformSource = &sg.diffuse_texture;
     } else {
         // glTF's default material is white, fully metallic and rough, which
@@ -437,11 +483,11 @@ ModelMaterial Converter::material(const cgltf_material &m)
         out.metallic = 0.0f;
         out.roughness = 0.6f;
     }
-    out.normalTexture = textureFor(m.normal_texture, false);
+    out.normalTexture = textureFor(m.normal_texture, false, uvSet);
     out.normalScale = m.normal_texture.texture ? m.normal_texture.scale : 1.0f;
-    out.occlusionTexture = textureFor(m.occlusion_texture, false);
+    out.occlusionTexture = textureFor(m.occlusion_texture, false, uvSet);
     out.occlusionStrength = m.occlusion_texture.texture ? m.occlusion_texture.scale : 1.0f;
-    out.emissiveTexture = textureFor(m.emissive_texture, true);
+    out.emissiveTexture = textureFor(m.emissive_texture, true, uvSet);
     const float strength = m.has_emissive_strength ? m.emissive_strength.emissive_strength : 1.0f;
     for (int i = 0; i < 3; ++i)
         out.emissive[size_t(i)] = m.emissive_factor[i] * strength;
@@ -500,7 +546,10 @@ void Converter::buildNodes()
             if (src->has_scale)
                 node.scale = QVector3D(src->scale[0], src->scale[1], src->scale[2]);
         }
-        const int meshIndex = src->mesh ? int(cgltf_mesh_index(m_data, src->mesh)) : -1;
+        // Godot collision-only nodes would hide the model under grey hulls.
+        const int meshIndex = src->mesh && !isGodotColliderOnly(src->name)
+                                  ? int(cgltf_mesh_index(m_data, src->mesh))
+                                  : -1;
         const int self = int(m_doc.nodes.size());
         m_nodeMap[srcIndex] = self;
 
@@ -658,7 +707,7 @@ void Converter::convert(PrimJob &job) const
             }, n);
             break;
         case cgltf_attribute_type_texcoord:
-            if (attr.index == 0)
+            if (attr.index == job.uvSet)
                 forEachFloat(acc, [&](size_t i, const float *v) {
                     out[i].u = v[0]; out[i].v = v[1];
                 }, n);
@@ -856,6 +905,12 @@ QString Converter::run(const std::atomic_bool &cancel, quint64 *tooLargeBytes)
             prim.firstIndex = indices;
             prim.indexCount = quint32(std::min<quint64>(job.indexCount, 0xFFFFFFFFu)); // exact under the cap
             prim.material = p.material ? int(cgltf_material_index(m_data, p.material)) : -1;
+            if (prim.material >= 0) {
+                const int set = m_materialUvSet[size_t(prim.material)];
+                // A primitive missing the set (invalid glTF) keeps TEXCOORD_0.
+                if (set != 0 && cgltf_find_accessor(&p, cgltf_attribute_type_texcoord, cgltf_int(set)))
+                    job.uvSet = set;
+            }
             prim.skin = job.skinned ? m_meshSkin[mi] : -1;
             prim.flatNormals = prim.topology == ModelTopology::Triangles
                                && !cgltf_find_accessor(&p, cgltf_attribute_type_normal, 0);
@@ -902,7 +957,7 @@ QString Converter::run(const std::atomic_bool &cancel, quint64 *tooLargeBytes)
 
     buildAnimations();
     if (m_secondUvSkipped)
-        m_doc.warnings << QObject::tr("maps on a second UV set are not shown");
+        m_doc.warnings << QObject::tr("maps on a different UV set from the rest of their material are not shown");
 
     // Embedded images point into the mapped file / buffers: decode while
     // they are alive.

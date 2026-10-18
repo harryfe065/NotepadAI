@@ -17,7 +17,9 @@
  */
 
 #include <QtTest>
+#include <QBuffer>
 #include <QDir>
+#include <QImage>
 #include <QElapsedTimer>
 #include <QTemporaryDir>
 #include <QtEndian>
@@ -241,6 +243,8 @@ private slots:
     void voxGreedyMergesARow();
     void gltfDataUri();
     void glbBinaryChunk();
+    void gltfMapsOnAnotherUvSet();
+    void gltfGodotCollidersAreHidden();
     void objWeldsAndTriangulates();
     void objRejectsCompiledObjectFiles();
     void emptyAndUnknownFiles();
@@ -671,6 +675,61 @@ void TestModelLoaders::glbBinaryChunk()
     const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("tri_noext"), glb);
     QVERIFY2(r.doc, qPrintable(r.error));
     QCOMPARE(r.doc->stats.triangles, quint64(1));
+}
+
+void TestModelLoaders::gltfMapsOnAnotherUvSet()
+{
+    // Baked atlases often sit on a later UV set (Blender: TEXCOORD_2) while
+    // TEXCOORD_0 holds the modelling UVs; the material names the set.
+    QByteArray bin = trianglePositions();
+    for (int i = 0; i < 6; ++i) putF(bin, 0.0f);        // TEXCOORD_0
+    const float uv1[6] = {0.25f, 0.5f, 0.75f, 0.5f, 0.25f, 1.0f};
+    for (float x : uv1) putF(bin, x);                   // TEXCOORD_1
+    QImage pixel(1, 1, QImage::Format_RGB32);
+    pixel.fill(Qt::red);
+    QByteArray png;
+    QBuffer pngOut(&png);
+    pngOut.open(QIODevice::WriteOnly);
+    QVERIFY(pixel.save(&pngOut, "PNG"));
+
+    const QByteArray uv = R"(,{"bufferView":%1,"componentType":5126,"count":3,"type":"VEC2"})";
+    const QByteArray json = QByteArray(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],)")
+        + R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1,"TEXCOORD_1":2},"material":0}]}],)"
+        + R"("materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0,"texCoord":1}},)"
+        + R"("normalTexture":{"index":0,"texCoord":1}}],)"
+        + R"("textures":[{"source":0}],"images":[{"uri":"data:image/png;base64,)" + png.toBase64() + R"("}],)"
+        + R"("buffers":[{"byteLength":84,"uri":"data:application/octet-stream;base64,)" + bin.toBase64() + R"("}],)"
+        + R"("bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":24},)"
+        + R"({"buffer":0,"byteOffset":60,"byteLength":24}],"accessors":[)" + kPositionAccessor
+        + QByteArray(uv).replace("%1", "1") + QByteArray(uv).replace("%1", "2") + "]}";
+    const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("uv1.gltf"), json);
+    QVERIFY2(r.doc, qPrintable(r.error));
+    QVERIFY2(r.doc->warnings.isEmpty(), qPrintable(r.doc->warnings.join(u'; ')));
+    QVERIFY(r.doc->materials[0].baseColorTexture >= 0);
+    QVERIFY(r.doc->materials[0].normalTexture >= 0);
+    for (int i = 0; i < 3; ++i) {
+        QCOMPARE(r.doc->vertices[size_t(i)].u, uv1[i * 2]);
+        QCOMPARE(r.doc->vertices[size_t(i)].v, uv1[i * 2 + 1]);
+    }
+}
+
+void TestModelLoaders::gltfGodotCollidersAreHidden()
+{
+    // Godot's "-colonly" / "-convcolonly" name suffixes mark collision-only
+    // nodes: Godot never draws them, so neither does the preview.
+    const QByteArray json = QByteArray(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1,2,3]}],)")
+        + R"("nodes":[{"mesh":0,"name":"Temple"},{"mesh":0,"name":"Wall-convcolonly"},)"
+        + R"({"mesh":0,"name":"Ground_colonly"},{"mesh":0,"name":"Rail-col"}],)"
+        + R"("meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],)"
+        + R"("buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,)" + trianglePositions().toBase64()
+        + R"("}],"bufferViews":)" + kPositionView + R"(,"accessors":[)" + kPositionAccessor + "]}";
+    const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("godot.gltf"), json);
+    QVERIFY2(r.doc, qPrintable(r.error));
+    QCOMPARE(r.doc->nodes.size(), size_t(4));
+    QCOMPARE(r.doc->nodes[0].mesh, 0);
+    QCOMPARE(r.doc->nodes[1].mesh, -1);
+    QCOMPARE(r.doc->nodes[2].mesh, -1);
+    QCOMPARE(r.doc->nodes[3].mesh, 0); // "-col" keeps its visible mesh in Godot
 }
 
 void TestModelLoaders::objWeldsAndTriangulates()
