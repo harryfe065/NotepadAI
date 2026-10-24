@@ -76,6 +76,9 @@
 #include <QStyle>
 #include <QTimer>
 #include <QMenu>
+#include <QActionGroup>
+#include <QPointer>
+#include <QScreen>
 #include <QCursor>
 #include <QAction>
 #include <QFontMetrics>
@@ -331,6 +334,52 @@ private:
     AcpImageAttachmentList *m_attachments;
 };
 
+// Combo whose popup is a menu, so leading entries can be submenus (a combo
+// list cannot nest). Items, the current index and its signals stay the combo's.
+class MenuComboBox : public QComboBox
+{
+public:
+    using QComboBox::QComboBox;
+
+    // Adds entries above the items, separated from them.
+    std::function<void(QMenu *)> addLeadingEntries;
+
+    void showPopup() override
+    {
+        if (count() == 0)
+            return;
+        QMenu menu(this);
+        menu.setToolTipsVisible(true);
+        if (addLeadingEntries)
+            addLeadingEntries(&menu);
+        if (!menu.isEmpty())
+            menu.addSeparator();
+        auto *items = new QActionGroup(&menu);
+        for (int i = 0; i < count(); ++i) {
+            QAction *a = menu.addAction(itemText(i));
+            a->setCheckable(true);
+            a->setChecked(i == currentIndex());
+            a->setData(itemData(i));
+            items->addAction(a);
+        }
+        menu.setMinimumWidth(width());
+        // Below the combo, or above it when the screen ends first.
+        QPoint at = mapToGlobal(QPoint(0, height()));
+        const QScreen *screen = this->screen();
+        const int h = menu.sizeHint().height();
+        if (screen && at.y() + h > screen->availableGeometry().bottom())
+            at = mapToGlobal(QPoint(0, 0)) - QPoint(0, h);
+        const QPointer<MenuComboBox> self(this);
+        QAction *chosen = menu.exec(at);
+        // The items may have been rebuilt while the menu was open: go by data.
+        if (!self || !chosen || chosen->actionGroup() != items)
+            return;
+        const int index = findData(chosen->data());
+        if (index >= 0)
+            setCurrentIndex(index);
+    }
+};
+
 using AcpTurnFolding::messageHasVisibleContent;
 
 } // namespace
@@ -513,7 +562,9 @@ void AcpSessionView::buildUi()
     const QString kCompactComboCss = QStringLiteral(
         "QComboBox { padding: 1px 4px; border: 1px solid palette(mid); border-radius: 3px; }"
         "QComboBox::drop-down { width: 14px; }");
-    m_modelCombo = new QComboBox(this);
+    auto *modelCombo = new MenuComboBox(this);
+    modelCombo->addLeadingEntries = [this](QMenu *menu) { addPrewalkMenu(menu); };
+    m_modelCombo = modelCombo;
     m_modelCombo->setToolTip(tr("Model"));
     m_modelCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     m_modelCombo->setStyleSheet(kCompactComboCss);
@@ -529,20 +580,16 @@ void AcpSessionView::buildUi()
     m_effortCombo->setStyleSheet(kCompactComboCss);
     m_effortCombo->hide();
 
-    // 4. Session options row: Prewalk, New worktree, Advisor, then the ⋯ menu
-    // (Auto-approve) and usage at the right end.
-    m_prewalkCombo = new QComboBox(this);
-    m_prewalkCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    m_prewalkCombo->setStyleSheet(kCompactComboCss);
-    m_prewalkCombo->hide(); // shown only for Claude Code with a model catalog
+    // 4. Session options row: New worktree, Advisor, the "More options" menu
+    // (Auto-approve), then usage at the right end.
     m_moreBtn = new QToolButton(this);
-    m_moreBtn->setText(QStringLiteral("⋯"));
     m_moreBtn->setAutoRaise(true);
-    m_moreBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_moreBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_moreBtn->setIconSize(QSize(16, 16));
     m_moreBtn->setPopupMode(QToolButton::InstantPopup);
     m_moreBtn->setToolTip(tr("More options"));
     m_moreBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { padding: 0px 4px; border: 1px solid transparent; border-radius: 3px; }"
+        "QToolButton { padding: 1px; border: 1px solid transparent; border-radius: 3px; }"
         "QToolButton:hover { border: 1px solid palette(mid); }"
         "QToolButton::menu-indicator { image: none; width: 0px; }"));
     auto *moreMenu = new QMenu(m_moreBtn);
@@ -563,11 +610,10 @@ void AcpSessionView::buildUi()
     auto *optionsRow = new QHBoxLayout();
     optionsRow->setContentsMargins(0, 0, 0, 0);
     optionsRow->setSpacing(6);
-    optionsRow->addWidget(m_prewalkCombo);
     optionsRow->addWidget(m_newWorktreeCheck);
     optionsRow->addWidget(m_advisorBtn);
-    optionsRow->addStretch();
     optionsRow->addWidget(m_moreBtn);
+    optionsRow->addStretch();
     m_usageIndicator = new AcpUsageIndicator(this);
     optionsRow->addWidget(m_usageIndicator);
     outer->addLayout(optionsRow);
@@ -726,7 +772,7 @@ void AcpSessionView::buildUi()
     m_attachBtn->setStyleSheet(QStringLiteral(
         "QToolButton { color: palette(placeholder-text); padding: 4px; border: 1px solid transparent; border-radius: 3px; }"
         "QToolButton:hover { color: palette(text); border: 1px solid palette(mid); }"));
-    rebuildAttachIcon();
+    rebuildTintedIcons();
     m_cancelBtn = new QPushButton(tr("Cancel"), this);
     m_sendBtn = new QPushButton(tr("Send"), this);
     m_cancelBtn->setEnabled(false);
@@ -822,8 +868,6 @@ void AcpSessionView::buildUi()
             this, &AcpSessionView::onModeComboChanged);
     connect(m_effortCombo, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &AcpSessionView::onEffortComboChanged);
-    connect(m_prewalkCombo, qOverload<int>(&QComboBox::currentIndexChanged),
-            this, &AcpSessionView::onPrewalkComboChanged);
 
     // Apply the chat font preference to transcript + input, and follow live
     // preference edits. The chat font may be independent of the editor font:
@@ -1320,50 +1364,60 @@ void AcpSessionView::loadPrewalkTarget()
         if (m_model)
             m_model->setPrewalkModel(target);
     }
-    // refreshPrewalkCombo drops it while the agent's catalog lacks it.
+    // refreshPrewalk drops it while the agent's catalog lacks it.
     m_prewalk.setTarget(target);
 }
 
-void AcpSessionView::refreshPrewalkCombo()
+void AcpSessionView::refreshPrewalk()
 {
-    if (!m_prewalkCombo)
-        return;
     m_prewalkAvailable = prewalkAvailable();
-    // Catalog as (id, label) pairs. Rebuild the items only when it changed:
-    // every config update (Prewalk's own switches included) lands here, and a
-    // rebuild would close the popup under the user.
-    QStringList items;
-    if (m_prewalkAvailable) {
-        items.reserve(m_modelCombo->count() * 2);
-        for (int i = 0; i < m_modelCombo->count(); ++i)
-            items << m_modelCombo->itemData(i).toString() << m_modelCombo->itemText(i);
-    }
-    const QString chosen = m_model && m_model->prewalkModel() ? *m_model->prewalkModel() : QString();
-    const bool wasUpdating = std::exchange(m_updatingSelectors, true);
-    if (items != m_prewalkItems) {
-        m_prewalkItems = items;
-        m_prewalkCombo->clear();
-        if (m_prewalkAvailable) {
-            m_prewalkCombo->addItem(tr("Prewalk: Off"), QString());
-            for (qsizetype i = 0; i + 1 < items.size(); i += 2)
-                m_prewalkCombo->addItem(tr("Prewalk: %1").arg(items.at(i + 1)), items.at(i));
-        }
-    }
     // A model the catalog lacks (another agent's, or gone) is Off here; the
     // session keeps its choice for an agent that has it.
-    const int chosenIndex = chosen.isEmpty() ? -1 : m_prewalkCombo->findData(chosen);
-    if (m_prewalkAvailable)
-        m_prewalkCombo->setCurrentIndex(std::max(0, chosenIndex));
-    m_updatingSelectors = wasUpdating;
-    m_prewalkCombo->setVisible(m_prewalkAvailable);
-    m_prewalk.setTarget(chosenIndex > 0 ? chosen : QString());
+    const QString chosen = m_model && m_model->prewalkModel() ? *m_model->prewalkModel() : QString();
+    const bool inCatalog = m_prewalkAvailable && !chosen.isEmpty() && m_modelCombo->findData(chosen) >= 0;
+    m_prewalk.setTarget(inCatalog ? chosen : QString());
 }
 
-void AcpSessionView::onPrewalkComboChanged(int index)
+void AcpSessionView::addPrewalkMenu(QMenu *menu)
 {
-    if (m_updatingSelectors || index < 0 || !m_model)
+    if (!m_prewalkAvailable)
         return;
-    const QString id = m_prewalkCombo->itemData(index).toString();
+    const QString &target = m_prewalk.target();
+    QMenu *sub = menu->addMenu(target.isEmpty() ? tr("Prewalk: Off")
+                                                : tr("Prewalk: %1").arg(modelLabel(target)));
+    sub->menuAction()->setToolTip(prewalkStatus() + QLatin1Char('\n')
+                                  + tr("Switching models re-reads the conversation without the prompt cache"));
+    auto *group = new QActionGroup(sub);
+    const auto add = [&](const QString &label, const QString &id) {
+        QAction *a = sub->addAction(label);
+        a->setCheckable(true);
+        a->setChecked(id == target);
+        group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, id]() { onPrewalkPicked(id); });
+    };
+    add(tr("Off"), QString());
+    for (int i = 0; i < m_modelCombo->count(); ++i)
+        add(m_modelCombo->itemText(i), m_modelCombo->itemData(i).toString());
+}
+
+QString AcpSessionView::prewalkStatus() const
+{
+    if (const std::optional<AcpPrewalk::Selection> own = m_prewalk.sessionSelection()) {
+        return tr("Prewalk: on %1 until the turn ends, then back to %2")
+            .arg(modelLabel(currentSelection().model), modelLabel(own->model));
+    }
+    if (!m_prewalk.target().isEmpty()) {
+        return tr("Prewalk on: switching to %1 at the next edit/write; back to %2 when the turn ends")
+            .arg(modelLabel(m_prewalk.target()), modelLabel(currentSelection().model));
+    }
+    return tr("Prewalk: switch to a cheaper model once the agent starts editing files, "
+              "and back to this one when the turn ends");
+}
+
+void AcpSessionView::onPrewalkPicked(const QString &id)
+{
+    if (!m_model)
+        return;
     m_model->setPrewalkModel(id);
     m_prewalk.setTarget(id);
     if (m_registry && m_draft && m_connection)
@@ -2578,7 +2632,7 @@ void AcpSessionView::onMetadataChanged()
     m_effortCombo->setVisible(m_effortCombo->count() > 0);
 
     m_updatingSelectors = false;
-    refreshPrewalkCombo();
+    refreshPrewalk();
     // The restore just landed with an effort the agent reset: not a default.
     const bool prewalkEffortPending = notePrewalkSelectionReported();
     refreshSelectorTooltips();
@@ -2858,28 +2912,11 @@ void AcpSessionView::refreshSelectorTooltips()
     // Why a pick no longer becomes the default for new sessions.
     const QString suffix = m_draft ? QString()
                                    : QLatin1Char('\n') + tr("Applies to this session only");
-    const std::optional<AcpPrewalk::Selection> own = m_prewalk.sessionSelection();
     if (m_modelCombo) {
-        QString tip = tr("Model") + suffix;
-        if (own)
-            tip += QLatin1Char('\n') + tr("Prewalk: back to %1 when the turn ends").arg(modelLabel(own->model));
-        m_modelCombo->setToolTip(tip);
-    }
-    if (m_prewalkCombo) {
-        const QString &target = m_prewalk.target();
-        QString tip;
-        if (own) {
-            tip = tr("Prewalk: on %1 until the turn ends, then back to %2")
-                      .arg(modelLabel(currentSelection().model), modelLabel(own->model));
-        } else if (!target.isEmpty()) {
-            tip = tr("Prewalk on: switching to %1 at the next edit/write; back to %2 when the turn ends")
-                      .arg(modelLabel(target), modelLabel(currentSelection().model));
-        } else {
-            tip = tr("Prewalk: switch to a cheaper model once the agent starts editing files, "
-                     "and back to this one when the turn ends");
-        }
-        tip += QLatin1Char('\n') + tr("Switching models re-reads the conversation without the prompt cache");
-        m_prewalkCombo->setToolTip(tip + suffix);
+        QString tip = tr("Model");
+        if (m_prewalkAvailable && (m_prewalk.sessionSelection() || !m_prewalk.target().isEmpty()))
+            tip += QLatin1Char('\n') + prewalkStatus();
+        m_modelCombo->setToolTip(tip + suffix);
     }
     if (m_modeCombo)
         m_modeCombo->setToolTip(tr("Mode") + suffix);
@@ -4109,18 +4146,20 @@ void AcpSessionView::changeEvent(QEvent *event)
     case QEvent::PaletteChange:
     case QEvent::StyleChange:
     case QEvent::ApplicationPaletteChange:
-        rebuildAttachIcon();
+        rebuildTintedIcons();
         break;
     default:
         break;
     }
 }
 
-void AcpSessionView::rebuildAttachIcon()
+void AcpSessionView::rebuildTintedIcons()
 {
-    if (!m_attachBtn) return;
-    m_attachBtn->setIcon(tintedIcon(QStringLiteral(":/icons/paperclip.svg"),
-                                    palette().color(QPalette::WindowText)));
+    const QColor color = palette().color(QPalette::WindowText);
+    if (m_attachBtn)
+        m_attachBtn->setIcon(tintedIcon(QStringLiteral(":/icons/paperclip.svg"), color));
+    if (m_moreBtn)
+        m_moreBtn->setIcon(tintedIcon(QStringLiteral(":/icons/more-vertical.svg"), color));
 }
 
 QFont AcpSessionView::chatFont() const

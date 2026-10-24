@@ -63,6 +63,7 @@ class QDialog;
 class QFrame;
 class QLabel;
 class QListWidget;
+class QMenu;
 class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
@@ -203,7 +204,7 @@ private slots:
     void onModelComboChanged(int index);
     void onModeComboChanged(int index);
     void onEffortComboChanged(int index);
-    void onPrewalkComboChanged(int index);
+    void onPrewalkPicked(const QString &modelId);
     void onAdvisorClicked(bool on);
     void onAutoApprovePolicyChanged(const QString &policy);
     void onJumpToBottomClicked();
@@ -214,7 +215,7 @@ private slots:
 private:
     void buildUi();
     void wireSignals();
-    void rebuildAttachIcon();
+    void rebuildTintedIcons();
     void hydrateFromModel();
     void appendMessageWidget(int idx);
     // Insert a widget into the transcript timeline at the tail, just above
@@ -373,7 +374,11 @@ private:
     bool prewalkAvailable() const;
     // The session's prewalk model: its own choice, else the agent default.
     void loadPrewalkTarget();
-    void refreshPrewalkCombo();
+    void refreshPrewalk();
+    // The "Prewalk: …" submenu at the top of the model picker's menu.
+    void addPrewalkMenu(QMenu *menu);
+    // What Prewalk will do or is doing now.
+    QString prewalkStatus() const;
     void notePrewalkToolCall(const AcpProtocol::AcpToolCall &tc);
     void notePrewalkTurnEnded();
     // After the agent reported its selection: finish a restore. True when it
@@ -440,13 +445,11 @@ private:
     // array. Drives whether model changes dispatch via session/set_config.
     QString m_modelConfigOptionId;
 
-    // Prewalk: "Prewalk: Off" / "Prewalk: <model>"; hidden unless available.
-    QComboBox *m_prewalkCombo = nullptr;
+    // Prewalk: a submenu of the model picker, absent unless available.
     AcpPrewalk m_prewalk;
     bool m_prewalkAvailable = false; // prewalkAvailable() as of the last catalog
-    QStringList m_prewalkItems;      // the combo's catalog: id, label, id, label…
 
-    // Auto-approve, in the ⋯ menu at the end of the row.
+    // Auto-approve, in the "More options" menu (vertical dots) after Advisor.
     QToolButton *m_moreBtn = nullptr;
     QAction *m_autoApproveAction = nullptr;
     // Session-local; never persisted. New views start unchecked.
