@@ -25,8 +25,8 @@ class Pm2ProcessModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
-    enum class Column : int { Name, Status, Uptime, Restarts, Cpu, Memory, Pid, Cwd, Count };
-    enum Role : int {
+    enum class Column : uint8_t { Name, Status, Uptime, Restarts, Cpu, Memory, Pid, Cwd, Count };
+    enum Role : uint16_t {
         SortRole = Qt::UserRole + 1, // numeric value for numeric columns
         StatusRole,                  // Pm2Status as int
     };

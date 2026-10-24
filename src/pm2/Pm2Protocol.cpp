@@ -53,7 +53,7 @@ QStringList stringList(const QJsonArray &a)
 {
     QStringList out;
     out.reserve(a.size());
-    for (const QJsonValue &v : a)
+    for (const auto &v : a)
         out.append(v.toString());
     return out;
 }
@@ -108,7 +108,7 @@ Pm2HelperMessage parseLine(QByteArrayView text)
         m.kind = Pm2HelperMessage::Kind::List;
         const QJsonArray procs = o.value(QLatin1String("procs")).toArray();
         m.processes.reserve(procs.size());
-        for (const QJsonValue &v : procs) {
+        for (const auto &v : procs) {
             Pm2ProcessInfo p = processFromJson(v.toObject());
             if (p.pmId >= 0)
                 m.processes.append(std::move(p));

@@ -269,13 +269,15 @@ Pm2ProcessesDialog::Pm2ProcessesDialog(TerminalManager *terminals, std::function
     connect(m_restartAllButton, &QToolButton::clicked, this, &Pm2ProcessesDialog::restartAll);
     connect(m_stopAllButton, &QToolButton::clicked, this, &Pm2ProcessesDialog::stopAll);
     connect(m_resurrectButton, &QToolButton::clicked, this, &Pm2ProcessesDialog::resurrect);
+    // Run a copy: every action ends in updateBanner(), which replaces the
+    // stored one while it is still running.
     connect(m_bannerPrimary, &QPushButton::clicked, this, [this]() {
-        if (m_bannerPrimaryAction)
-            m_bannerPrimaryAction();
+        if (const std::function<void()> action = m_bannerPrimaryAction)
+            action();
     });
     connect(m_bannerSecondary, &QPushButton::clicked, this, [this]() {
-        if (m_bannerSecondaryAction)
-            m_bannerSecondaryAction();
+        if (const std::function<void()> action = m_bannerSecondaryAction)
+            action();
     });
     connect(m_table, &QTableView::doubleClicked, this, &Pm2ProcessesDialog::showLogs);
     connect(m_table, &QTableView::customContextMenuRequested, this, &Pm2ProcessesDialog::showContextMenu);
@@ -402,10 +404,11 @@ void Pm2ProcessesDialog::track(int requestId, Done done, bool saveAfter, const Q
 
 void Pm2ProcessesDialog::onCommandFinished(int requestId, bool ok, const QString &error)
 {
-    const auto it = m_pending.constFind(requestId);
-    if (it == m_pending.cend())
+    const auto it = m_pending.find(requestId);
+    if (it == m_pending.end())
         return;
-    const Pending finished = *it;
+    // Moved out: erasing the entry ends the iterator's life.
+    const Pending finished = std::move(it.value());
     m_pending.erase(it);
     if (finished.done)
         finished.done(ok, error);

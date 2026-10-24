@@ -348,33 +348,39 @@ public:
     {
         if (count() == 0)
             return;
-        QMenu menu(this);
-        menu.setToolTipsVisible(true);
+        // On the heap: if the combo dies while the menu is open, the menu dies
+        // with it (a stack menu would then be destroyed twice).
+        auto *menu = new QMenu(this);
+        menu->setToolTipsVisible(true);
         if (addLeadingEntries)
-            addLeadingEntries(&menu);
-        if (!menu.isEmpty())
-            menu.addSeparator();
-        auto *items = new QActionGroup(&menu);
+            addLeadingEntries(menu);
+        if (!menu->isEmpty())
+            menu->addSeparator();
+        auto *items = new QActionGroup(menu);
         for (int i = 0; i < count(); ++i) {
-            QAction *a = menu.addAction(itemText(i));
+            QAction *a = menu->addAction(itemText(i));
             a->setCheckable(true);
             a->setChecked(i == currentIndex());
             a->setData(itemData(i));
             items->addAction(a);
         }
-        menu.setMinimumWidth(width());
+        menu->setMinimumWidth(width());
         // Below the combo, or above it when the screen ends first.
         QPoint at = mapToGlobal(QPoint(0, height()));
         const QScreen *screen = this->screen();
-        const int h = menu.sizeHint().height();
+        const int h = menu->sizeHint().height();
         if (screen && at.y() + h > screen->availableGeometry().bottom())
             at = mapToGlobal(QPoint(0, 0)) - QPoint(0, h);
         const QPointer<MenuComboBox> self(this);
-        QAction *chosen = menu.exec(at);
-        // The items may have been rebuilt while the menu was open: go by data.
-        if (!self || !chosen || chosen->actionGroup() != items)
+        QAction *chosen = menu->exec(at);
+        if (!self)
             return;
-        const int index = findData(chosen->data());
+        // The items may have been rebuilt while the menu was open: go by data.
+        const QVariant data = chosen && chosen->actionGroup() == items ? chosen->data() : QVariant();
+        delete menu;
+        if (!data.isValid())
+            return;
+        const int index = findData(data);
         if (index >= 0)
             setCurrentIndex(index);
     }

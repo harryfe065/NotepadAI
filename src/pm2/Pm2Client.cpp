@@ -69,7 +69,7 @@ QString Pm2Client::helperScriptPath(QString *error)
 
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
         + QStringLiteral("/pm2-helper");
-    const QString path = dir + QStringLiteral("/pm2-helper.cjs");
+    QString path = dir + QStringLiteral("/pm2-helper.cjs");
     QFile current(path);
     if (current.open(QIODevice::ReadOnly) && current.size() == script.size() && current.readAll() == script)
         return path;
