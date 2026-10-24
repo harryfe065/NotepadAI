@@ -12,6 +12,7 @@ qt_add_executable(NotepadAI
 	AcpErrorClassifier.h
 	AcpHistoryStore.h
 	AcpOpenSessions.h
+	AcpPrewalk.h
 	AcpPromptQueue.h
 	AcpScheduledJobs.h
 	AcpProtocol.h
@@ -141,6 +142,7 @@ qt_add_executable(NotepadAI
 	AcpErrorClassifier.cpp
 	AcpHistoryStore.cpp
 	AcpOpenSessions.cpp
+	AcpPrewalk.cpp
 	AcpPromptQueue.cpp
 	AcpScheduledJobs.cpp
 	AcpProtocol.cpp

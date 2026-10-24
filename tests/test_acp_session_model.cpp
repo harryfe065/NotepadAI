@@ -22,6 +22,8 @@
 #include <QTemporaryDir>
 #include <QVector>
 
+#include <memory>
+
 #include "AcpHistoryStore.h"
 #include "AcpProtocol.h"
 #include "AcpSessionModel.h"
@@ -46,6 +48,8 @@ private slots:
     void lateSubagentAttributionKeepsTimeline();
     void subagentChildrenSurviveRoundTrip();
     void restoreFieldsSurviveRoundTrip();
+    void prewalkModelSurvivesRoundTrip();
+    void historyKeepsSessionSelectionWhilePrewalkSwitched();
     void terminalPlaceholderStrippedOnReceive();
     void terminalOutputDeltasAccumulate();
     void ompWriteSynthesizesDiffAndPreservesOnComplete();
@@ -415,6 +419,90 @@ void TestAcpSessionModel::restoreFieldsSurviveRoundTrip()
     // A session that never had a user send stays a draft.
     AcpSessionModel c(QStringLiteral("r3"), QStringLiteral("proj"), tmp.path());
     QVERIFY(!c.userSent());
+}
+
+namespace {
+
+// Writes `a`'s history as `<id>.json` and loads it back as a new model.
+std::unique_ptr<AcpSessionModel> reload(const AcpSessionModel &a, const QString &dir, const QString &id)
+{
+    QFile f(dir + QLatin1Char('/') + id + QStringLiteral(".json"));
+    if (!f.open(QIODevice::WriteOnly))
+        return nullptr;
+    f.write(QJsonDocument(a.toHistoryJson()).toJson());
+    f.close();
+    return std::make_unique<AcpSessionModel>(id, QStringLiteral("proj"), dir);
+}
+
+AcpProtocol::AcpConfigOption selectOption(const char *id, const char *current, QStringList values)
+{
+    AcpProtocol::AcpConfigOption opt;
+    opt.id = QString::fromLatin1(id);
+    opt.name = opt.id;
+    opt.currentValue = QString::fromLatin1(current);
+    for (const QString &v : values)
+        opt.options.append({v, v});
+    return opt;
+}
+
+} // namespace
+
+// A new session has no Prewalk choice yet (it takes the agent default); a
+// chosen one, Off included, comes back with the restored session.
+void TestAcpSessionModel::prewalkModelSurvivesRoundTrip()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel fresh(QStringLiteral("p1"), QStringLiteral("proj"), tmp.path());
+    QVERIFY(!fresh.prewalkModel().has_value());
+    fresh.appendUserMessage(QStringLiteral("hi"), {});
+    auto unset = reload(fresh, tmp.path(), QStringLiteral("p2"));
+    QVERIFY(unset);
+    QVERIFY(!unset->prewalkModel().has_value());
+
+    AcpSessionModel on(QStringLiteral("p3"), QStringLiteral("proj"), tmp.path());
+    on.appendUserMessage(QStringLiteral("hi"), {});
+    on.setPrewalkModel(QStringLiteral("sonnet"));
+    auto onBack = reload(on, tmp.path(), QStringLiteral("p4"));
+    QCOMPARE(onBack->prewalkModel(), std::optional<QString>(QStringLiteral("sonnet")));
+
+    AcpSessionModel off(QStringLiteral("p5"), QStringLiteral("proj"), tmp.path());
+    off.appendUserMessage(QStringLiteral("hi"), {});
+    off.setPrewalkModel(QString());
+    auto offBack = reload(off, tmp.path(), QStringLiteral("p6"));
+    QCOMPARE(offBack->prewalkModel(), std::optional<QString>(QString()));
+}
+
+// Closing while Prewalk runs the prewalk model must not make it the session's
+// model: history records the selection the session goes back to.
+void TestAcpSessionModel::historyKeepsSessionSelectionWhilePrewalkSwitched()
+{
+    QTemporaryDir tmp;
+    AcpSessionModel a(QStringLiteral("h1"), QStringLiteral("proj"), tmp.path());
+    const QStringList models{QStringLiteral("opus"), QStringLiteral("sonnet")};
+    const QStringList efforts{QStringLiteral("low"), QStringLiteral("high")};
+    a.onInitialized({}, {}, {}, QString(), {}, QString(),
+                    {selectOption("model", "opus", models), selectOption("effort", "high", efforts)});
+    a.appendUserMessage(QStringLiteral("hi"), {});
+    // Switched: the agent now reports Sonnet, and reset effort.
+    a.onConfigOptionsUpdated({selectOption("model", "sonnet", models), selectOption("effort", "low", efforts)});
+    a.setSelectionOverride(AcpSessionModel::SelectionOverride{
+        QStringLiteral("opus"),
+        {{QStringLiteral("model"), QStringLiteral("opus")}, {QStringLiteral("effort"), QStringLiteral("high")}}});
+
+    // The live session is untouched.
+    QCOMPARE(a.currentModelId(), QStringLiteral("sonnet"));
+    QCOMPARE(a.configOptions().at(0).currentValue.toString(), QStringLiteral("sonnet"));
+
+    auto b = reload(a, tmp.path(), QStringLiteral("h2"));
+    QCOMPARE(b->currentModelId(), QStringLiteral("opus"));
+    QCOMPARE(b->configOptions().at(0).currentValue.toString(), QStringLiteral("opus"));
+    QCOMPARE(b->configOptions().at(1).currentValue.toString(), QStringLiteral("high"));
+
+    // Restored: history follows the live selection again.
+    a.setSelectionOverride(std::nullopt);
+    auto c = reload(a, tmp.path(), QStringLiteral("h3"));
+    QCOMPARE(c->currentModelId(), QStringLiteral("sonnet"));
+    QCOMPARE(c->configOptions().at(1).currentValue.toString(), QStringLiteral("low"));
 }
 
 void TestAcpSessionModel::terminalPlaceholderStrippedOnReceive()

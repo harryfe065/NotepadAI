@@ -558,6 +558,16 @@ target_sources(test_acp_open_sessions PRIVATE
 )
 add_test(NAME AcpOpenSessions COMMAND test_acp_open_sessions)
 
+# --- AcpPrewalk: switch to the prewalk model at the first edit, back at turn end ---
+qt_add_executable(test_acp_prewalk test_acp_prewalk.cpp)
+target_include_directories(test_acp_prewalk PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_acp_prewalk PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_acp_prewalk PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/AcpPrewalk.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPrewalk.h
+)
+add_test(NAME AcpPrewalk COMMAND test_acp_prewalk)
+
 # --- AcpProtocol::acpExtractFrames: stdio newline-delimited JSON framing ---
 qt_add_executable(test_acp_jsonrpc_framing test_acp_jsonrpc_framing.cpp)
 target_include_directories(test_acp_jsonrpc_framing PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -812,9 +822,11 @@ target_sources(test_send_with_goal_dialog PRIVATE
 add_test(NAME SendWithGoalDialog COMMAND test_send_with_goal_dialog)
 
 
-# What AcpSessionView links beyond the ACP core: the prompt queue, the
+# What AcpSessionView links beyond the ACP core: the prompt queue, Prewalk, the
 # prompt improver with its LLM client, and the fold row's diff stat (link xdiff).
 set(ACP_SESSION_VIEW_DEPS
+    ${CMAKE_SOURCE_DIR}/src/AcpPrewalk.cpp
+    ${CMAKE_SOURCE_DIR}/src/AcpPrewalk.h
     ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.cpp
     ${CMAKE_SOURCE_DIR}/src/AcpPromptQueue.h
     ${CMAKE_SOURCE_DIR}/src/widgets/AcpPromptQueueStrip.cpp

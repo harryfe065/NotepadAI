@@ -220,6 +220,22 @@ void AcpSessionModel::setUserSent()
     schedulePersistIfNeeded();
 }
 
+void AcpSessionModel::setPrewalkModel(const QString &model)
+{
+    if (m_prewalkModel == model)
+        return;
+    m_prewalkModel = model;
+    schedulePersistIfNeeded();
+}
+
+void AcpSessionModel::setSelectionOverride(std::optional<SelectionOverride> selection)
+{
+    const bool had = m_selectionOverride.has_value();
+    m_selectionOverride = std::move(selection);
+    if (had || m_selectionOverride)
+        schedulePersistIfNeeded();
+}
+
 QString AcpSessionModel::resolveHistoryDir() const
 {
     return m_historyDirOverride.isEmpty() ? defaultHistoryDir() : m_historyDirOverride;
@@ -265,6 +281,8 @@ void AcpSessionModel::loadFromDisk()
         m_acpSessionId = acpId.toString();
     }
     m_userSent = obj.value(QStringLiteral("userSent")).toBool(false);
+    if (const QJsonValue prewalk = obj.value(QStringLiteral("prewalkModel")); prewalk.isString())
+        m_prewalkModel = prewalk.toString();
     const QJsonObject meta = obj.value(QStringLiteral("agentMeta")).toObject();
     if (!meta.isEmpty()) {
         for (const auto cv : meta.value(QStringLiteral("commands")).toArray()) {
@@ -422,9 +440,27 @@ QJsonObject AcpSessionModel::toHistoryJson() const
     if (m_userSent) {
         obj.insert(QStringLiteral("userSent"), true);
     }
+    if (m_prewalkModel)
+        obj.insert(QStringLiteral("prewalkModel"), *m_prewalkModel);
+    // Prewalk switched: record the selection the session goes back to. Copies
+    // the options only then.
+    const QString *model = &m_currentModelId;
+    const QList<AcpConfigOption> *options = &m_configOptions;
+    QList<AcpConfigOption> ownOptions;
+    if (m_selectionOverride) {
+        ownOptions = m_configOptions;
+        for (AcpConfigOption &opt : ownOptions) {
+            const auto v = m_selectionOverride->configValues.constFind(opt.id);
+            if (v != m_selectionOverride->configValues.constEnd())
+                opt.currentValue = v.value();
+        }
+        options = &ownOptions;
+        if (!m_selectionOverride->currentModel.isEmpty())
+            model = &m_selectionOverride->currentModel;
+    }
     obj.insert(QStringLiteral("agentMeta"),
                agentMetaToJson(m_availableCommands, m_agentAdvertisesGoalCommand, m_availableModes,
-                               m_currentModeId, m_availableModels, m_currentModelId, m_configOptions));
+                               m_currentModeId, m_availableModels, *model, *options));
 
     QJsonArray msgs;
     for (const AcpMessage &m : m_messages) {

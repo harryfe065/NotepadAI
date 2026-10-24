@@ -118,6 +118,19 @@ public:
     // (GLOSSARY). Persisted so a restored session keeps it.
     bool userSent() const { return m_userSent; }
     void setUserSent();
+    // Prewalk model of this session (GLOSSARY): empty = Off, nullopt = never
+    // chosen (a new session takes the agent default). Persisted.
+    const std::optional<QString> &prewalkModel() const { return m_prewalkModel; }
+    void setPrewalkModel(const QString &model);
+    // While Prewalk runs the prewalk model, history records the selection the
+    // session goes back to instead of the live one: `currentModel` and these
+    // config option values (option id -> value). The live state is untouched.
+    struct SelectionOverride
+    {
+        QString currentModel;
+        QHash<QString, QString> configValues;
+    };
+    void setSelectionOverride(std::optional<SelectionOverride> selection);
 
     bool isProcessing() const { return m_isProcessing; }
     // Live background tasks (Claude Code async tasks). Independent of
@@ -242,6 +255,8 @@ private:
     QString m_projectId;
     QString m_acpSessionId;
     bool m_userSent = false;
+    std::optional<QString> m_prewalkModel;
+    std::optional<SelectionOverride> m_selectionOverride;
     QString m_historyDirOverride; // empty = use default AppDataLocation
 
     AcpHistoryStore *m_historyStore = nullptr; // non-owning

@@ -35,6 +35,7 @@
 
 #include "AcpDiffStat.h"
 #include "AcpErrorClassifier.h"
+#include "AcpPrewalk.h"
 #include "AcpPromptQueue.h"
 #include "AcpProtocol.h"
 #include "AcpTranscriptTruncation.h"
@@ -55,6 +56,7 @@ class AcpUsageIndicator;
 
 namespace ai { class PromptImprover; }
 
+class QAction;
 class QCheckBox;
 class QComboBox;
 class QDialog;
@@ -201,6 +203,7 @@ private slots:
     void onModelComboChanged(int index);
     void onModeComboChanged(int index);
     void onEffortComboChanged(int index);
+    void onPrewalkComboChanged(int index);
     void onAdvisorClicked(bool on);
     void onAutoApprovePolicyChanged(const QString &policy);
     void onJumpToBottomClicked();
@@ -359,6 +362,26 @@ private:
     void applySavedPreferences();
     // Remember the model's current model / mode / effort for applySavedPreferences.
     void captureSelection();
+    // The model and effort the agent reports now.
+    AcpPrewalk::Selection currentSelection() const;
+    // Model change that is not the user's pick (Prewalk): no advisor re-point,
+    // no agent default.
+    void sendModelChange(const QString &modelId);
+
+    // Prewalk (GLOSSARY). Claude Code only: it applies a model change from the
+    // next request of the running turn.
+    bool prewalkAvailable() const;
+    // The session's prewalk model: its own choice, else the agent default.
+    void loadPrewalkTarget();
+    void refreshPrewalkCombo();
+    void notePrewalkToolCall(const AcpProtocol::AcpToolCall &tc);
+    void notePrewalkTurnEnded();
+    // After the agent reported its selection: finish a restore. True when it
+    // sent the effort back (the reported one is the agent's reset, not a pick).
+    bool notePrewalkSelectionReported();
+    // History keeps the session's own selection while switched.
+    void syncPrewalkOverride();
+    QString modelLabel(const QString &modelId) const;
     // Sending is impossible right now: switching agents, resuming, or resume failed.
     bool composerLocked() const;
     // A banner button (e.g. Restart); setBanner() clears it.
@@ -417,8 +440,15 @@ private:
     // array. Drives whether model changes dispatch via session/set_config.
     QString m_modelConfigOptionId;
 
-    // Auto-approve
-    QCheckBox *m_autoApproveCheck = nullptr;
+    // Prewalk: "Prewalk: Off" / "Prewalk: <model>"; hidden unless available.
+    QComboBox *m_prewalkCombo = nullptr;
+    AcpPrewalk m_prewalk;
+    bool m_prewalkAvailable = false; // prewalkAvailable() as of the last catalog
+    QStringList m_prewalkItems;      // the combo's catalog: id, label, id, label…
+
+    // Auto-approve, in the ⋯ menu at the end of the row.
+    QToolButton *m_moreBtn = nullptr;
+    QAction *m_autoApproveAction = nullptr;
     // Session-local; never persisted. New views start unchecked.
     QCheckBox *m_newWorktreeCheck = nullptr;
 

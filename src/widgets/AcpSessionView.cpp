@@ -28,6 +28,7 @@
 #include "AcpPlanWidget.h"
 #include "AcpPromptQueueStrip.h"
 #include "AcpSessionModel.h"
+#include "AcpSwitchAgent.h"
 #include "AcpToolCallCard.h"
 #include "AcpTurnFoldRow.h"
 #include "ChatFont.h"
@@ -106,6 +107,8 @@ constexpr int kMaxSkillCompletions = 256;
 // connection's 250 ms idle guess, so it "ends" after every tool call while the
 // model thinks. Folding waits this long for it to go on before hiding cards.
 constexpr int kWakeTurnFoldDelayMs = 3000;
+// Agent default for the Prewalk model (AcpAgentRegistry preference key).
+constexpr QLatin1String kPrewalkPrefKey("prewalk");
 
 // A card update carrying the model's whole current state for one call.
 AcpProtocol::AcpToolCallUpdate cardUpdateFrom(const AcpProtocol::AcpToolCall &tc)
@@ -349,6 +352,7 @@ AcpSessionView::AcpSessionView(AcpSessionModel *model,
         captureSelection();
     buildUi();
     wireSignals();
+    loadPrewalkTarget();
     hydrateFromModel();
     updateImproveButtonState();
 }
@@ -525,15 +529,27 @@ void AcpSessionView::buildUi()
     m_effortCombo->setStyleSheet(kCompactComboCss);
     m_effortCombo->hide();
 
-    // 4. Auto-approve checkbox. The toggle is dangerous (the agent can run
-    // any tool unattended), so the checked state must be unmistakable — but
-    // a full-bleed warning-yellow block is chrome-shouting. Per the DNA, the
-    // soft warning palette is reserved for transient banners; here we settle
-    // for warning-tone bold text + the checkbox indicator itself.
-    m_autoApproveCheck = new QCheckBox(tr("Auto-approve permissions"), this);
-    m_autoApproveCheck->setToolTip(tr("Automatically allow all tool calls this agent requests"));
-    m_autoApproveCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox:checked { color: #856404; font-weight: 600; }"));
+    // 4. Session options row: Prewalk, New worktree, Advisor, then the ⋯ menu
+    // (Auto-approve) and usage at the right end.
+    m_prewalkCombo = new QComboBox(this);
+    m_prewalkCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_prewalkCombo->setStyleSheet(kCompactComboCss);
+    m_prewalkCombo->hide(); // shown only for Claude Code with a model catalog
+    m_moreBtn = new QToolButton(this);
+    m_moreBtn->setText(QStringLiteral("⋯"));
+    m_moreBtn->setAutoRaise(true);
+    m_moreBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_moreBtn->setPopupMode(QToolButton::InstantPopup);
+    m_moreBtn->setToolTip(tr("More options"));
+    m_moreBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { padding: 0px 4px; border: 1px solid transparent; border-radius: 3px; }"
+        "QToolButton:hover { border: 1px solid palette(mid); }"
+        "QToolButton::menu-indicator { image: none; width: 0px; }"));
+    auto *moreMenu = new QMenu(m_moreBtn);
+    m_autoApproveAction = moreMenu->addAction(tr("Auto-approve permissions"));
+    m_autoApproveAction->setCheckable(true);
+    m_autoApproveAction->setToolTip(tr("Automatically allow all tool calls this agent requests"));
+    m_moreBtn->setMenu(moreMenu);
     m_newWorktreeCheck = new QCheckBox(tr("New worktree"), this);
     m_newWorktreeCheck->setToolTip(tr("Do this conversation in a new git worktree, then merge and clean up"));
     m_advisorBtn = new QCheckBox(tr("Advisor"), this);
@@ -544,16 +560,17 @@ void AcpSessionView::buildUi()
     m_advisorBtn->hide(); // shown only while the agent advertises /advisor
     // clicked, not toggled: programmatic resets must not send a command.
     connect(m_advisorBtn, &QCheckBox::clicked, this, &AcpSessionView::onAdvisorClicked);
-    auto *autoApproveRow = new QHBoxLayout();
-    autoApproveRow->setContentsMargins(0, 0, 0, 0);
-    autoApproveRow->setSpacing(6);
-    autoApproveRow->addWidget(m_autoApproveCheck);
-    autoApproveRow->addWidget(m_newWorktreeCheck);
-    autoApproveRow->addWidget(m_advisorBtn);
-    autoApproveRow->addStretch();
+    auto *optionsRow = new QHBoxLayout();
+    optionsRow->setContentsMargins(0, 0, 0, 0);
+    optionsRow->setSpacing(6);
+    optionsRow->addWidget(m_prewalkCombo);
+    optionsRow->addWidget(m_newWorktreeCheck);
+    optionsRow->addWidget(m_advisorBtn);
+    optionsRow->addStretch();
+    optionsRow->addWidget(m_moreBtn);
     m_usageIndicator = new AcpUsageIndicator(this);
-    autoApproveRow->addWidget(m_usageIndicator);
-    outer->addLayout(autoApproveRow);
+    optionsRow->addWidget(m_usageIndicator);
+    outer->addLayout(optionsRow);
 
     // 5. Image attachments.
     m_attachmentList = new AcpImageAttachmentList(this);
@@ -774,9 +791,9 @@ void AcpSessionView::buildUi()
 
     // Auto-approve state from registry.
     if (m_registry) {
-        m_autoApproveCheck->setChecked(m_registry->autoApprovePolicy() == QLatin1String("allowAll"));
+        m_autoApproveAction->setChecked(m_registry->autoApprovePolicy() == QLatin1String("allowAll"));
     }
-    connect(m_autoApproveCheck, &QCheckBox::toggled,
+    connect(m_autoApproveAction, &QAction::toggled,
             this, &AcpSessionView::onAutoApproveToggled);
     // clicked, not toggled: a programmatic setChecked must not yank focus
     // away from the transcript or a permission prompt.
@@ -805,6 +822,8 @@ void AcpSessionView::buildUi()
             this, &AcpSessionView::onModeComboChanged);
     connect(m_effortCombo, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &AcpSessionView::onEffortComboChanged);
+    connect(m_prewalkCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &AcpSessionView::onPrewalkComboChanged);
 
     // Apply the chat font preference to transcript + input, and follow live
     // preference edits. The chat font may be independent of the editor font:
@@ -1075,6 +1094,9 @@ void AcpSessionView::rebind(AcpSessionModel *model, AcpConnection *connection)
     m_parked = {};
     m_resumeBlocked = false;
     m_switchingTo.clear();
+    // A new conversation: nothing switched; its own (or the default) prewalk model.
+    m_prewalk.reset();
+    loadPrewalkTarget();
     refreshSelectorTooltips();
     ++m_scheduledRev; // the cached tooltip described the previous connection's jobs
 
@@ -1194,6 +1216,10 @@ void AcpSessionView::rebindConnection(AcpConnection *connection)
     // or picks made before its first prompt).
     if (!m_carry.valid)
         captureSelection();
+    // The carried selection is the session's own one (captureSelection); the
+    // new agent starts on it, nothing switched.
+    m_prewalk.reset();
+    syncPrewalkOverride();
     if (m_connection) {
         disconnect(m_connection, nullptr, this, nullptr);
         if (m_debugDialog)
@@ -1242,17 +1268,174 @@ void AcpSessionView::captureSelection()
 {
     if (!m_model)
         return;
-    const auto &opts = m_model->configOptions();
+    // Prewalk's model is never the session's own.
+    const AcpPrewalk::Selection own = m_prewalk.sessionSelection().value_or(currentSelection());
     Selection sel;
+    sel.model = own.model;
+    sel.mode = m_model->currentModeId();
+    sel.effort = own.effort;
+    sel.valid = !sel.model.isEmpty() || !sel.mode.isEmpty() || !sel.effort.isEmpty();
+    m_carry = sel;
+}
+
+AcpPrewalk::Selection AcpSessionView::currentSelection() const
+{
+    AcpPrewalk::Selection sel;
+    if (!m_model)
+        return sel;
+    const auto &opts = m_model->configOptions();
     if (const auto *modelOpt = findModelConfigOption(opts))
         sel.model = modelOpt->currentValue.toString();
     if (sel.model.isEmpty())
         sel.model = m_model->currentModelId();
-    sel.mode = m_model->currentModeId();
     if (const auto *effortOpt = findEffortConfigOption(opts))
         sel.effort = effortOpt->currentValue.toString();
-    sel.valid = !sel.model.isEmpty() || !sel.mode.isEmpty() || !sel.effort.isEmpty();
-    m_carry = sel;
+    return sel;
+}
+
+void AcpSessionView::sendModelChange(const QString &modelId)
+{
+    if (!m_connection || modelId.isEmpty() || !m_connection->isSessionReady())
+        return;
+    if (!m_modelConfigOptionId.isEmpty())
+        m_connection->setConfigOption(m_modelConfigOptionId, modelId);
+    else
+        m_connection->setModel(modelId);
+}
+
+bool AcpSessionView::prewalkAvailable() const
+{
+    return m_connection && m_modelCombo && m_modelCombo->count() > 0
+        && AcpSwitchAgent::isClaudeCodeAgent(m_connection->definition());
+}
+
+void AcpSessionView::loadPrewalkTarget()
+{
+    QString target;
+    if (m_model && m_model->prewalkModel()) {
+        target = *m_model->prewalkModel();
+    } else if (m_registry && m_connection) {
+        // A new session starts with the agent default and keeps it as its own.
+        target = m_registry->agentPreference(m_connection->definition().id, kPrewalkPrefKey);
+        if (m_model)
+            m_model->setPrewalkModel(target);
+    }
+    // refreshPrewalkCombo drops it while the agent's catalog lacks it.
+    m_prewalk.setTarget(target);
+}
+
+void AcpSessionView::refreshPrewalkCombo()
+{
+    if (!m_prewalkCombo)
+        return;
+    m_prewalkAvailable = prewalkAvailable();
+    // Catalog as (id, label) pairs. Rebuild the items only when it changed:
+    // every config update (Prewalk's own switches included) lands here, and a
+    // rebuild would close the popup under the user.
+    QStringList items;
+    if (m_prewalkAvailable) {
+        items.reserve(m_modelCombo->count() * 2);
+        for (int i = 0; i < m_modelCombo->count(); ++i)
+            items << m_modelCombo->itemData(i).toString() << m_modelCombo->itemText(i);
+    }
+    const QString chosen = m_model && m_model->prewalkModel() ? *m_model->prewalkModel() : QString();
+    const bool wasUpdating = std::exchange(m_updatingSelectors, true);
+    if (items != m_prewalkItems) {
+        m_prewalkItems = items;
+        m_prewalkCombo->clear();
+        if (m_prewalkAvailable) {
+            m_prewalkCombo->addItem(tr("Prewalk: Off"), QString());
+            for (qsizetype i = 0; i + 1 < items.size(); i += 2)
+                m_prewalkCombo->addItem(tr("Prewalk: %1").arg(items.at(i + 1)), items.at(i));
+        }
+    }
+    // A model the catalog lacks (another agent's, or gone) is Off here; the
+    // session keeps its choice for an agent that has it.
+    const int chosenIndex = chosen.isEmpty() ? -1 : m_prewalkCombo->findData(chosen);
+    if (m_prewalkAvailable)
+        m_prewalkCombo->setCurrentIndex(std::max(0, chosenIndex));
+    m_updatingSelectors = wasUpdating;
+    m_prewalkCombo->setVisible(m_prewalkAvailable);
+    m_prewalk.setTarget(chosenIndex > 0 ? chosen : QString());
+}
+
+void AcpSessionView::onPrewalkComboChanged(int index)
+{
+    if (m_updatingSelectors || index < 0 || !m_model)
+        return;
+    const QString id = m_prewalkCombo->itemData(index).toString();
+    m_model->setPrewalkModel(id);
+    m_prewalk.setTarget(id);
+    if (m_registry && m_draft && m_connection)
+        m_registry->setAgentPreference(m_connection->definition().id, kPrewalkPrefKey, id);
+    refreshSelectorTooltips();
+}
+
+void AcpSessionView::notePrewalkToolCall(const AcpProtocol::AcpToolCall &tc)
+{
+    // Hot path (every tool update): the cheap checks first.
+    if (!m_prewalkAvailable || m_prewalk.target().isEmpty())
+        return;
+    const AcpPrewalk::ToolCall call = AcpPrewalk::classify(tc, isGoalJudgeToolId(tc.id));
+    if (!call.editsFiles || !m_connection || !m_connection->isSessionReady())
+        return;
+    const QString to = m_prewalk.onToolCall(call, currentSelection());
+    if (to.isEmpty())
+        return;
+    sendModelChange(to);
+    syncPrewalkOverride();
+    refreshSelectorTooltips();
+}
+
+void AcpSessionView::notePrewalkTurnEnded()
+{
+    const std::optional<AcpPrewalk::Selection> restore = m_prewalk.onTurnEnded();
+    if (!restore)
+        return;
+    // The selection override stays until the agent reports the model back.
+    sendModelChange(restore->model);
+    refreshSelectorTooltips();
+}
+
+bool AcpSessionView::notePrewalkSelectionReported()
+{
+    if (!m_prewalk.isSwitched())
+        return false;
+    const QString effort = m_prewalk.onSelectionReported(currentSelection());
+    if (m_prewalk.isSwitched())
+        return false;
+    syncPrewalkOverride();
+    // Back on the session model; the agent may have reset effort with it.
+    if (effort.isEmpty() || m_effortConfigOptionId.isEmpty() || !m_connection
+        || !m_connection->isSessionReady()) {
+        return false;
+    }
+    m_connection->setConfigOption(m_effortConfigOptionId, effort);
+    return true;
+}
+
+void AcpSessionView::syncPrewalkOverride()
+{
+    if (!m_model)
+        return;
+    const std::optional<AcpPrewalk::Selection> own = m_prewalk.sessionSelection();
+    if (!own) {
+        m_model->setSelectionOverride(std::nullopt);
+        return;
+    }
+    AcpSessionModel::SelectionOverride o;
+    o.currentModel = own->model;
+    if (!m_modelConfigOptionId.isEmpty())
+        o.configValues.insert(m_modelConfigOptionId, own->model);
+    if (!m_effortConfigOptionId.isEmpty() && !own->effort.isEmpty())
+        o.configValues.insert(m_effortConfigOptionId, own->effort);
+    m_model->setSelectionOverride(std::move(o));
+}
+
+QString AcpSessionView::modelLabel(const QString &modelId) const
+{
+    const int idx = m_modelCombo ? m_modelCombo->findData(modelId) : -1;
+    return idx >= 0 ? m_modelCombo->itemText(idx) : modelId;
 }
 
 void AcpSessionView::onConnectionReady()
@@ -2150,6 +2333,7 @@ void AcpSessionView::onToolCallAddedOrUpdated(const QString &toolCallId)
     auto it = m_model->toolCalls().find(toolCallId);
     if (it == m_model->toolCalls().end()) return;
     const AcpProtocol::AcpToolCall &tc = it.value();
+    notePrewalkToolCall(tc);
     trackGrillMeToolCall(tc);
     noteLiveEdit(tc);
 
@@ -2394,6 +2578,10 @@ void AcpSessionView::onMetadataChanged()
     m_effortCombo->setVisible(m_effortCombo->count() > 0);
 
     m_updatingSelectors = false;
+    refreshPrewalkCombo();
+    // The restore just landed with an effort the agent reset: not a default.
+    const bool prewalkEffortPending = notePrewalkSelectionReported();
+    refreshSelectorTooltips();
     updateAdvisorButton();
 
     // Once the agent's catalogs have arrived, push any saved per-agent
@@ -2403,8 +2591,10 @@ void AcpSessionView::onMetadataChanged()
     // After the initial restore, persist any agent-side config changes
     // (e.g. Codex CLI's config_option_update for model/mode/effort) so the
     // next session/new picks them up. Only while the session is a draft: once
-    // the user has sent something, its selections are its own.
-    if (m_savedPrefsApplied && m_draft && m_registry && m_connection) {
+    // the user has sent something, its selections are its own. Never while
+    // Prewalk runs its model (a goal's turn in a draft session).
+    if (m_savedPrefsApplied && m_draft && m_registry && m_connection && !m_prewalk.isSwitched()
+        && !prewalkEffortPending) {
         const QString agentId = m_connection->definition().id;
         if (!agentId.isEmpty()) {
             const QString curModel = m_model->currentModelId();
@@ -2490,6 +2680,7 @@ void AcpSessionView::onIsProcessingChanged(bool processing)
     // Heartbeat indicator: the 100 ms tick runs while the agent is processing
     // or background tasks are alive (updateElapsedLabel owns start/stop).
     if (processing) {
+        m_prewalk.onTurnStarted();
         resetElapsed();
         ensureLiveTurnRow();
         // Hide goal heartbeat while agent heartbeat is active.
@@ -2519,6 +2710,7 @@ void AcpSessionView::onIsProcessingChanged(bool processing)
 void AcpSessionView::onTurnEnded(int groupId)
 {
     Q_UNUSED(groupId);
+    notePrewalkTurnEnded();
     // An adapter that never reports completion: the turn end is the signal.
     if (!m_grillMeCandidates.isEmpty() && m_model) {
         const QSet<QString> candidates = std::exchange(m_grillMeCandidates, {});
@@ -2666,8 +2858,29 @@ void AcpSessionView::refreshSelectorTooltips()
     // Why a pick no longer becomes the default for new sessions.
     const QString suffix = m_draft ? QString()
                                    : QLatin1Char('\n') + tr("Applies to this session only");
-    if (m_modelCombo)
-        m_modelCombo->setToolTip(tr("Model") + suffix);
+    const std::optional<AcpPrewalk::Selection> own = m_prewalk.sessionSelection();
+    if (m_modelCombo) {
+        QString tip = tr("Model") + suffix;
+        if (own)
+            tip += QLatin1Char('\n') + tr("Prewalk: back to %1 when the turn ends").arg(modelLabel(own->model));
+        m_modelCombo->setToolTip(tip);
+    }
+    if (m_prewalkCombo) {
+        const QString &target = m_prewalk.target();
+        QString tip;
+        if (own) {
+            tip = tr("Prewalk: on %1 until the turn ends, then back to %2")
+                      .arg(modelLabel(currentSelection().model), modelLabel(own->model));
+        } else if (!target.isEmpty()) {
+            tip = tr("Prewalk on: switching to %1 at the next edit/write; back to %2 when the turn ends")
+                      .arg(modelLabel(target), modelLabel(currentSelection().model));
+        } else {
+            tip = tr("Prewalk: switch to a cheaper model once the agent starts editing files, "
+                     "and back to this one when the turn ends");
+        }
+        tip += QLatin1Char('\n') + tr("Switching models re-reads the conversation without the prompt cache");
+        m_prewalkCombo->setToolTip(tip + suffix);
+    }
     if (m_modeCombo)
         m_modeCombo->setToolTip(tr("Mode") + suffix);
     if (m_effortCombo)
@@ -3268,11 +3481,11 @@ void AcpSessionView::onAutoApproveToggled(bool checked)
 
 void AcpSessionView::onAutoApprovePolicyChanged(const QString &policy)
 {
-    if (!m_autoApproveCheck) return;
+    if (!m_autoApproveAction) return;
     const bool wantChecked = (policy == QLatin1String("allowAll"));
-    if (m_autoApproveCheck->isChecked() != wantChecked) {
-        QSignalBlocker blocker(m_autoApproveCheck);
-        m_autoApproveCheck->setChecked(wantChecked);
+    if (m_autoApproveAction->isChecked() != wantChecked) {
+        QSignalBlocker blocker(m_autoApproveAction);
+        m_autoApproveAction->setChecked(wantChecked);
     }
 }
 
@@ -3287,10 +3500,14 @@ void AcpSessionView::onModelComboChanged(int index)
         // Agent not started yet (restored session): applied once it is.
         m_carry.model = id;
         m_carry.valid = true;
-    } else if (!m_modelConfigOptionId.isEmpty()) {
-        m_connection->setConfigOption(m_modelConfigOptionId, id);
     } else {
-        m_connection->setModel(id);
+        sendModelChange(id);
+    }
+    // The user's pick wins over Prewalk: kept after the turn.
+    if (m_prewalk.isSwitched()) {
+        m_prewalk.onUserPickedModel();
+        syncPrewalkOverride();
+        refreshSelectorTooltips();
     }
     if (m_registry && m_draft) {
         m_registry->setAgentPreference(m_connection->definition().id, prefKey, id);
@@ -3328,6 +3545,11 @@ void AcpSessionView::onEffortComboChanged(int index)
     } else {
         m_carry.effort = val;
         m_carry.valid = true;
+    }
+    // Picked while Prewalk switched: the effort the session goes back to.
+    if (m_prewalk.isSwitched()) {
+        m_prewalk.onUserPickedEffort(val);
+        syncPrewalkOverride();
     }
     if (m_registry && m_draft && !val.isEmpty()) {
         m_registry->setAgentPreference(m_connection->definition().id,
