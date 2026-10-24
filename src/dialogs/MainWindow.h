@@ -67,6 +67,7 @@ class WorkspaceFileEnumerator;
 class QuickFileOpenDialog;
 namespace remote { class ExecutionContext; }
 class SshDebugDialog;
+class Pm2ProcessesDialog;
 struct ConflictEntry;
 struct GitStatusEntry;
 struct WorkspaceStateSnapshot;
@@ -249,6 +250,8 @@ private:
     // tasks…": the task dialog for the active local workspace (no-op for SSH
     // workspaces or when the workspace directory is gone).
     void editTasksForActiveWorkspace();
+    // Terminal > PM2 Processes: the one modeless dialog, raised if open.
+    void showPm2Processes();
 
     Ui::MainWindow *ui = Q_NULLPTR;
     NotepadNextApplication *app = Q_NULLPTR;
@@ -408,6 +411,8 @@ private:
     void reconnectSshWorkspace(FolderAsWorkspaceDock *dock);
     void showConflictListDock(const QString &repoPath);
     void openConflictMergeViewer(const ConflictEntry &entry);
+
+    QPointer<Pm2ProcessesDialog> m_pm2Dialog;
 
 #ifndef NDEBUG
     // SSH transport debug log dialog (debug builds only). Rebound whenever the

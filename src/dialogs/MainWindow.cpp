@@ -101,6 +101,7 @@
 #include "TerminalCwdResolver.h"
 #include "TerminalTaskRegistry.h"
 #include "EditTasksDialog.h"
+#include "Pm2ProcessesDialog.h"
 #include "MiniAppManager.h"
 #include "MiniAppRegistry.h"
 #include "MiniAppMenuLayout.h"
@@ -1809,7 +1810,14 @@ MainWindow::MainWindow(NotepadNextApplication *app) :
             TerminalCwdResolver::canOpenInWorkspaceForContext(ctx, workspaceRoot));
         ui->actionOpenTerminalInFolder->setEnabled(
             TerminalCwdResolver::canOpenInFolderForContext(ctx, activeFilePath, activeIsFile, workspaceRoot));
+        // pm2 runs on this machine; an SSH workspace's processes are remote.
+        const bool remoteWorkspace = (ctx && ctx->isRemote()) || remote::isSshUri(workspaceRoot);
+        ui->actionPm2Processes->setEnabled(!remoteWorkspace);
+        ui->actionPm2Processes->setToolTip(remoteWorkspace ? tr("Not available in SSH workspaces")
+                                                           : QString());
     });
+    ui->menuTerminal->setToolTipsVisible(true);
+    connect(ui->actionPm2Processes, &QAction::triggered, this, &MainWindow::showPm2Processes);
 
     connect(ui->actionOpenTerminalInWorkspace, &QAction::triggered, this, [this]() {
         const QString workspaceRoot = currentWorkspaceRoot();
@@ -2260,6 +2268,21 @@ void MainWindow::editTasksForActiveWorkspace()
         terminalManager->setTasks(workspaceRoot, dlg.tasks());
         terminalManager->refreshEmptyPanel();
     }
+}
+
+void MainWindow::showPm2Processes()
+{
+    if (m_pm2Dialog) {
+        m_pm2Dialog->raise();
+        m_pm2Dialog->activateWindow();
+        return;
+    }
+    // New processes start in the active local workspace, else home.
+    m_pm2Dialog = new Pm2ProcessesDialog(terminalManager, [this]() {
+        const QString cwd = TerminalCwdResolver::resolveWorkspace(currentWorkspaceRoot());
+        return cwd.isEmpty() || remote::isSshUri(cwd) ? QDir::homePath() : cwd;
+    }, this);
+    m_pm2Dialog->show();
 }
 
 MainWindow::~MainWindow()

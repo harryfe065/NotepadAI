@@ -213,6 +213,52 @@ target_sources(test_terminal_task_launcher PRIVATE
 )
 add_test(NAME TerminalTaskLauncher COMMAND test_terminal_task_launcher)
 
+# --- Pm2Entrypoint: generated .cjs round-trips its definition; runs the command with env/cwd ---
+qt_add_executable(test_pm2_entrypoint test_pm2_entrypoint.cpp)
+target_include_directories(test_pm2_entrypoint PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/pm2)
+target_link_libraries(test_pm2_entrypoint PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_pm2_entrypoint PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/DotEnv.cpp
+    ${CMAKE_SOURCE_DIR}/src/DotEnv.h
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Entrypoint.cpp
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Entrypoint.h
+)
+add_test(NAME Pm2Entrypoint COMMAND test_pm2_entrypoint)
+
+# --- Pm2Protocol: helper JSON lines, uptime, dump guard, names, logs command, .env ---
+qt_add_executable(test_pm2_protocol test_pm2_protocol.cpp)
+target_include_directories(test_pm2_protocol PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/pm2)
+target_link_libraries(test_pm2_protocol PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_pm2_protocol PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/DotEnv.cpp
+    ${CMAKE_SOURCE_DIR}/src/DotEnv.h
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Entrypoint.cpp
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Entrypoint.h
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.cpp
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.h
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Protocol.h
+)
+add_test(NAME Pm2Protocol COMMAND test_pm2_protocol)
+
+# --- Pm2ProcessModel: list refreshes edit rows in place keyed by pm_id ---
+qt_add_executable(test_pm2_process_model test_pm2_process_model.cpp)
+target_include_directories(test_pm2_process_model PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/pm2)
+target_link_libraries(test_pm2_process_model PRIVATE Qt6::Core Qt6::Test)
+target_sources(test_pm2_process_model PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/DotEnv.cpp
+    ${CMAKE_SOURCE_DIR}/src/DotEnv.h
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Entrypoint.cpp
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Entrypoint.h
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.cpp
+    ${CMAKE_SOURCE_DIR}/src/TerminalTaskLauncher.h
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2Protocol.h
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2ProcessModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/pm2/Pm2ProcessModel.h
+)
+add_test(NAME Pm2ProcessModel COMMAND test_pm2_process_model)
+
 # --- AiDockGroup: project-group key / title / objectName / compact-after-close ---
 qt_add_executable(test_ai_dock_group test_ai_dock_group.cpp)
 target_include_directories(test_ai_dock_group PRIVATE ${CMAKE_SOURCE_DIR}/src)

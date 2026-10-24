@@ -22,6 +22,7 @@
 #include "ApplicationSettings.h"
 #include "DockedEditor.h"
 #include "DockWidget.h"
+#include "DotEnv.h"
 #include "MainWindow.h"
 #include "NotepadNextApplication.h"
 #include "PreviewTabManager.h"
@@ -219,31 +220,11 @@ TerminalDock *TerminalManager::openTerminalWithInput(remote::ExecutionContext *c
 
 static QStringList parseEnvText(const QString &envText)
 {
+    const QList<QPair<QString, QString>> pairs = parseDotEnv(envText);
     QStringList result;
-    if (envText.isEmpty()) return result;
-    const QStringList lines = envText.split(QLatin1Char('\n'));
-    for (const QString &rawLine : lines) {
-        const QString line = rawLine.trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
-            continue;
-        const int eq = line.indexOf(QLatin1Char('='));
-        if (eq <= 0)
-            continue;
-        const QString key = line.left(eq).trimmed();
-        if (key.isEmpty())
-            continue;
-        QString value = line.mid(eq + 1).trimmed();
-        // Strip surrounding quotes
-        if (value.size() >= 2) {
-            const QChar first = value.front();
-            const QChar last = value.back();
-            if ((first == QLatin1Char('"') && last == QLatin1Char('"')) ||
-                (first == QLatin1Char('\'') && last == QLatin1Char('\''))) {
-                value = value.mid(1, value.size() - 2);
-            }
-        }
+    result.reserve(pairs.size());
+    for (const auto &[key, value] : pairs)
         result.append(key + QLatin1Char('=') + value);
-    }
     return result;
 }
 

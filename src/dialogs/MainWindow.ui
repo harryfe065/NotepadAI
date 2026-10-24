@@ -363,6 +363,7 @@
     <addaction name="actionOpenTerminalInFolder"/>
     <addaction name="separator"/>
     <addaction name="menuTasks"/>
+    <addaction name="actionPm2Processes"/>
    </widget>
    <widget class="QMenu" name="menuAi">
     <property name="title">
@@ -1122,6 +1123,11 @@
   <action name="actionEditTasks">
    <property name="text">
     <string>Edit Tasks…</string>
+   </property>
+  </action>
+  <action name="actionPm2Processes">
+   <property name="text">
+    <string>PM2 Processes…</string>
    </property>
   </action>
   <action name="actionEditMiniApps">

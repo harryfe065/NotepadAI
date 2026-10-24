@@ -578,6 +578,21 @@ qt_add_executable(NotepadAI
 	widgets/TerminalEmptyPanel.cpp
 	TerminalTaskRegistry.h
 	TerminalTaskRegistry.cpp
+	DotEnv.h
+	DotEnv.cpp
+	pm2/Pm2Entrypoint.h
+	pm2/Pm2Entrypoint.cpp
+	pm2/Pm2Protocol.h
+	pm2/Pm2Protocol.cpp
+	pm2/Pm2ProcessModel.h
+	pm2/Pm2ProcessModel.cpp
+	pm2/Pm2Client.h
+	pm2/Pm2Client.cpp
+	pm2/Pm2ProcessEditDialog.h
+	pm2/Pm2ProcessEditDialog.cpp
+	pm2/Pm2ProcessesDialog.h
+	pm2/Pm2ProcessesDialog.cpp
+	pm2/pm2.qrc
 	MiniAppDefinition.h
 	MiniAppMenuLayout.h
 	MiniAppMenuLayout.cpp
@@ -897,6 +912,7 @@ target_include_directories(NotepadAI
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/media
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/font
         ${CMAKE_CURRENT_SOURCE_DIR}/preview/hex
+        ${CMAKE_CURRENT_SOURCE_DIR}/pm2
         ${CMAKE_CURRENT_SOURCE_DIR}/remote
         ${CMAKE_CURRENT_SOURCE_DIR}/widgets
         ${CMAKE_CURRENT_SOURCE_DIR}

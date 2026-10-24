@@ -704,7 +704,7 @@ void TestModelLoaders::gltfMapsOnAnotherUvSet()
         + QByteArray(uv).replace("%1", "1") + QByteArray(uv).replace("%1", "2") + "]}";
     const ModelLoader::Result r = loadBytes(m_dir, QStringLiteral("uv1.gltf"), json);
     QVERIFY2(r.doc, qPrintable(r.error));
-    QVERIFY2(r.doc->warnings.isEmpty(), qPrintable(r.doc->warnings.join(u'; ')));
+    QVERIFY2(r.doc->warnings.isEmpty(), qPrintable(r.doc->warnings.join(QStringLiteral("; "))));
     QVERIFY(r.doc->materials[0].baseColorTexture >= 0);
     QVERIFY(r.doc->materials[0].normalTexture >= 0);
     for (int i = 0; i < 3; ++i) {

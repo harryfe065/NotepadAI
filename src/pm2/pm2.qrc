@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/pm2">
+        <file alias="pm2-helper.cjs">pm2-helper.cjs</file>
+    </qresource>
+</RCC>
