@@ -35,6 +35,10 @@
         <file>languages/fortran77.lua</file>
         <file>languages/freebasic.lua</file>
         <file>languages/gdscript.lua</file>
+        <file>languages/gdshader.lua</file>
+        <file>languages/glsl.lua</file>
+        <file>languages/godotresource.lua</file>
+        <file>languages/po.lua</file>
         <file>languages/gui4cli.lua</file>
         <file>languages/haskell.lua</file>
         <file>languages/html.lua</file>
